@@ -30,7 +30,8 @@ await runBrowserFixture({ fixtureDirectory, fixtureFilename: 'Fixture.jsx', arti
     check(mode+' modal footer remains visible', await evaluate('document.querySelector(".ant-modal-footer").getBoundingClientRect().bottom <= innerHeight'));
     check(mode+' commands wrap inside modal', await evaluate('Array.from(document.querySelectorAll("code")).every(code => code.scrollWidth <= code.clientWidth + 1)'));
     await capture(mode+'-guide');
-    await click('关闭'); await delay(250);
+    await click('关闭');
+    await waitFor('!document.querySelector(".ant-modal") || document.querySelector(".ant-modal").getClientRects().length === 0');
     check(mode+' cancel performs no IO', await evaluate('window.ompFixture.state.refreshes === 0 && window.ompFixture.state.invocations.length === 0'));
     await perform('window.ompFixture.setInput("Custom-Exact-Codex:42")');
     await delay(100);
