@@ -14,6 +14,19 @@ await runBrowserFixture({ fixtureDirectory, fixtureFilename: 'Fixture.jsx', arti
   const perform = expression => evaluate(`(() => { ${expression}; return true; })()`);
   const click = text => perform(`Array.from(document.querySelectorAll('button')).find(button => button.textContent.replace(/\\s/g, '') === ${JSON.stringify(text)}).click()`);
   const capture = async name => { const {data}=await send('Page.captureScreenshot', { format: 'png' }); await writeFile(path.join(artifactRoot, name + '.png'), Buffer.from(data, 'base64')); };
+  const pressKey = async (key, code, windowsVirtualKeyCode, modifiers = 0) => {
+    await send('Input.dispatchKeyEvent', { type: 'keyDown', key, code, windowsVirtualKeyCode, modifiers });
+    await send('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode, modifiers });
+  };
+  const typeModel = async text => {
+    const point = await evaluate('(() => { const r = document.querySelector("#defaultModel").getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()');
+    await send('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', clickCount: 1, ...point });
+    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', clickCount: 1, ...point });
+    await waitFor('document.activeElement?.id === "defaultModel"');
+    await pressKey('a', 'KeyA', 65, 2);
+    await send('Input.insertText', { text });
+    await waitFor(`document.querySelector("#defaultModel").value === ${JSON.stringify(text)}`);
+  };
   for (const [mode, width] of [['light',1280],['dark',1280],['system',480]]) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: false });
     await send('Emulation.setEmulatedMedia', { features: [{name:'prefers-color-scheme',value:'dark'}] });
@@ -21,6 +34,7 @@ await runBrowserFixture({ fixtureDirectory, fixtureFilename: 'Fixture.jsx', arti
     await waitFor(`window.ompFixture?.state.mode === ${JSON.stringify(mode)} && document.querySelector("#defaultModel")`);
     await delay(300);
     check(mode+' page does not overflow', await evaluate('document.documentElement.scrollWidth <= window.innerWidth'));
+    if (width > 600) check(mode+' model input aligns with provider', await evaluate('Math.abs(document.querySelector("#defaultModel").closest(".ant-select").getBoundingClientRect().top - document.querySelector("#defaultProvider").closest(".ant-select").getBoundingClientRect().top) < 2'));
     check(mode+' state and override are visible', await evaluate('document.body.innerText.includes("本地状态未知") && document.body.innerText.includes("API Key 覆盖")'));
     await capture(mode+'-section');
     await click('订阅登录指引');
@@ -33,18 +47,21 @@ await runBrowserFixture({ fixtureDirectory, fixtureFilename: 'Fixture.jsx', arti
     await click('关闭');
     await waitFor('!document.querySelector(".ant-modal") || document.querySelector(".ant-modal").getClientRects().length === 0');
     check(mode+' cancel performs no IO', await evaluate('window.ompFixture.state.refreshes === 0 && window.ompFixture.state.invocations.length === 0'));
-    await perform('window.ompFixture.setInput("Custom-Exact-Codex:42")');
+    await typeModel('Custom-Exact-Codex:42');
     await delay(100);
     check(mode+' typing does not persist partial model',await evaluate('window.ompFixture.state.commits.length'),0);
-    await perform('document.querySelector("#defaultModel").blur()'); await delay(100);
+    await pressKey('Tab', 'Tab', 9);
+    await waitFor('document.activeElement?.id !== "defaultModel"');
+    await delay(100);
+    console.log(mode + ' model input diagnostics: ' + JSON.stringify(await evaluate('({ events: window.ompFixture.state.inputEvents, componentCommits: window.ompFixture.state.componentCommits, formCommits: window.ompFixture.state.commits, activeElement: document.activeElement?.id })')));
     check(mode+' blur saves exact manual model',await evaluate('window.ompFixture.state.commits.map(item=>item.values.defaultModel)'),['Custom-Exact-Codex:42']);
     await perform("const button = Array.from(document.querySelectorAll('button')).find(button => button.textContent.replace(/\\s/g, '') === '刷新'); button.click(); button.click()"); await delay(300);
     check(mode+' repeated refresh updates local state once',await evaluate('document.body.innerText.includes("检测到本地 OAuth 记录") && window.ompFixture.state.refreshes === 1'));
   }
   await perform('window.ompFixture.setOptions([{value:"native-model-exact",label:"native-model-exact"}]); window.ompFixture.setModel("")'); await delay(100);
-  await perform('window.ompFixture.setInput("native")'); await delay(200);
-  await send('Input.dispatchKeyEvent',{ type:'keyDown', key:'ArrowDown',code:'ArrowDown',windowsVirtualKeyCode:40 });
-  await send('Input.dispatchKeyEvent',{ type:'keyDown', key:'Enter',code:'Enter',windowsVirtualKeyCode:13 });
+  await typeModel('native'); await delay(200);
+  await pressKey('ArrowDown', 'ArrowDown', 40);
+  await pressKey('Enter', 'Enter', 13);
   await delay(200);
   check('keyboard option selection commits exact full model once',await evaluate('window.ompFixture.state.commits.map(item=>item.values.defaultModel)'),['Custom-Exact-Codex:42','native-model-exact']);
   return checks;
