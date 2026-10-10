@@ -41,16 +41,45 @@ jobs:
       - name: Diagnose installed browser startup
         continue-on-error: true
         run: |
+          ls -l /usr/bin/chromium /usr/bin/chromium-browser /usr/bin/google-chrome || true
           google-chrome --version
           timeout 30s google-chrome --headless=new --disable-background-networking --no-first-run --user-data-dir="$RUNNER_TEMP/chrome-probe" --dump-dom about:blank
+      - name: Verify Google Chrome CDP with sandbox enabled
+        continue-on-error: true
+        run: |
+          profile="$RUNNER_TEMP/chrome-cdp-probe"
+          /usr/bin/google-chrome --headless=new --remote-debugging-port=0 --user-data-dir="$profile" --no-first-run --no-default-browser-check --disable-extensions --disable-background-networking about:blank > "$RUNNER_TEMP/chrome-cdp-probe.log" 2>&1 &
+          browser_pid=$!
+          trap 'kill "$browser_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 150); do
+            if [ -f "$profile/DevToolsActivePort" ]; then
+              port=$(head -n 1 "$profile/DevToolsActivePort")
+              if curl --silent --show-error --fail "http://127.0.0.1:$port/json/list"; then
+                exit 0
+              fi
+            fi
+            sleep 0.2
+          done
+          cat "$RUNNER_TEMP/chrome-cdp-probe.log"
+          exit 1
       - name: Full frontend suite
-        run: pnpm test
+        run: |
+          # Same suite and order as pnpm test; pin its browser fixtures to the probed browser.
+          pnpm run test:web
+          pnpm run test:form-modal-layout
+          pnpm run test:provider-card-layout
+          pnpm run test:provider-list-drag --browser /usr/bin/google-chrome
+          pnpm run test:provider-list-locate --browser /usr/bin/google-chrome
+          pnpm run test:official-account-card --browser /usr/bin/google-chrome
+          pnpm run test:codex-official-accounts --browser /usr/bin/google-chrome
+          pnpm run test:provider-card-spacing --browser /usr/bin/google-chrome
+          pnpm run test:official-accounts-shared
       - name: Production frontend build
         if: ${{ !cancelled() }}
         run: pnpm build
       - name: Codex subscription browser regression and screenshots
         if: ${{ !cancelled() }}
-        run: node scripts/omp-codex-validation/run.mjs --output "$RUNNER_TEMP/omp-ui"
+        run: node scripts/omp-codex-validation/run.mjs --browser /usr/bin/google-chrome --output "$RUNNER_TEMP/omp-ui"
       - name: Upload fixture screenshots and checks only
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
