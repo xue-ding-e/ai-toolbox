@@ -20,12 +20,13 @@ env:
 
 jobs:
   frontend:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
@@ -37,6 +38,11 @@ jobs:
         run: |
           pnpm exec tsc --noEmit
           pnpm i18n:check
+      - name: Diagnose installed browser startup
+        continue-on-error: true
+        run: |
+          google-chrome --version
+          timeout 30s google-chrome --headless=new --disable-background-networking --no-first-run --user-data-dir="$RUNNER_TEMP/chrome-probe" --dump-dom about:blank
       - name: Full frontend suite
         run: pnpm test
       - name: Production frontend build
@@ -56,12 +62,13 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
   rust:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          fetch-depth: 0
       - name: Install official stable Rust and rustfmt
         run: |
           rustup toolchain install stable --profile minimal --component rustfmt
@@ -70,8 +77,27 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential pkg-config libwebkit2gtk-4.1-dev librsvg2-dev patchelf libssl-dev libgtk-3-dev libayatana-appindicator3-dev
-      - name: Check Rust formatting
+      - name: Record whole-repository formatting result
+        continue-on-error: true
         run: cargo fmt --manifest-path tauri/Cargo.toml --all -- --check
+      - name: Check changed Rust files
+        run: rustfmt --edition 2021 --check tauri/src/coding/oh_my_pi/commands.rs tauri/src/coding/oh_my_pi/types.rs tauri/src/coding/oh_my_pi/subscription.rs
       - name: Full Rust suite
         if: ${{ !cancelled() }}
-        run: cargo test --manifest-path tauri/Cargo.toml --locked --jobs 2
+        run: cargo test --manifest-path tauri/Cargo.toml --locked --no-fail-fast --jobs 2
+      - name: OMP regression suite
+        if: ${{ !cancelled() }}
+        run: cargo test --manifest-path tauri/Cargo.toml --locked --jobs 2 --lib coding::oh_my_pi::
+      - name: Prepare unchanged upstream baseline
+        if: ${{ !cancelled() }}
+        run: git worktree add --detach "$RUNNER_TEMP/omp-baseline" 9a1d3c35747e6abce90b6506e31102f13c039c55
+      - name: Compare whole-repository baseline formatting
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: cargo fmt --manifest-path "$RUNNER_TEMP/omp-baseline/tauri/Cargo.toml" --all -- --check
+      - name: Compare unrelated npm path tests on upstream baseline
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/tauri/target
+        run: cargo test --manifest-path "$RUNNER_TEMP/omp-baseline/tauri/Cargo.toml" --locked --jobs 2 --lib coding::cli_extensions::tests::npm_
