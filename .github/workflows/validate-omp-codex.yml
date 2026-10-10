@@ -87,7 +87,8 @@ jobs:
         run: cargo test --manifest-path tauri/Cargo.toml --locked --no-fail-fast --jobs 2
       - name: OMP regression suite
         if: ${{ !cancelled() }}
-        run: cargo test --manifest-path tauri/Cargo.toml --locked --jobs 2 --lib coding::oh_my_pi::
+        run: |
+          cargo test --manifest-path tauri/Cargo.toml --locked --jobs 2 --lib coding::oh_my_pi::
       - name: Prepare unchanged upstream baseline
         if: ${{ !cancelled() }}
         run: git worktree add --detach "$RUNNER_TEMP/omp-baseline" 9a1d3c35747e6abce90b6506e31102f13c039c55
