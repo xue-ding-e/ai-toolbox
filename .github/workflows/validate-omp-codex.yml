@@ -66,7 +66,11 @@ jobs:
           done
           cat "$RUNNER_TEMP/chrome-cdp-probe.log"
           exit 1
+      - name: Codex subscription browser regression and screenshots
+        if: ${{ !cancelled() }}
+        run: node scripts/omp-codex-validation/run.mjs --browser /usr/bin/google-chrome --output "$RUNNER_TEMP/omp-ui"
       - name: Full frontend suite
+        if: ${{ !cancelled() }}
         run: |
           # Same suite and order as pnpm test; pin its browser fixtures to the probed browser.
           pnpm run test:web
@@ -81,9 +85,6 @@ jobs:
       - name: Production frontend build
         if: ${{ !cancelled() }}
         run: pnpm build
-      - name: Codex subscription browser regression and screenshots
-        if: ${{ !cancelled() }}
-        run: node scripts/omp-codex-validation/run.mjs --browser /usr/bin/google-chrome --output "$RUNNER_TEMP/omp-ui"
       - name: Upload fixture screenshots and checks only
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

@@ -1,6 +1,7 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { App, ConfigProvider, Form, Select, Typography, theme } from 'antd';
+import zhCN from 'antd/locale/zh_CN';
 import i18next from 'i18next';
 import { I18nextProvider } from 'react-i18next';
 import OmpCodexSubscriptionSection from '@/features/coding/oh_my_pi/components/OmpCodexSubscriptionSection';
@@ -12,6 +13,7 @@ import '@/App.css';
 const mode = new URLSearchParams(location.search).get('theme') || 'light';
 const resolvedTheme = mode === 'system' ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : mode;
 document.documentElement.dataset.theme = resolvedTheme;
+document.documentElement.lang = 'zh-CN';
 await i18next.init({ lng: 'zh-CN', resources: { 'zh-CN': { translation: zh } } });
 const state = { mode, commits: [], componentCommits: [], inputEvents: [], refreshes: 0, invocations: [] };
 for (const type of ['focus', 'beforeinput', 'input', 'change', 'blur']) {
@@ -47,4 +49,18 @@ function Fixture() {
     </div>
   </main>;
 }
-createRoot(document.getElementById('root')).render(<ConfigProvider theme={{ algorithm: resolvedTheme === 'dark' ? theme.darkAlgorithm : theme.defaultAlgorithm, token: { colorPrimary: '#0958d9' } }}><App><I18nextProvider i18n={i18next}><Fixture /></I18nextProvider></App></ConfigProvider>);
+// Mirror every ConfigProvider prop from web/app/providers.tsx: locale, modal,
+// and theme. Production has no component token or componentSize overrides.
+// The shared viewport-safe modal CSS relies on production's centered placement.
+// Mounting Providers itself would run store/bootstrap/network/Tauri effects,
+// which this isolated UI fixture deliberately replaces with controlled data.
+const providerProps = {
+  locale: zhCN,
+  modal: { centered: true },
+  theme: {
+    algorithm: resolvedTheme === 'dark' ? theme.darkAlgorithm : theme.defaultAlgorithm,
+    token: { colorPrimary: '#1890ff' },
+  },
+};
+ConfigProvider.config({ holderRender: children => <ConfigProvider {...providerProps}>{children}</ConfigProvider> });
+createRoot(document.getElementById('root')).render(<ConfigProvider {...providerProps}><App><I18nextProvider i18n={i18next}><Fixture /></I18nextProvider></App></ConfigProvider>);
