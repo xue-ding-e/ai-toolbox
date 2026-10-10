@@ -13,7 +13,7 @@ const mode = new URLSearchParams(location.search).get('theme') || 'light';
 const resolvedTheme = mode === 'system' ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : mode;
 document.documentElement.dataset.theme = resolvedTheme;
 await i18next.init({ lng: 'zh-CN', resources: { 'zh-CN': { translation: zh } } });
-const state = { commits: [], refreshes: 0, invocations: [] };
+const state = { mode, commits: [], refreshes: 0, invocations: [] };
 window.__TAURI_INTERNALS__ = { invoke: async (command, input) => { state.invocations.push({ command, input }); if (command !== 'copy_text_to_clipboard') throw Error('Unexpected command ' + command); } };
 const longRoot = '/tmp/omp user/非常长的路径/' + 'project-'.repeat(28);
 const subscription = { status: 'unknown', hasApiKeyOverride: true, shell: 'posix', wslDistro: 'Ubuntu-24.04', loginCommand: `PI_CODING_AGENT_DIR='${longRoot}' omp --profile default login openai-codex`, modelsCommand: `PI_CODING_AGENT_DIR='${longRoot}' omp --profile default models openai-codex --json --no-extensions` };
