@@ -1,6 +1,7 @@
 import React from 'react';
 import { Modal, Form, Input, InputNumber, Button, Collapse, Table, Tag, Space, Tooltip, message, Switch, Typography, Checkbox, Popconfirm, Select, type TableProps } from 'antd';
 import { CaretRightOutlined, SettingOutlined, InfoCircleOutlined, DeleteOutlined } from '@ant-design/icons';
+import { ChevronDown, ChevronRight } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import JsonEditor from '@/components/common/JsonEditor';
 import {
@@ -95,6 +96,9 @@ const ConnectivityTestModal: React.FC<ConnectivityTestModalProps> = ({
   const [detailsModalOpen, setDetailsModalOpen] = React.useState(false);
   const [selectedResult, setSelectedResult] = React.useState<TestResult | null>(null);
   const [defaultTestModelId, setDefaultTestModelId] = React.useState<string | undefined>(undefined);
+  // The config section collapses by default so the model list is visible on open.
+  const [configExpanded, setConfigExpanded] = React.useState(false);
+  const promptValue = Form.useWatch('prompt', form) as string | undefined;
 
   // Track if modal was just opened (to avoid re-initializing on diagnostics change)
   const prevOpenRef = React.useRef(false);
@@ -137,6 +141,8 @@ const ConnectivityTestModal: React.FC<ConnectivityTestModalProps> = ({
       setVisionProbe(diagnostics?.visionProbe ?? false);
       setDefaultTestModelId(resolvedDefaultTestModelId);
       setSelectedModelIds(resolvedDefaultTestModelId ? [resolvedDefaultTestModelId] : []);
+      // The modal stays mounted between opens, so reset the collapsed config.
+      setConfigExpanded(false);
 
       setResults(modelIds.map(id => ({
         key: id,
@@ -163,6 +169,22 @@ const ConnectivityTestModal: React.FC<ConnectivityTestModalProps> = ({
       message.error(t('common.error'));
     }
   }, [persistDefaultTestModel, t]);
+
+  const toggleConfigExpanded = React.useCallback(() => {
+    setConfigExpanded((expanded) => !expanded);
+  }, []);
+
+  const handleConfigHeaderKeyDown = React.useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    // Only react to keys on the header itself, not on controls inside it.
+    if (event.currentTarget !== event.target) {
+      return;
+    }
+
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      toggleConfigExpanded();
+    }
+  }, [toggleConfigExpanded]);
 
   const handleRunTest = async () => {
     // 检查是否选中了要测试的模型
@@ -331,6 +353,13 @@ const ConnectivityTestModal: React.FC<ConnectivityTestModalProps> = ({
       // 没有失败的：保持用户的勾选状态不变
 
     } catch (error) {
+      // A validation rejection can only come from the collapsed config section,
+      // so expand it — otherwise the invalid field stays invisible.
+      if (error && typeof error === 'object' && 'errorFields' in error) {
+        setConfigExpanded(true);
+        return;
+      }
+
       console.error('Test failed:', error);
       message.error(t('common.error'));
     } finally {
@@ -575,181 +604,219 @@ const ConnectivityTestModal: React.FC<ConnectivityTestModalProps> = ({
       styles={{ body: { paddingBottom: 16 } }}
     >
       <div className={styles.content}>
-        <section className={styles.sectionCard}>
-          <div className={styles.sectionHeader}>
-            <div className={styles.sectionTitle}>{t('opencode.connectivity.configSection')}</div>
-            <Typography.Text className={styles.sectionHint}>
-              {t('opencode.connectivity.configSectionHint')}
-            </Typography.Text>
+        <section className={`${styles.sectionCard} ${configExpanded ? '' : styles.configSectionCollapsed}`}>
+          <div
+            className={`${styles.sectionHeader} ${styles.configHeaderToggle} ${configExpanded ? styles.configHeaderExpanded : ''}`}
+            role="button"
+            tabIndex={0}
+            aria-expanded={configExpanded}
+            onClick={toggleConfigExpanded}
+            onKeyDown={handleConfigHeaderKeyDown}
+          >
+            <div className={styles.configHeaderMain}>
+              <div className={styles.sectionTitle}>
+                {configExpanded ? (
+                  <ChevronDown className={styles.configCaret} aria-hidden="true" />
+                ) : (
+                  <ChevronRight className={styles.configCaret} aria-hidden="true" />
+                )}
+                {t('opencode.connectivity.configSection')}
+              </div>
+              {configExpanded ? (
+                <Typography.Text className={styles.sectionHint}>
+                  {t('opencode.connectivity.configSectionHint')}
+                </Typography.Text>
+              ) : (
+                <Typography.Text className={styles.configSummary}>
+                  <span className={styles.configSummaryPrompt}>
+                    {promptValue?.replace(/\s+/g, ' ').trim() || t('common.notSet')}
+                  </span>
+                  <span className={styles.configSummarySeparator}>·</span>
+                  <span>
+                    {visionProbe
+                      ? t('opencode.connectivity.summaryVisionOn')
+                      : t('opencode.connectivity.summaryVisionOff')}
+                  </span>
+                  <span className={styles.configSummarySeparator}>·</span>
+                  <span className={styles.configSummaryModel}>
+                    {t('opencode.connectivity.summaryDefaultModel', {
+                      model: defaultTestModelId || t('common.notSet'),
+                    })}
+                  </span>
+                </Typography.Text>
+              )}
+            </div>
           </div>
 
-          <Form
-            className={styles.form}
-            form={form}
-          >
-            <div className={`${styles.promptItem} ${styles.formFieldRow}`}>
-              <div className={styles.fieldLabel}>
-                {t('opencode.connectivity.prompt')}
-              </div>
-              <div className={styles.fieldContent}>
-                <Form.Item
-                  style={{ marginBottom: 0 }}
-                  name="prompt"
-                  rules={[{ required: true }]}
-                >
-                  <Input.TextArea className={styles.promptInput} rows={3} />
-                </Form.Item>
-              </div>
-            </div>
-
-            <div className={styles.defaultModelPanel}>
-              <div className={styles.formFieldRow}>
+          <div hidden={!configExpanded} aria-hidden={!configExpanded}>
+            <Form
+              className={styles.form}
+              form={form}
+            >
+              <div className={`${styles.promptItem} ${styles.formFieldRow}`}>
                 <div className={styles.fieldLabel}>
-                  {t('opencode.connectivity.visionProbe')}
-                </div>
-                <div className={styles.fieldContent}>
-                  <Switch checked={visionProbe} onChange={setVisionProbe} />
-                  <Typography.Text className={styles.defaultModelHelp}>
-                    {t('opencode.connectivity.visionProbeHint')}
-                  </Typography.Text>
-                </div>
-              </div>
-            </div>
-
-            <div className={styles.defaultModelPanel}>
-              <div className={styles.formFieldRow}>
-                <div className={styles.fieldLabel}>
-                  {t('opencode.connectivity.defaultTestModel')}
+                  {t('opencode.connectivity.prompt')}
                 </div>
                 <div className={styles.fieldContent}>
                   <Form.Item
-                    className={styles.defaultModelItem}
-                    required
+                    style={{ marginBottom: 0 }}
+                    name="prompt"
+                    rules={[{ required: true }]}
                   >
-                    <Select
-                      value={defaultTestModelId}
-                      options={defaultModelOptions}
-                      onChange={handleDefaultTestModelChange}
-                      allowClear
-                      placeholder={t('opencode.connectivity.defaultTestModelPlaceholder')}
-                    />
+                    <Input.TextArea className={styles.promptInput} rows={3} />
                   </Form.Item>
-                  <Typography.Text className={styles.defaultModelHelp}>
-                    {t('opencode.connectivity.defaultTestModelHelp')}
-                  </Typography.Text>
                 </div>
               </div>
-            </div>
 
-            {!gatewayRequest ? <Collapse
-              className={styles.advancedCollapse}
-              ghost
-              activeKey={advancedActive}
-              onChange={setAdvancedActive}
-              items={[
-                {
-                  key: 'advanced',
-                  label: (
-                    <div className={styles.collapseLabel}>
-                      <div className={styles.collapseTitleRow}>
-                        <SettingOutlined className={styles.collapseIcon} />
-                        <div className={styles.collapseTitle}>{t('opencode.connectivity.moreParams')}</div>
-                        <Typography.Text className={styles.collapseHint}>
-                          {t('opencode.connectivity.moreParamsHint')}
-                        </Typography.Text>
+              <div className={styles.defaultModelPanel}>
+                <div className={styles.formFieldRow}>
+                  <div className={styles.fieldLabel}>
+                    {t('opencode.connectivity.visionProbe')}
+                  </div>
+                  <div className={styles.fieldContent}>
+                    <Switch checked={visionProbe} onChange={setVisionProbe} />
+                    <Typography.Text className={styles.defaultModelHelp}>
+                      {t('opencode.connectivity.visionProbeHint')}
+                    </Typography.Text>
+                  </div>
+                </div>
+              </div>
+
+              <div className={styles.defaultModelPanel}>
+                <div className={styles.formFieldRow}>
+                  <div className={styles.fieldLabel}>
+                    {t('opencode.connectivity.defaultTestModel')}
+                  </div>
+                  <div className={styles.fieldContent}>
+                    <Form.Item
+                      className={styles.defaultModelItem}
+                      required
+                    >
+                      <Select
+                        value={defaultTestModelId}
+                        options={defaultModelOptions}
+                        onChange={handleDefaultTestModelChange}
+                        allowClear
+                        placeholder={t('opencode.connectivity.defaultTestModelPlaceholder')}
+                      />
+                    </Form.Item>
+                    <Typography.Text className={styles.defaultModelHelp}>
+                      {t('opencode.connectivity.defaultTestModelHelp')}
+                    </Typography.Text>
+                  </div>
+                </div>
+              </div>
+
+              {!gatewayRequest ? <Collapse
+                className={styles.advancedCollapse}
+                ghost
+                activeKey={advancedActive}
+                onChange={setAdvancedActive}
+                items={[
+                  {
+                    key: 'advanced',
+                    label: (
+                      <div className={styles.collapseLabel}>
+                        <div className={styles.collapseTitleRow}>
+                          <SettingOutlined className={styles.collapseIcon} />
+                          <div className={styles.collapseTitle}>{t('opencode.connectivity.moreParams')}</div>
+                          <Typography.Text className={styles.collapseHint}>
+                            {t('opencode.connectivity.moreParamsHint')}
+                          </Typography.Text>
+                        </div>
                       </div>
-                    </div>
-                  ),
-                  children: (
-                    <div className={styles.advancedContent}>
-                      <div className={styles.metricsRow}>
-                        <div className={styles.metricsGrid}>
-                          <div className={styles.metricCard}>
-                            <Typography.Text className={styles.metricLabel}>
-                              {t('opencode.connectivity.temperature')}
-                            </Typography.Text>
+                    ),
+                    children: (
+                      <div className={styles.advancedContent}>
+                        <div className={styles.metricsRow}>
+                          <div className={styles.metricsGrid}>
+                            <div className={styles.metricCard}>
+                              <Typography.Text className={styles.metricLabel}>
+                                {t('opencode.connectivity.temperature')}
+                              </Typography.Text>
+                              <Form.Item
+                                name="temperature"
+                                style={{ marginBottom: 0 }}
+                              >
+                                <InputNumber disabled={!!apiFormat} min={0} max={2} step={0.1} style={{ width: '100%' }} />
+                              </Form.Item>
+                            </div>
+                            <div className={styles.metricCard}>
+                              <Typography.Text className={styles.metricLabel}>
+                                {t('opencode.connectivity.maxTokens')}
+                              </Typography.Text>
+                              <Form.Item
+                                name="maxTokens"
+                                style={{ marginBottom: 0 }}
+                              >
+                                <InputNumber disabled={!!apiFormat} min={1} step={100} style={{ width: '100%' }} />
+                              </Form.Item>
+                            </div>
+                            <div className={styles.metricCard}>
+                              <Typography.Text className={styles.metricLabel}>
+                                {t('opencode.connectivity.stream')}
+                              </Typography.Text>
+                              <Form.Item
+                                name="stream"
+                                valuePropName="checked"
+                                style={{ marginBottom: 0 }}
+                              >
+                                <Switch disabled={!!apiFormat} />
+                              </Form.Item>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className={`${styles.jsonField} ${styles.jsonFieldRow}`}>
+                          <div className={styles.jsonLabel}>
+                            {t('opencode.connectivity.customHeaders')}
+                            <Tooltip title={t('opencode.connectivity.customHeadersHint')}>
+                              <InfoCircleOutlined className={styles.jsonLabelHint} />
+                            </Tooltip>
+                          </div>
+                          <div className={styles.jsonEditorWrap}>
                             <Form.Item
-                              name="temperature"
                               style={{ marginBottom: 0 }}
                             >
-                              <InputNumber disabled={!!apiFormat} min={0} max={2} step={0.1} style={{ width: '100%' }} />
+                              <JsonEditor
+                                value={headersJson}
+                                onChange={(val, valid) => { setHeadersJson(val); setHeadersValid(valid); }}
+                                mode="text"
+                                height={150}
+                                placeholder="{}"
+                              />
                             </Form.Item>
                           </div>
-                          <div className={styles.metricCard}>
-                            <Typography.Text className={styles.metricLabel}>
-                              {t('opencode.connectivity.maxTokens')}
-                            </Typography.Text>
+                        </div>
+
+                        <div className={`${styles.jsonField} ${styles.jsonFieldRow}`}>
+                          <div className={styles.jsonLabel}>
+                            {t('opencode.connectivity.customBody')}
+                            <Tooltip title={t('opencode.connectivity.customBodyHint')}>
+                              <InfoCircleOutlined className={styles.jsonLabelHint} />
+                            </Tooltip>
+                          </div>
+                          <div className={styles.jsonEditorWrap}>
                             <Form.Item
-                              name="maxTokens"
                               style={{ marginBottom: 0 }}
                             >
-                              <InputNumber disabled={!!apiFormat} min={1} step={100} style={{ width: '100%' }} />
-                            </Form.Item>
-                          </div>
-                          <div className={styles.metricCard}>
-                            <Typography.Text className={styles.metricLabel}>
-                              {t('opencode.connectivity.stream')}
-                            </Typography.Text>
-                            <Form.Item
-                              name="stream"
-                              valuePropName="checked"
-                              style={{ marginBottom: 0 }}
-                            >
-                              <Switch disabled={!!apiFormat} />
+                              <JsonEditor
+                                value={bodyJson}
+                                onChange={(val, valid) => { setBodyJson(val); setBodyValid(valid); }}
+                                mode="text"
+                                height={150}
+                                placeholder="{}"
+                              />
                             </Form.Item>
                           </div>
                         </div>
                       </div>
-
-                      <div className={`${styles.jsonField} ${styles.jsonFieldRow}`}>
-                        <div className={styles.jsonLabel}>
-                          {t('opencode.connectivity.customHeaders')}
-                          <Tooltip title={t('opencode.connectivity.customHeadersHint')}>
-                            <InfoCircleOutlined className={styles.jsonLabelHint} />
-                          </Tooltip>
-                        </div>
-                        <div className={styles.jsonEditorWrap}>
-                          <Form.Item
-                            style={{ marginBottom: 0 }}
-                          >
-                            <JsonEditor
-                              value={headersJson}
-                              onChange={(val, valid) => { setHeadersJson(val); setHeadersValid(valid); }}
-                              mode="text"
-                              height={150}
-                              placeholder="{}"
-                            />
-                          </Form.Item>
-                        </div>
-                      </div>
-
-                      <div className={`${styles.jsonField} ${styles.jsonFieldRow}`}>
-                        <div className={styles.jsonLabel}>
-                          {t('opencode.connectivity.customBody')}
-                          <Tooltip title={t('opencode.connectivity.customBodyHint')}>
-                            <InfoCircleOutlined className={styles.jsonLabelHint} />
-                          </Tooltip>
-                        </div>
-                        <div className={styles.jsonEditorWrap}>
-                          <Form.Item
-                            style={{ marginBottom: 0 }}
-                          >
-                            <JsonEditor
-                              value={bodyJson}
-                              onChange={(val, valid) => { setBodyJson(val); setBodyValid(valid); }}
-                              mode="text"
-                              height={150}
-                              placeholder="{}"
-                            />
-                          </Form.Item>
-                        </div>
-                      </div>
-                    </div>
-                  )
-                }
-              ]}
-            /> : null}
-          </Form>
+                    )
+                  }
+                ]}
+              /> : null}
+            </Form>
+          </div>
         </section>
 
         <section className={styles.sectionCard}>

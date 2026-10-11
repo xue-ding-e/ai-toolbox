@@ -2194,7 +2194,10 @@
       "visionPassed": "可读图",
       "visionFailed": "不可读图",
       "visionUnavailable": "未测试",
-      "visionDeclaredMismatch": "与声明的视觉能力不一致"
+      "visionDeclaredMismatch": "与声明的视觉能力不一致",
+      "summaryVisionOn": "视觉开",
+      "summaryVisionOff": "视觉关",
+      "summaryDefaultModel": "默认模型：{{model}}"
     },
     "modelFilter": {
       "modeLabel": "模型过滤",

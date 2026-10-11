@@ -15,6 +15,9 @@
 - “更多选项”的 V1→V2 开关调用后端文件迁移命令；开关状态从当前配置路径旁的 V1 备份探测，不能另存一份可能与文件状态分叉的前端持久化布尔值。切换成功后必须重读配置并刷新托盘。前端始终按 V1 编辑结构读写，**不要**自行识别或拼装 V2 的 `providers`/`plugins`/`agents`/`mcp` 形状；后端 `v2_migration` 按 `../opencode` 官方 `migrate.ts` 在读写边界转换，前端对 V2 文件字段的任何假设都会在保存时被后端再次转换。页头在迁移未开启时显示可关闭的 V2 提示，关闭状态只记在 `localStorage` 的 `opencode.v2MigrationHintDismissed`，不要写成配置或开关状态。
 - 共享连通性弹窗允许调用方传入 `apiFormat=openai-codex-responses`：该接口只接受流式诊断，温度与输出上限控件禁用；普通 OpenCode 调用不传此标记，保持原有选项与请求格式。
 - 共享连通性弹窗的「发送测试图片」(issue #410) 开关写入 `diagnostics.visionProbe` 并随请求下发；结果表新增「视觉」列消费 `visionStatus`，并用共享纯函数 `shared/providerConnectivity/visionProbe.ts` 的 `declaredVisionCapability` / `visionProbeMismatchesDeclaration` 与模型声明的 `attachment`/`vision`/`modalities.input` 做比对，不一致时高亮提示。声明未知或未测试(`unavailable`)不算不一致。判定逻辑不要写进组件，保持纯函数可测。
+- 共享连通性弹窗的「测试配置」section 默认**收起**，只留一行 header + 摘要（prompt · 视觉 · 默认模型）。收起是为了让模型列表在弹窗打开的第一屏可见——展开态配置区约 438px，会把列表推到折叠线以下。展开态必须与收起前完全一致（同一 Form、同一字段结构、同一「更多参数」Collapse）。Prompt 是必填项，因此 `handleRunTest` 捕获到 antd 校验拒绝（`errorFields`）时必须先展开配置区再返回，否则错误框藏在隐藏区域里，用户只会看到点击无反应。
+- 上述收起态**不能沿用 `.sectionCard` 的 18px padding**：卡片里只有一行文字时，那圈 padding 就是上下各 18px 的空档，而 header 自身的负 margin 还会让它变成上 12px / 下 30px 的不对称留白，整张卡片看起来半空。收起时改用 `.sectionCard.configSectionCollapsed` 把 padding 交给 header（`12px var(--config-section-padding-inline)`），并 `border-radius: inherit` 保住卡片圆角。验收用 `pnpm test:connectivity-modal-layout` 的 `collapsedHeaderIsCentered` 守住这条，别把高度阈值放宽回 80px——71px 的旧值就是带着这处不对称留白通过的。
+- 收起态规则的选择器必须写成 **`.sectionCard.configSectionCollapsed`（两个类）**，不能只写 `.configSectionCollapsed`：文件末尾 `@media (max-width: 768px)` 里的 `.sectionCard { padding: 14px }` 与单类选择器**特异性相同**，靠后即胜出，于是窄屏下收起卡片被卡片和 header 各撑一次 padding，标题内缩 14px 并与展开态错位。宽屏不暴露，只有窄视口复现。`--config-section-padding-inline` 变量负责让 header 的内边距跟着断点走，别把它写回硬编码值。这条由验收的窄屏用例（700px）守住。
 
 ## 核心设计决策（Why）
 
@@ -103,3 +106,4 @@ sequenceDiagram
 - 改 Agent 配置时至少验证：内置 Agent 模型覆盖、自定义 Agent、未知字段往返、删除 Provider/模型后的引用清理，以及 `agent` 与插件 `agents` 不混用。
 - 覆盖供应商和默认供应商删除保护运行 `web/test/features/coding/opencode/utils/providerMutations.test.ts`。
 - 改“其他配置”的保存基底或 `JsonEditor` 失焦回调时运行 `web/test/features/coding/opencode/utils/openCodeOtherConfig.test.ts`；要验证真实 Monaco 失焦链路（含 issue #406 的回归）走 `pnpm test:json-editor-blur`（本地浏览器 fixture，不进 CI）。
+- 改共享连通性弹窗的「测试配置」折叠布局时运行 `pnpm test:connectivity-modal-layout`（浏览器 fixture，在 CI 链中）。它锁定：配置区默认收起、收起态模型表在首屏内、收起态表单控件不进 tab 序、摘要行不溢出、以及校验被拒时自动展开配置区。

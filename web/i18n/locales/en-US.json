@@ -2197,7 +2197,10 @@
       "visionPassed": "Reads images",
       "visionFailed": "No vision",
       "visionUnavailable": "Not tested",
-      "visionDeclaredMismatch": "Differs from declared vision capability"
+      "visionDeclaredMismatch": "Differs from declared vision capability",
+      "summaryVisionOn": "Vision on",
+      "summaryVisionOff": "Vision off",
+      "summaryDefaultModel": "Default model: {{model}}"
     },
     "modelFilter": {
       "modeLabel": "Model Filter",

@@ -12,6 +12,8 @@
 }
 
 .sectionCard {
+  --config-section-padding-inline: 18px;
+
   border: 1px solid var(--color-border);
   border-radius: 16px;
   background: var(--color-bg-elevated);
@@ -25,6 +27,91 @@
   gap: 8px;
   flex-wrap: wrap;
   margin-bottom: 16px;
+}
+
+.configHeaderToggle {
+  align-items: center;
+  cursor: pointer;
+  border-radius: 8px;
+  margin: -6px -8px 6px;
+  padding: 6px 8px;
+  transition: background 0.2s ease;
+
+  &:hover {
+    background: var(--color-bg-hover);
+  }
+}
+
+/*
+ * Collapsed, the card holds nothing but the header row, so the section's own
+ * padding would show up as dead space above and below it — and the header's
+ * negative top margin made that space lopsided (12px above, 30px below). Hand
+ * the padding to the header instead, so the row is the card.
+ */
+/*
+ * Doubled up with `.sectionCard` on purpose: the narrow-viewport rule near the
+ * end of this file sets `.sectionCard { padding: 14px }`, and at equal
+ * specificity that later rule wins, leaving the collapsed card padded twice —
+ * once by the card and again by the header.
+ */
+.sectionCard.configSectionCollapsed {
+  padding: 0;
+
+  .configHeaderToggle {
+    margin: 0;
+    padding: 12px var(--config-section-padding-inline);
+    border-radius: inherit;
+  }
+}
+
+.configHeaderExpanded {
+  margin-bottom: 10px;
+}
+
+.configHeaderMain {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.configCaret {
+  width: 14px;
+  height: 14px;
+  margin-right: 6px;
+  color: var(--color-text-tertiary);
+  vertical-align: -2px;
+}
+
+.configSummary {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+}
+
+.configSummaryPrompt {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  max-width: 320px;
+}
+
+.configSummaryModel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.configSummarySeparator {
+  color: var(--color-text-tertiary);
+  flex-shrink: 0;
 }
 
 .sectionTitle {
@@ -292,6 +379,8 @@
 
 @media (max-width: 768px) {
   .sectionCard {
+    --config-section-padding-inline: 14px;
+
     padding: 14px;
   }
 
@@ -308,5 +397,19 @@
 
   .defaultModelPanel {
     padding: 12px 14px;
+  }
+
+  .configHeaderMain {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+
+  .configSummary {
+    flex-wrap: wrap;
+  }
+
+  .configSummaryPrompt {
+    max-width: none;
   }
 }
