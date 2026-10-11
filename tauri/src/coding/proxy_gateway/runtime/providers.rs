@@ -1,7 +1,8 @@
 use crate::coding::proxy_gateway::types::{
-    normalize_pricing_model_source, CodexChatReasoningMeta, CustomHeaderOverride, GatewayCliKey,
-    GatewayProviderProfileReference, GatewayProxyMode, ModelRewriteRule, ProviderGatewayMeta,
-    ProviderPriorityEntry, ProxyGatewaySettings,
+    normalize_pricing_model_source, normalize_service_tier, CodexChatReasoningMeta,
+    CustomHeaderOverride, GatewayCliKey, GatewayProviderProfileReference, GatewayProxyMode,
+    ModelRewriteRule, ModelServiceTierRule, ProviderGatewayMeta, ProviderPriorityEntry,
+    ProxyGatewaySettings,
 };
 use crate::coding::proxy_gateway::{
     aggregate_naming::{
@@ -1082,7 +1083,20 @@ fn provider_meta_from_record(
         .unwrap_or_else(|| default_pricing_model_source.clone()),
         custom_headers: custom_headers_from_meta(meta_value),
         model_rewrites: model_rewrites_from_meta(meta_value),
+        model_service_tiers: model_service_tiers_from_meta(meta_value),
         declared_models: Vec::new(),
+        fast_cost_multiplier: json_string_compat(
+            meta_value,
+            "fast_cost_multiplier",
+            "fastCostMultiplier",
+        )
+        .filter(|value| !value.trim().is_empty()),
+        ultrafast_cost_multiplier: json_string_compat(
+            meta_value,
+            "ultrafast_cost_multiplier",
+            "ultrafastCostMultiplier",
+        )
+        .filter(|value| !value.trim().is_empty()),
     };
     apply_gateway_profile_reference(cli_key, &mut meta);
     if meta.provider_type.is_none() {
@@ -1472,6 +1486,35 @@ fn model_rewrites_from_meta(meta_value: &Value) -> Option<Vec<ModelRewriteRule>>
 
 fn model_rewrite_rules_from_meta(meta: &ProviderGatewayMeta) -> Vec<ModelRewriteRule> {
     meta.model_rewrites.clone().unwrap_or_default()
+}
+
+/// Read the provider's per-model service (speed) tier overrides (issue #414).
+///
+/// Blank model names and tiers the gateway does not recognize as premium are
+/// dropped here so the runtime never re-validates; the tier is kept as the wire
+/// value (`priority` / `ultrafast`) and forwarded verbatim.
+fn model_service_tiers_from_meta(meta_value: &Value) -> Option<Vec<ModelServiceTierRule>> {
+    let rules = meta_value
+        .get("model_service_tiers")
+        .or_else(|| meta_value.get("modelServiceTiers"))
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    serde_json::from_value::<ModelServiceTierRule>(item.clone()).ok()
+                })
+                .filter(|rule| {
+                    !rule.model.trim().is_empty()
+                        && normalize_service_tier(&rule.service_tier).is_some()
+                })
+                .collect::<Vec<_>>()
+        })?;
+    if rules.is_empty() {
+        None
+    } else {
+        Some(rules)
+    }
 }
 
 fn json_string_compat(value: &Value, snake_key: &str, camel_key: &str) -> Option<String> {
@@ -3119,6 +3162,69 @@ base_url = "https://api.example.com/v1"
             None,
         );
         assert_eq!(empty.model_rewrites, None);
+    }
+
+    #[test]
+    fn provider_meta_reads_model_service_tiers_and_drops_unknown_tiers() {
+        let meta = provider_meta_from_record(
+            GatewayCliKey::Codex,
+            &serde_json::json!({
+                "category": "custom",
+                "meta": {
+                    "modelServiceTiers": [
+                        { "model": "gpt-5.6-sol", "service_tier": "priority" },
+                        { "model": "gpt-5.6-astra", "service_tier": "fast" },
+                        { "model": "  ", "service_tier": "priority" },
+                        { "model": "gpt-5.6-sol", "service_tier": "standard" }
+                    ]
+                }
+            }),
+            None,
+        );
+
+        assert_eq!(
+            meta.model_service_tiers,
+            Some(vec![
+                ModelServiceTierRule {
+                    model: "gpt-5.6-sol".to_string(),
+                    service_tier: "priority".to_string(),
+                },
+                ModelServiceTierRule {
+                    model: "gpt-5.6-astra".to_string(),
+                    service_tier: "fast".to_string(),
+                },
+            ])
+        );
+    }
+
+    #[test]
+    fn provider_meta_reads_snake_case_model_service_tiers_and_defaults_to_none() {
+        let meta = provider_meta_from_record(
+            GatewayCliKey::Codex,
+            &serde_json::json!({
+                "category": "custom",
+                "meta": {
+                    "model_service_tiers": [
+                        { "model": "gpt-5.6-sol", "service_tier": "ultrafast" }
+                    ]
+                }
+            }),
+            None,
+        );
+        assert_eq!(
+            meta.model_service_tiers,
+            Some(vec![ModelServiceTierRule {
+                model: "gpt-5.6-sol".to_string(),
+                service_tier: "ultrafast".to_string(),
+            }])
+        );
+
+        let empty = provider_meta_from_record(
+            GatewayCliKey::Codex,
+            &serde_json::json!({ "category": "custom", "meta": {} }),
+            None,
+        );
+        assert_eq!(empty.model_service_tiers, None);
     }
 
     #[test]

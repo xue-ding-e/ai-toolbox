@@ -1,4 +1,4 @@
-use super::types::GatewayCliKey;
+use super::types::{normalize_service_tier, GatewayCliKey};
 use serde_json::Value;
 
 const MAX_SSE_USAGE_BUFFER_BYTES: usize = 256 * 1024;
@@ -65,6 +65,26 @@ pub fn stable_usage_request_id(
     }
 }
 
+/// Canonical service tier an upstream confirmed in a protocol envelope.
+///
+/// Accepts both a bare response object (`/service_tier`, Chat and non-streaming
+/// Responses) and a Responses stream event that nests the snapshot under
+/// `response` (`/response/service_tier`). Values the gateway does not bill —
+/// including the explicit `default` an upstream that never implements the echo
+/// returns — map to `None`, so callers fall back to the requested tier instead
+/// of silently dropping the premium.
+pub fn served_service_tier(body: &[u8]) -> Option<&'static str> {
+    let value: Value = serde_json::from_slice(body).ok()?;
+    service_tier_from_value(&value)
+}
+
+fn service_tier_from_value(value: &Value) -> Option<&'static str> {
+    ["/service_tier", "/response/service_tier"]
+        .iter()
+        .find_map(|path| value.pointer(path)?.as_str())
+        .and_then(normalize_service_tier)
+}
+
 #[derive(Debug)]
 pub struct SseUsageCollector {
     buffer: Vec<u8>,
@@ -79,6 +99,10 @@ pub struct SseUsageCollector {
     /// Distinct from `GatewayStreamOutcome`: this is *what the upstream terminal
     /// said*, which feeds `classify_stream_outcome` together with write success.
     terminal_kind: Option<SseTerminalKind>,
+    /// Last canonical service tier seen in the stream (last-wins: the terminal
+    /// snapshot is the upstream's final word, while `response.created` can still
+    /// carry the requested tier).
+    service_tier: Option<&'static str>,
 }
 
 /// The protocol-level terminal event kind carried by an SSE block. Required so
@@ -121,6 +145,7 @@ impl SseUsageCollector {
                 .filter(|value| !value.is_empty())
                 .map(ToString::to_string),
             terminal_kind: None,
+            service_tier: None,
         }
     }
 
@@ -162,6 +187,12 @@ impl SseUsageCollector {
     /// `GatewayStreamOutcome` instead of collapsing into two booleans.
     pub fn terminal_kind(&self) -> Option<SseTerminalKind> {
         self.terminal_kind
+    }
+
+    /// Canonical service tier the upstream confirmed while streaming, if any.
+    /// MUST be read before [`Self::finish`], which consumes the collector.
+    pub fn service_tier(&self) -> Option<&'static str> {
+        self.service_tier
     }
 
     /// Ingest a chunk for terminal-event tracking only, without a cli identity
@@ -305,6 +336,9 @@ impl SseUsageCollector {
     }
 
     fn merge_event(&mut self, cli_key: GatewayCliKey, value: &Value) {
+        if let Some(tier) = service_tier_from_value(value) {
+            self.service_tier = Some(tier);
+        }
         let mut parsed =
             from_json_response_with_provider_type(cli_key, value, self.provider_type.as_deref());
         if parsed.envelope_id.is_none() {
@@ -1426,6 +1460,64 @@ data: [DONE]
         );
         assert!(!collector.discarding_oversized_block);
         assert_eq!(collector.terminal_kind(), Some(SseTerminalKind::Success));
+    }
+
+    #[test]
+    fn served_service_tier_reads_bare_and_nested_envelopes() {
+        // Chat / non-streaming Responses put the field at the top level.
+        assert_eq!(
+            served_service_tier(br#"{"service_tier":"priority"}"#),
+            Some("fast")
+        );
+        assert_eq!(
+            served_service_tier(br#"{"service_tier":"fast"}"#),
+            Some("fast")
+        );
+        assert_eq!(
+            served_service_tier(br#"{"service_tier":"ultrafast"}"#),
+            Some("ultrafast")
+        );
+        // Responses stream events nest the response snapshot.
+        assert_eq!(
+            served_service_tier(
+                br#"{"type":"response.completed","response":{"service_tier":"priority"}}"#
+            ),
+            Some("fast")
+        );
+        // Non-premium / unusable values never bill.
+        assert_eq!(served_service_tier(br#"{"service_tier":"default"}"#), None);
+        assert_eq!(served_service_tier(br#"{"service_tier":"auto"}"#), None);
+        assert_eq!(served_service_tier(br#"{"service_tier":"flex"}"#), None);
+        assert_eq!(served_service_tier(br#"{"service_tier":null}"#), None);
+        assert_eq!(served_service_tier(br#"{"service_tier":1}"#), None);
+        assert_eq!(
+            served_service_tier(br#"{"response":{"service_tier":"scale"}}"#),
+            None
+        );
+        assert_eq!(served_service_tier(b"not json"), None);
+        assert_eq!(served_service_tier(br#"{"model":"gpt-5.6-sol"}"#), None);
+    }
+
+    #[test]
+    fn sse_usage_collector_keeps_the_last_confirmed_service_tier() {
+        let mut collector = SseUsageCollector::default();
+        collector.push_chunk(
+            GatewayCliKey::Codex,
+            b"data: {\"type\":\"response.created\",\"response\":{\"service_tier\":\"priority\"}}\n\n",
+        );
+        assert_eq!(collector.service_tier(), Some("fast"));
+        collector.push_chunk(
+            GatewayCliKey::Codex,
+            b"data: {\"type\":\"response.completed\",\"response\":{\"service_tier\":\"ultrafast\"}}\n\n",
+        );
+        assert_eq!(collector.service_tier(), Some("ultrafast"));
+        // A later unusable echo (`default`) must not erase the confirmed tier.
+        collector.push_chunk(
+            GatewayCliKey::Codex,
+            b"data: {\"type\":\"response.completed\",\"response\":{\"service_tier\":\"default\"}}\n\n",
+        );
+        assert_eq!(collector.service_tier(), Some("ultrafast"));
+        let _ = collector.finish(GatewayCliKey::Codex);
     }
 
     #[test]

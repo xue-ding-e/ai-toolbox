@@ -45,12 +45,13 @@ use crate::coding::proxy_gateway::transformer::{
     ConversionContext, ConversionRoute, InstructionPlacement,
 };
 use crate::coding::proxy_gateway::types::{
-    CodexChatReasoningMeta, GatewayCliKey, GatewayFailoverEvent, GatewayProviderAttempt,
-    GatewayProxyMode, GatewayStreamOutcome, ProviderGatewayMeta, ProviderModelHealthKey,
+    normalize_service_tier, service_tier_wire_value, CodexChatReasoningMeta, GatewayCliKey,
+    GatewayFailoverEvent, GatewayProviderAttempt, GatewayProxyMode, GatewayStreamOutcome,
+    ProviderGatewayMeta, ProviderModelHealthKey,
 };
 use crate::coding::proxy_gateway::usage_parser::{
     flattened_flush_boundary, for_each_flattened_sse_field, from_response_body_with_provider_type,
-    TokenUsage,
+    served_service_tier, TokenUsage,
 };
 use crate::db::SqliteDbState;
 use crate::http_client::{self, ProxyMode};
@@ -2175,6 +2176,7 @@ async fn build_gateway_response(
             provider.meta.provider_type.as_deref(),
             &body,
         );
+        let served_tier = served_service_tier(&body).map(ToString::to_string);
 
         return Ok(DebugHttpResponse {
             privacy: None,
@@ -2193,6 +2195,9 @@ async fn build_gateway_response(
             provider_name: Some(provider.name.clone()),
             requested_model: None,
             upstream_model_id: None,
+            served_service_tier: served_tier,
+            fast_cost_multiplier: provider.meta.fast_cost_multiplier.clone(),
+            ultrafast_cost_multiplier: provider.meta.ultrafast_cost_multiplier.clone(),
             upstream_request_body: Some(upstream_body_snapshot),
             target_protocol: Some(provider.target_protocol),
             upstream_response_body: Some(upstream_response_body),
@@ -2290,6 +2295,9 @@ async fn build_gateway_response(
             provider_name: Some(provider.name.clone()),
             requested_model: None,
             upstream_model_id: None,
+            served_service_tier: None,
+            fast_cost_multiplier: provider.meta.fast_cost_multiplier.clone(),
+            ultrafast_cost_multiplier: provider.meta.ultrafast_cost_multiplier.clone(),
             upstream_request_body: Some(upstream_body_snapshot),
             target_protocol: Some(provider.target_protocol),
             upstream_response_body: None,
@@ -2434,6 +2442,7 @@ async fn build_gateway_response(
         provider.meta.provider_type.as_deref(),
         &body,
     );
+    let served_tier = served_service_tier(&body).map(ToString::to_string);
     let stored_upstream_response_body =
         (upstream_response_body != body).then_some(upstream_response_body);
     let stored_upstream_response_body_bytes = stored_upstream_response_body
@@ -2489,6 +2498,9 @@ async fn build_gateway_response(
         provider_name: Some(provider.name.clone()),
         requested_model: None,
         upstream_model_id: None,
+        served_service_tier: served_tier,
+        fast_cost_multiplier: provider.meta.fast_cost_multiplier.clone(),
+        ultrafast_cost_multiplier: provider.meta.ultrafast_cost_multiplier.clone(),
         upstream_request_body: Some(upstream_body_snapshot),
         target_protocol: Some(provider.target_protocol),
         upstream_response_body: stored_upstream_response_body,
@@ -4512,6 +4524,7 @@ fn buffered_gateway_response(
         provider.meta.provider_type.as_deref(),
         &body,
     );
+    let served_tier = served_service_tier(&body).map(ToString::to_string);
     let upstream_response_body_bytes = upstream_response_body
         .as_ref()
         .map(|body| body.len() as u64)
@@ -4536,6 +4549,9 @@ fn buffered_gateway_response(
         pricing_model_source: Some(provider.meta.pricing_model_source.clone()),
         requested_model: None,
         upstream_model_id: None,
+        served_service_tier: served_tier,
+        fast_cost_multiplier: provider.meta.fast_cost_multiplier.clone(),
+        ultrafast_cost_multiplier: provider.meta.ultrafast_cost_multiplier.clone(),
         upstream_request_body: Some(upstream_body_snapshot),
         target_protocol: Some(provider.target_protocol),
         upstream_response_body,
@@ -5545,6 +5561,81 @@ fn resolve_model_rewrite_rule(
         .map(|rule| strip_one_m_context_marker(rule.to.trim()).to_string())
 }
 
+/// Resolve the forced service (speed) tier for `upstream_model_id`, if the
+/// provider declares one (`modelServiceTiers`, issue #414).
+///
+/// Matched trim + case-insensitively after stripping the `[1M]` context marker,
+/// the same normalization `modelRewrites` uses. The returned value is the
+/// canonical **wire** value, not the raw configured spelling.
+fn resolve_service_tier_override(
+    provider_meta: Option<&ProviderGatewayMeta>,
+    upstream_model_id: &str,
+) -> Option<&'static str> {
+    let normalized_model = strip_one_m_context_marker(upstream_model_id)
+        .trim()
+        .to_ascii_lowercase();
+    if normalized_model.is_empty() {
+        return None;
+    }
+    let rule = provider_meta?
+        .model_service_tiers
+        .as_deref()?
+        .iter()
+        .find(|rule| {
+            strip_one_m_context_marker(&rule.model)
+                .trim()
+                .to_ascii_lowercase()
+                == normalized_model
+        })?;
+    service_tier_wire_value(&rule.service_tier)
+}
+
+/// Force the provider's declared service tier onto an upstream request body.
+///
+/// `service_tier` is a Responses / Chat field, so non-OpenAI targets are left
+/// untouched. A body that already asks for a premium tier keeps the CLI's own
+/// choice: Codex's Fast / Ultrafast pick is a deliberate user action, and the
+/// provider rule only fills in the tier the CLI did not send. Billing reads the
+/// final upstream body (`observability::final_upstream_service_tier`), so the
+/// forced tier is charged at its own multiplier.
+fn apply_model_service_tier_override(
+    upstream_body: Vec<u8>,
+    provider_meta: Option<&ProviderGatewayMeta>,
+    upstream_model_id: &str,
+    target_protocol: AiProtocol,
+) -> Vec<u8> {
+    if !matches!(
+        target_protocol,
+        AiProtocol::OpenAiResponses | AiProtocol::OpenAiChat
+    ) {
+        return upstream_body;
+    }
+    let Some(forced_tier) = resolve_service_tier_override(provider_meta, upstream_model_id) else {
+        return upstream_body;
+    };
+    let Ok(mut value) = serde_json::from_slice::<Value>(&upstream_body) else {
+        return upstream_body;
+    };
+    if value
+        .get("service_tier")
+        .and_then(Value::as_str)
+        .and_then(normalize_service_tier)
+        .is_some()
+    {
+        return upstream_body;
+    }
+    let Some(object) = value.as_object_mut() else {
+        return upstream_body;
+    };
+    object.insert(
+        "service_tier".to_string(),
+        Value::String(forced_tier.to_string()),
+    );
+    // `forced_tier` is already the canonical wire value (`priority` /
+    // `ultrafast`), so a user spelling of `fast` never reaches the upstream.
+    serde_json::to_vec(&value).unwrap_or(upstream_body)
+}
+
 fn is_codex_auto_review_request(request: &DebugHttpRequest) -> bool {
     header_value_ci(&request.headers, "x-openai-subagent")
         .map(str::trim)
@@ -5756,7 +5847,7 @@ fn build_upstream_body(
         None,
         route_streaming,
         CodexResponsesCompactCompat::none(),
-            RemoteCompactionCompat::none(),
+        RemoteCompactionCompat::none(),
     )
     .map(|prepared| prepared.body)
 }
@@ -6082,6 +6173,15 @@ fn build_upstream_body_for_provider(
         target_protocol,
         provider_meta,
     )?;
+    // Per-model forced speed tier (issue #414): applied last, after every
+    // protocol conversion and outbound pipeline pass, so the injected tier is
+    // exactly what reaches the upstream.
+    let upstream_body = apply_model_service_tier_override(
+        upstream_body,
+        provider_meta,
+        upstream_model_id,
+        target_protocol,
+    );
     if cache_injection_enabled && target_protocol == AiProtocol::AnthropicMessages {
         return inject_cache_control_into_body(upstream_body).map(|body| PreparedUpstreamBody {
             body,
@@ -11188,7 +11288,7 @@ fn save_health_registry_if_needed(context: &GatewayRuntimeContext, changed: bool
 mod tests {
     use super::*;
     use crate::coding::proxy_gateway::types::{
-        CustomHeaderOverride, ModelRewriteRule, ProxyGatewaySettings,
+        CustomHeaderOverride, ModelRewriteRule, ModelServiceTierRule, ProxyGatewaySettings,
     };
 
     fn debug_request(body: &[u8]) -> DebugHttpRequest {
@@ -13527,6 +13627,138 @@ data: {data}\r\n\r\n"
         );
     }
 
+    fn service_tier_meta(model: &str, service_tier: &str) -> ProviderGatewayMeta {
+        ProviderGatewayMeta {
+            model_service_tiers: Some(vec![ModelServiceTierRule {
+                model: model.to_string(),
+                service_tier: service_tier.to_string(),
+            }]),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn forced_service_tier_fills_a_request_that_asked_for_standard() {
+        let meta = service_tier_meta("gpt-5.6-sol", "priority");
+
+        let body = apply_model_service_tier_override(
+            br#"{"model":"gpt-5.6-sol","service_tier":"default"}"#.to_vec(),
+            Some(&meta),
+            "gpt-5.6-sol",
+            AiProtocol::OpenAiResponses,
+        );
+
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body)
+                .unwrap()
+                .get("service_tier"),
+            Some(&Value::String("priority".to_string()))
+        );
+    }
+
+    #[test]
+    fn forced_service_tier_fills_a_request_that_omitted_the_tier() {
+        let meta = service_tier_meta("gpt-5.6-sol", "ultrafast");
+
+        let body = apply_model_service_tier_override(
+            br#"{"model":"gpt-5.6-sol","stream":true}"#.to_vec(),
+            Some(&meta),
+            "gpt-5.6-sol",
+            AiProtocol::OpenAiChat,
+        );
+
+        let value = serde_json::from_slice::<Value>(&body).unwrap();
+        assert_eq!(
+            value.get("service_tier"),
+            Some(&Value::String("ultrafast".to_string()))
+        );
+        assert_eq!(value.get("stream"), Some(&Value::Bool(true)));
+    }
+
+    #[test]
+    fn forced_service_tier_keeps_the_clis_own_premium_choice() {
+        let meta = service_tier_meta("gpt-5.6-sol", "priority");
+
+        let body = apply_model_service_tier_override(
+            br#"{"model":"gpt-5.6-sol","service_tier":"ultrafast"}"#.to_vec(),
+            Some(&meta),
+            "gpt-5.6-sol",
+            AiProtocol::OpenAiResponses,
+        );
+
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body)
+                .unwrap()
+                .get("service_tier"),
+            Some(&Value::String("ultrafast".to_string()))
+        );
+    }
+
+    #[test]
+    fn forced_service_tier_skips_models_without_a_rule_and_non_openai_targets() {
+        let meta = service_tier_meta("gpt-5.6-sol", "priority");
+        let body = br#"{"model":"gpt-5.6-astra"}"#.to_vec();
+
+        // A different model keeps its body byte for byte.
+        assert_eq!(
+            apply_model_service_tier_override(
+                body.clone(),
+                Some(&meta),
+                "gpt-5.6-astra",
+                AiProtocol::OpenAiResponses,
+            ),
+            body
+        );
+        // Anthropic / Gemini targets have no `service_tier` field to set.
+        assert_eq!(
+            apply_model_service_tier_override(
+                br#"{"model":"gpt-5.6-sol"}"#.to_vec(),
+                Some(&meta),
+                "gpt-5.6-sol",
+                AiProtocol::AnthropicMessages,
+            ),
+            br#"{"model":"gpt-5.6-sol"}"#.to_vec()
+        );
+    }
+
+    #[test]
+    fn forced_service_tier_matches_trim_case_insensitively_after_stripping_one_m() {
+        let meta = service_tier_meta(" GPT-5.6-Sol[1M] ", "priority");
+
+        assert_eq!(
+            resolve_service_tier_override(Some(&meta), "gpt-5.6-SOL"),
+            Some("priority")
+        );
+        assert_eq!(
+            resolve_service_tier_override(Some(&meta), " gpt-5.6-sol[1M]"),
+            Some("priority")
+        );
+        assert_eq!(resolve_service_tier_override(Some(&meta), ""), None);
+        assert_eq!(resolve_service_tier_override(None, "gpt-5.6-sol"), None);
+    }
+
+    #[test]
+    fn forced_service_tier_sends_the_canonical_wire_value_not_the_configured_spelling() {
+        // OpenAI rejects a literal `fast` on the request side (Codex normalizes
+        // it to `priority` itself), so a hand-written `fast` must not be
+        // forwarded verbatim.
+        let meta = service_tier_meta("gpt-5.6-sol", "FAST");
+
+        let body = apply_model_service_tier_override(
+            br#"{"model":"gpt-5.6-sol"}"#.to_vec(),
+            Some(&meta),
+            "gpt-5.6-sol",
+            AiProtocol::OpenAiResponses,
+        );
+
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body)
+                .unwrap()
+                .get("service_tier"),
+            Some(&Value::String("priority".to_string()))
+        );
+    }
+
     #[test]
     fn claude_single_exact_rewrite_rule_applies_before_passthrough() {
         let mut provider = claude_provider(UpstreamModelMapping::default());
@@ -13963,6 +14195,9 @@ data: {data}\r\n\r\n"
             pricing_model_source: None,
             requested_model: None,
             upstream_model_id: None,
+            served_service_tier: None,
+            fast_cost_multiplier: None,
+            ultrafast_cost_multiplier: None,
             upstream_request_body: None,
             upstream_response_body: None,
             upstream_response_body_bytes: 0,
@@ -16439,6 +16674,9 @@ data: {data}\r\n\r\n"
             pricing_model_source: None,
             requested_model: None,
             upstream_model_id: None,
+            served_service_tier: None,
+            fast_cost_multiplier: None,
+            ultrafast_cost_multiplier: None,
             upstream_request_body: None,
             upstream_response_body: None,
             upstream_response_body_bytes: 0,
@@ -16801,6 +17039,9 @@ data: {data}\r\n\r\n"
             pricing_model_source: None,
             requested_model: None,
             upstream_model_id: None,
+            served_service_tier: None,
+            fast_cost_multiplier: None,
+            ultrafast_cost_multiplier: None,
             upstream_request_body: None,
             upstream_response_body: None,
             upstream_response_body_bytes: 0,

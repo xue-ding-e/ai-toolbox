@@ -1269,6 +1269,8 @@ mod tests {
                 requested_model: Some("unknown".to_string()),
                 upstream_model_id: Some("unknown".to_string()),
                 reasoning_effort: None,
+                service_tier: None,
+                service_tier_multiplier: None,
                 upstream_url: Some(
                     "https://generativelanguage.googleapis.com/v1beta/models?key=secret&api-key=hyphen"
                         .to_string(),

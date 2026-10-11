@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 use super::schema::{sql_string_literal, DbTable, JsonFieldPath, ALL_TABLES};
 
-pub const TARGET_SCHEMA_VERSION: i32 = 26;
+pub const TARGET_SCHEMA_VERSION: i32 = 27;
 const FUTURE_SCHEMA_ERROR_PREFIX: &str = "AI_TOOLBOX_SQLITE_SCHEMA_TOO_NEW";
 
 pub fn run_all(conn: &mut Connection) -> Result<(), String> {
@@ -85,6 +85,9 @@ pub fn run_all(conn: &mut Connection) -> Result<(), String> {
     }
     if current_version < 26 {
         run_migration_step(conn, 26, migrate_v26)?;
+    }
+    if current_version < 27 {
+        run_migration_step(conn, 27, migrate_v27)?;
     }
 
     Ok(())
@@ -550,6 +553,15 @@ fn migrate_v26(conn: &Connection) -> Result<(), String> {
         DbTable::OmoNativePromptConfig,
         &JsonFieldPath::new("sort_index")?,
     )
+}
+
+/// Billed Fast/Ultrafast service tier (Codex `service_tier`) and the provider's
+/// effective extra multiplier for it. Compact metadata like v17's
+/// `reasoning_effort`: legacy and session rows stay NULL, and NULL on the tier
+/// means "no premium tier billed".
+fn migrate_v27(conn: &Connection) -> Result<(), String> {
+    add_column_if_missing(conn, "proxy_request_logs", "service_tier", "TEXT")?;
+    add_column_if_missing(conn, "proxy_request_logs", "service_tier_multiplier", "TEXT")
 }
 
 fn create_jsonb_table(conn: &Connection, table: DbTable) -> Result<(), String> {

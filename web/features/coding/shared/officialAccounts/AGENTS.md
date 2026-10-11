@@ -8,6 +8,7 @@
   - 列表行（list）：`▾ 账号列表 (n)`，右端是登录入口
   - 账号行：切换 / 保存 / 刷新 / 详情 / 删除
 - 各 CLI 只做两件事：把自家账号记录映射成 `OfficialAccountRowView`，再挑一个宿主。
+- **给新 CLI 接入时按 `docs/new-cli-onboarding-sop.md` §4.2.9 走**（判宿主 → 写映射 → 三条后端不变量 → 最小验证）；本文件是「为什么这样设计」，那份是「照着做」。
 
 ## Source of Truth
 

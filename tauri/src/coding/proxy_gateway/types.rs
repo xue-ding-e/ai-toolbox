@@ -320,6 +320,15 @@ pub struct ProviderGatewayMeta {
     pub allow_text_only_model_heuristic: bool,
     pub cost_multiplier: String,
     pub pricing_model_source: String,
+    /// Extra multiplier this channel charges on top of `cost_multiplier` when
+    /// it serves the Fast service tier (`service_tier = priority|fast`). Empty
+    /// means no premium (1.0): the recorded cost only changes once the user
+    /// opts in, because OpenAI publishes no single ratio for the tier.
+    #[serde(default, alias = "fastCostMultiplier")]
+    pub fast_cost_multiplier: Option<String>,
+    /// Same as [`Self::fast_cost_multiplier`] for the Ultrafast tier.
+    #[serde(default, alias = "ultrafastCostMultiplier")]
+    pub ultrafast_cost_multiplier: Option<String>,
     /// Provider-level custom request-header overrides applied to upstream
     /// requests. Each entry is one operation (`set`/`delete`/`rename`/`copy`).
     /// Applied last in `build_upstream_headers`, so overrides win over every
@@ -334,6 +343,13 @@ pub struct ProviderGatewayMeta {
     /// keep the pinned model) and wins over family/default mapping.
     #[serde(default, rename = "modelRewrites", alias = "model_rewrites")]
     pub model_rewrites: Option<Vec<ModelRewriteRule>>,
+    /// Provider-level per-model service (speed) tier overrides (issue #414).
+    /// When the upstream model matches `model` and the request does not
+    /// already ask for a premium tier, the gateway writes `service_tier`
+    /// before forwarding. Only OpenAI Chat / Responses targets honour it;
+    /// an explicit Fast / Ultrafast choice from the CLI always wins.
+    #[serde(default, rename = "modelServiceTiers", alias = "model_service_tiers")]
+    pub model_service_tiers: Option<Vec<ModelServiceTierRule>>,
     /// Upstream model ids this provider declares in its `modelCatalog`.
     ///
     /// Populated from `settingsConfig.modelCatalog.models` so aggregate mode can
@@ -354,6 +370,22 @@ pub struct ProviderGatewayMeta {
 pub struct ModelRewriteRule {
     pub from: String,
     pub to: String,
+}
+
+/// One per-model service (speed) tier override: when the upstream model matches
+/// `model` (exact, trim + case-insensitive after stripping the `[1M]` context
+/// marker), the gateway forwards `service_tier` to the upstream.
+///
+/// `service_tier` is the wire value itself — `priority` (Codex's Fast id) or
+/// `ultrafast` — so what the user picks is exactly what the upstream sees.
+/// Rules whose tier is not a recognized premium tier are dropped at parse time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelServiceTierRule {
+    pub model: String,
+    /// Wire tier forwarded to the upstream (`priority` / `ultrafast`).
+    #[serde(alias = "service_tier")]
+    pub service_tier: String,
 }
 
 /// One request-header override operation, mirroring axonhub's flat
@@ -425,8 +457,11 @@ impl Default for ProviderGatewayMeta {
             allow_text_only_model_heuristic: false,
             cost_multiplier: "1.0".to_string(),
             pricing_model_source: "upstream".to_string(),
+            fast_cost_multiplier: None,
+            ultrafast_cost_multiplier: None,
             custom_headers: None,
             model_rewrites: None,
+            model_service_tiers: None,
             declared_models: Vec::new(),
         }
     }
@@ -632,6 +667,60 @@ impl ProxyGatewaySettings {
             .and_then(|config| config.pricing_model_source.as_deref())
             .unwrap_or("upstream");
         normalize_pricing_model_source(source)
+    }
+}
+
+/// Extra cost multiplier the provider charges for the canonical service tier a
+/// request was billed under. Unset / blank / unknown tiers return `"1.0"`, so
+/// the default records the plain token cost: OpenAI publishes no single ratio
+/// (Fast is 2.5x on subscription allowance, 2x on purchased credits, ~1.6x on
+/// some API token tables), so the channel decides.
+pub fn service_tier_cost_multiplier(
+    fast_cost_multiplier: Option<&str>,
+    ultrafast_cost_multiplier: Option<&str>,
+    service_tier: Option<&str>,
+) -> String {
+    let configured = match service_tier {
+        Some(SERVICE_TIER_FAST) => fast_cost_multiplier,
+        Some(SERVICE_TIER_ULTRAFAST) => ultrafast_cost_multiplier,
+        _ => None,
+    };
+    configured
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("1.0")
+        .to_string()
+}
+
+/// Canonical service tier ids kept in the request summary. Codex exposes Fast
+/// mode as `service_tier = "priority"` (the legacy wire value) or `"fast"`;
+/// Ultrafast is `"ultrafast"`. Only these are recognized — anything else
+/// (`auto`, `default`, `flex`, vendor-specific values) is not a billed tier.
+pub const SERVICE_TIER_FAST: &str = "fast";
+pub const SERVICE_TIER_ULTRAFAST: &str = "ultrafast";
+
+/// Normalize a wire `service_tier` value to a canonical tier id. Unknown and
+/// non-premium values return `None` so callers fall back instead of guessing.
+pub fn normalize_service_tier(value: &str) -> Option<&'static str> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "priority" | "fast" => Some(SERVICE_TIER_FAST),
+        "ultrafast" => Some(SERVICE_TIER_ULTRAFAST),
+        _ => None,
+    }
+}
+
+/// Canonical tier id → the value to actually put on the wire.
+///
+/// `normalize_service_tier` accepts the `fast` spelling because upstreams may
+/// echo it, but OpenAI only accepts `priority` on the request side (a literal
+/// `fast` is rejected as an unsupported tier). Codex itself normalizes
+/// `fast` → `priority` before sending, so a user-configured tier is canonicalized
+/// the same way instead of being forwarded verbatim.
+pub fn service_tier_wire_value(value: &str) -> Option<&'static str> {
+    match normalize_service_tier(value)? {
+        SERVICE_TIER_FAST => Some("priority"),
+        SERVICE_TIER_ULTRAFAST => Some("ultrafast"),
+        _ => None,
     }
 }
 
@@ -959,6 +1048,10 @@ pub struct GatewayRequestLogItem {
     pub requested_model: Option<String>,
     pub upstream_model_id: String,
     pub reasoning_effort: Option<String>,
+    /// Canonical billed service tier (`fast` / `ultrafast`) when the request ran
+    /// on a premium OpenAI service tier, else `None`.
+    #[serde(default)]
+    pub service_tier: Option<String>,
     pub status_code: u16,
     pub success: bool,
     pub error_message: Option<String>,
@@ -1079,6 +1172,16 @@ pub struct GatewayRequestLogSummary {
     /// Explicit effort from the final upstream attempt, independent of body storage.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
+    /// Canonical billed service tier (`fast` / `ultrafast`), independent of body
+    /// storage. Prefers the tier the upstream confirmed in its response and
+    /// falls back to the tier requested in the final upstream body.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
+    /// Effective extra multiplier the provider charges for that tier, resolved
+    /// at request time so a later provider edit cannot rewrite history. `None`
+    /// on rows with no premium tier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier_multiplier: Option<String>,
     pub upstream_url: Option<String>,
     pub status_code: Option<u16>,
     /// Original HTTP status the upstream returned before the gateway rewrote a

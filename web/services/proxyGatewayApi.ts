@@ -312,6 +312,8 @@ export interface GatewayRequestLogItem {
   requested_model: string | null;
   upstream_model_id: string;
   reasoning_effort: string | null;
+  /** Billed premium service tier ('fast' / 'ultrafast'), else null. */
+  service_tier: string | null;
   status_code: number;
   success: boolean;
   error_message: string | null;
@@ -399,6 +401,8 @@ export interface GatewayRequestLogSummary {
   requested_model: string | null;
   upstream_model_id: string | null;
   reasoning_effort?: string | null;
+  /** Billed premium service tier ('fast' / 'ultrafast'), else null. */
+  service_tier?: string | null;
   upstream_url: string | null;
   status_code: number | null;
   upstream_status_code: number | null;

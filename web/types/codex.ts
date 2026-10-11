@@ -6,6 +6,7 @@
 
 import type { CustomHeaderEntry } from '@/features/coding/shared/providerHeaders/customHeadersUtils';
 import type { ModelRewriteEntry } from '@/features/coding/shared/providerModelRewrites/modelRewritesUtils';
+import type { ModelServiceTierEntry } from '@/features/coding/shared/providerServiceTiers/serviceTierOverridesUtils';
 
 export type CodexProviderCategory = 'official' | 'third_party' | 'custom';
 export type CodexApiFormat =
@@ -44,10 +45,23 @@ export interface GatewayProviderMeta {
   allowTextOnlyModelHeuristic?: boolean;
   costMultiplier?: string;
   pricingModelSource?: 'upstream' | 'requested' | string;
+  /**
+   * Extra multiplier this provider charges when the upstream serves the Fast
+   * service tier (`service_tier = priority|fast`). Omitted means the tier is
+   * recorded but not surcharged — OpenAI's own ratio differs per billing mode
+   * (subscription allowance vs purchased credits vs API tokens), so there is no
+   * correct built-in default.
+   */
+  fastCostMultiplier?: string;
+  /** Same as {@link GatewayProviderMeta.fastCostMultiplier} for Ultrafast. */
+  ultrafastCostMultiplier?: string;
   /** Provider-level custom request-header overrides applied by the gateway on upstream requests. */
   customHeaders?: CustomHeaderEntry[];
   /** Provider-level exact model rewrite rules applied by the gateway (issue #321). */
   modelRewrites?: ModelRewriteEntry[];
+  /** Provider-level per-model service (speed) tier overrides applied by the
+   * gateway (issue #414). Only OpenAI Chat / Responses targets honour them. */
+  modelServiceTiers?: ModelServiceTierEntry[];
 }
 
 export interface CodexAuthConfig extends Record<string, unknown> {

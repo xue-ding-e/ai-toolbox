@@ -75,8 +75,35 @@ export const formatTps = (record: GatewayTpsInput): string | null => {
   return `${tokensPerSecond} tok/s`;
 };
 
+/** Model text plus its request qualifiers, e.g. `gpt-5.6-sol (high · Fast)`. */
+export const formatModelQualifiers = (
+  modelText: string,
+  qualifiers: Array<string | null | undefined>,
+) => {
+  const parts = qualifiers
+    .map((value) => value?.trim())
+    .filter((value): value is string => Boolean(value));
+  return parts.length ? `${modelText} (${parts.join(' · ')})` : modelText;
+};
+
 export const formatModelWithEffort = (modelText: string, effort?: string | null) =>
-  effort?.trim() ? `${modelText} (${effort.trim()})` : modelText;
+  formatModelQualifiers(modelText, [effort]);
+
+/**
+ * Display label for a billed service tier. Only the canonical ids the gateway
+ * records are recognized, so an unexpected value renders nothing instead of a
+ * misleading badge.
+ */
+export const serviceTierLabel = (serviceTier?: string | null) => {
+  const tier = serviceTier?.trim().toLowerCase();
+  if (tier === 'fast') {
+    return 'Fast';
+  }
+  if (tier === 'ultrafast') {
+    return 'Ultrafast';
+  }
+  return null;
+};
 
 export const formatCacheHitRate = (rate?: number | null) =>
   rate != null && Number.isFinite(rate) ? `${(rate * 100).toFixed(1)}%` : '-';

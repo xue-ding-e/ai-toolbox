@@ -5,8 +5,9 @@ use crate::coding::proxy_gateway::paths::ProxyGatewayPaths;
 use crate::coding::proxy_gateway::request_log;
 use crate::coding::proxy_gateway::transformer::AiProtocol;
 use crate::coding::proxy_gateway::types::{
-    GatewayCliKey, GatewayRequestLogDetail, GatewayRequestLogSummary, GatewayStreamOutcome,
-    GatewayUsageRecordedEvent, ProxyGatewaySettings,
+    normalize_service_tier, service_tier_cost_multiplier, GatewayCliKey, GatewayRequestLogDetail,
+    GatewayRequestLogSummary, GatewayStreamOutcome, GatewayUsageRecordedEvent,
+    ProxyGatewaySettings,
 };
 use crate::coding::proxy_gateway::usage_parser::stable_usage_request_id;
 use crate::coding::proxy_gateway::usage_stats::{self, RecordRequestSummaryOutcome};
@@ -79,6 +80,31 @@ fn final_upstream_reasoning_effort(response: &DebugHttpResponse) -> Option<Strin
         let effort = body.pointer(path)?.as_str()?.trim();
         (!effort.is_empty()).then(|| effort.to_ascii_lowercase())
     })
+}
+
+/// Canonical service tier the request asked the upstream for.
+///
+/// Only OpenAI Chat / Responses requests carry `service_tier` (Codex Fast mode
+/// writes `priority`/`fast`, Ultrafast writes `ultrafast`). This is the billing
+/// fallback for the tier the upstream confirmed: an upstream that never echoes
+/// a premium tier (the ChatGPT-backed Codex route returns `default`) would
+/// otherwise record every Fast request at the standard price.
+fn final_upstream_service_tier(response: &DebugHttpResponse) -> Option<&'static str> {
+    // A local schema failure can retain the original client body without sending it.
+    if response.error_category.as_deref() == Some("request_schema")
+        && response.upstream_url.is_none()
+        && response.upstream_response_body.is_none()
+    {
+        return None;
+    }
+    let body: Value = serde_json::from_slice(response.upstream_request_body.as_deref()?).ok()?;
+    match response.target_protocol? {
+        AiProtocol::OpenAiChat | AiProtocol::OpenAiResponses => body
+            .pointer("/service_tier")
+            .and_then(Value::as_str)
+            .and_then(normalize_service_tier),
+        AiProtocol::AnthropicMessages | AiProtocol::GeminiNative => None,
+    }
 }
 
 pub(super) fn record_gateway_observability(
@@ -162,6 +188,23 @@ pub(super) fn record_gateway_observability_with_transport(
         };
         // Build compact fields first (no body/header yet) so usage-key resolution can
         // decide skip/collision before we write expensive JSONL detail.
+        //
+        // The upstream's own tier confirmation wins; an echo carrying no premium
+        // tier (explicit `default`) is indistinguishable from an upstream that
+        // never implements the echo, so the requested tier keeps billing. The
+        // provider's multiplier for that tier is resolved here so a later provider
+        // edit cannot rewrite the cost of an already-recorded request.
+        let billed_service_tier = response
+            .served_service_tier
+            .clone()
+            .or_else(|| final_upstream_service_tier(response).map(ToString::to_string));
+        let service_tier_multiplier = billed_service_tier.as_deref().map(|service_tier| {
+            service_tier_cost_multiplier(
+                response.fast_cost_multiplier.as_deref(),
+                response.ultrafast_cost_multiplier.as_deref(),
+                Some(service_tier),
+            )
+        });
         let mut detail = GatewayRequestLogDetail {
             privacy: response.privacy.as_ref().map(|privacy| privacy.detail()),
             websocket,
@@ -185,6 +228,8 @@ pub(super) fn record_gateway_observability_with_transport(
                 requested_model: response.requested_model.clone(),
                 upstream_model_id: response.upstream_model_id.clone(),
                 reasoning_effort: final_upstream_reasoning_effort(response),
+                service_tier: billed_service_tier,
+                service_tier_multiplier,
                 upstream_url: response.upstream_url.clone(),
                 status_code: (transport == super::super::types::GatewayRequestTransport::Http
                     || request_kind == super::super::types::GatewayRequestKind::WebsocketHandshake)
@@ -633,6 +678,179 @@ mod tests {
         response.target_protocol = Some(AiProtocol::OpenAiResponses);
         response.upstream_request_body = Some(br#"{"reasoning_effort":"high"}"#.to_vec());
         assert_eq!(final_upstream_reasoning_effort(&response), None);
+    }
+
+    #[test]
+    fn final_service_tier_reads_openai_bodies_only() {
+        for (protocol, body, expected) in [
+            (
+                AiProtocol::OpenAiResponses,
+                json!({"service_tier": "priority"}),
+                Some("fast"),
+            ),
+            (
+                AiProtocol::OpenAiResponses,
+                json!({"service_tier": "fast"}),
+                Some("fast"),
+            ),
+            (
+                AiProtocol::OpenAiResponses,
+                json!({"service_tier": " UltraFast "}),
+                Some("ultrafast"),
+            ),
+            (
+                AiProtocol::OpenAiResponses,
+                json!({"service_tier": "default"}),
+                None,
+            ),
+            (AiProtocol::OpenAiResponses, json!({"service_tier": "auto"}), None),
+            (AiProtocol::OpenAiResponses, json!({"service_tier": "flex"}), None),
+            (AiProtocol::OpenAiResponses, json!({"service_tier": ""}), None),
+            (AiProtocol::OpenAiResponses, json!({"service_tier": 2}), None),
+            (
+                AiProtocol::OpenAiChat,
+                json!({"service_tier": "priority"}),
+                Some("fast"),
+            ),
+            (
+                AiProtocol::AnthropicMessages,
+                json!({"service_tier": "ultrafast"}),
+                None,
+            ),
+            (
+                AiProtocol::GeminiNative,
+                json!({"service_tier": "ultrafast"}),
+                None,
+            ),
+        ] {
+            let mut response = response_with_upstream_body(body.clone());
+            response.target_protocol = Some(protocol);
+            assert_eq!(
+                final_upstream_service_tier(&response),
+                expected,
+                "{body}"
+            );
+        }
+
+        let mut response = response_with_upstream_body(json!({"service_tier": "priority"}));
+        response.target_protocol = Some(AiProtocol::OpenAiResponses);
+        response.error_category = Some("request_schema".to_string());
+        assert_eq!(final_upstream_service_tier(&response), None);
+        response.upstream_url = Some("https://upstream.test/v1/responses".to_string());
+        assert_eq!(final_upstream_service_tier(&response), Some("fast"));
+        response.error_category = None;
+        response.upstream_request_body = Some(b"not json".to_vec());
+        assert_eq!(final_upstream_service_tier(&response), None);
+        response.upstream_request_body = None;
+        assert_eq!(final_upstream_service_tier(&response), None);
+        response.upstream_request_body = Some(br#"{"service_tier":"fast"}"#.to_vec());
+        response.target_protocol = None;
+        assert_eq!(final_upstream_service_tier(&response), None);
+    }
+
+    /// The upstream's own confirmation wins, and an echo that carries no premium
+    /// tier falls back to the requested one instead of billing full price.
+    #[test]
+    fn service_tier_prefers_the_served_echo_and_falls_back_to_the_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = ProxyGatewayPaths::new(dir.path());
+        let db = SqliteDbState::in_memory_for_test().unwrap();
+        let settings = ProxyGatewaySettings {
+            request_log_enabled: true,
+            metrics_enabled: true,
+            ..Default::default()
+        };
+        let context = GatewayRuntimeContext::new(settings, Some(db.clone()), Some(paths));
+        let started_at = Utc::now();
+
+        // Upstream confirmed Ultrafast while the request asked for Fast.
+        let mut served = response_with_upstream_body(json!({"ok": true}));
+        served.provider_id = Some("provider-served".to_string());
+        served.served_service_tier = Some("ultrafast".to_string());
+        served.upstream_request_body = Some(br#"{"service_tier":"priority"}"#.to_vec());
+        served.fast_cost_multiplier = Some(" 2.5 ".to_string());
+        served.ultrafast_cost_multiplier = Some("6".to_string());
+        record_gateway_observability(
+            &request_with_id(1),
+            &served,
+            &context,
+            started_at,
+            started_at + chrono::Duration::milliseconds(50),
+        );
+
+        // Upstream returned an unusable echo (`default`): the requested Fast tier bills.
+        let mut requested = response_with_upstream_body(json!({"ok": true}));
+        requested.provider_id = Some("provider-requested".to_string());
+        requested.upstream_request_body = Some(br#"{"service_tier":"ultrafast"}"#.to_vec());
+        requested.fast_cost_multiplier = Some("2.5".to_string());
+        record_gateway_observability(
+            &request_with_id(2),
+            &requested,
+            &context,
+            started_at + chrono::Duration::milliseconds(60),
+            started_at + chrono::Duration::milliseconds(110),
+        );
+
+        // Standard processing on both sides records no tier at all.
+        let mut standard = response_with_upstream_body(json!({"ok": true}));
+        standard.provider_id = Some("provider-standard".to_string());
+        standard.upstream_request_body =
+            Some(br#"{"service_tier":"default"}"#.to_vec());
+        record_gateway_observability(
+            &request_with_id(3),
+            &standard,
+            &context,
+            started_at + chrono::Duration::milliseconds(120),
+            started_at + chrono::Duration::milliseconds(170),
+        );
+
+        let tier_columns_for = |provider_id: &str| {
+            db.with_conn(|conn| {
+                conn.query_row(
+                    "SELECT service_tier, service_tier_multiplier FROM proxy_request_logs WHERE provider_id = ?1",
+                    [provider_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, Option<String>>(0)?,
+                            row.get::<_, Option<String>>(1)?,
+                        ))
+                    },
+                )
+                .map_err(|error| error.to_string())
+            })
+            .expect("service tier row")
+        };
+        // The served Ultrafast tier wins over the requested Fast tier, and the
+        // provider's Ultrafast multiplier (trimmed) is what gets recorded.
+        let (served_tier, served_multiplier) = tier_columns_for("provider-served");
+        assert_eq!(served_tier.as_deref(), Some("ultrafast"));
+        assert_eq!(served_multiplier.as_deref(), Some("6"));
+        // The requested tier falls back when the upstream confirms nothing, and a
+        // provider with no Fast multiplier records the neutral 1.0.
+        let (requested_tier, requested_multiplier) = tier_columns_for("provider-requested");
+        assert_eq!(requested_tier.as_deref(), Some("ultrafast"));
+        assert_eq!(requested_multiplier.as_deref(), Some("1.0"));
+        assert_eq!(tier_columns_for("provider-standard"), (None, None));
+
+        // The list DTO and the SQLite summary fallback both carry the tier.
+        let logs =
+            usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true)
+                .unwrap();
+        let served_item = logs
+            .data
+            .iter()
+            .find(|item| item.provider_id == "provider-served")
+            .expect("served request in list");
+        assert_eq!(served_item.service_tier.as_deref(), Some("ultrafast"));
+        let fallback =
+            usage_stats::request_log_detail_from_summary(&db, &served_item.trace_id)
+                .unwrap()
+                .unwrap();
+        assert_eq!(fallback.summary.service_tier.as_deref(), Some("ultrafast"));
+        assert_eq!(
+            fallback.summary.service_tier_multiplier.as_deref(),
+            Some("6")
+        );
     }
 
     #[test]

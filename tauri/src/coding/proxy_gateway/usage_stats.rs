@@ -289,6 +289,13 @@ pub fn record_request_summary(
                 .as_deref()
                 .unwrap_or("upstream"),
         );
+        // Fast/Ultrafast premium the provider charges, resolved at request time.
+        // Unset multipliers default to 1.0, so a tier is recorded (and shown)
+        // without changing the cost unless the channel configured a surcharge.
+        let service_tier_multiplier = parse_decimal_or_default(
+            summary.service_tier_multiplier.as_deref().unwrap_or("1.0"),
+            Decimal::new(1, 0),
+        );
         let route_name = optional_compact_string(&summary.route_name);
         let method = optional_compact_string(&summary.method);
         let path = optional_compact_string(&request_log::redact_request_path(&summary.path));
@@ -302,7 +309,7 @@ pub fn record_request_summary(
                     cache_creation_tokens as u64,
                     pricing,
                 )
-                .apply_multiplier(cost_multiplier)
+                .apply_multiplier(cost_multiplier * service_tier_multiplier)
             })
             .unwrap_or_default();
 
@@ -391,7 +398,8 @@ pub fn record_request_summary(
                 status_code, error_message, session_id, provider_type, is_streaming,
                 cost_multiplier, pricing_model_source, created_at, data_source, detail_file,
                 detail_offset, route_name, method, path, upstream_status_code,
-                stream_outcome, error_category, attempt_count, total_attempt_count, reasoning_effort, transport, request_kind, usage_request_count
+                stream_outcome, error_category, attempt_count, total_attempt_count, reasoning_effort, transport, request_kind, usage_request_count,
+                service_tier, service_tier_multiplier
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5,
                 ?6, ?7, ?8, ?9,
@@ -399,7 +407,7 @@ pub fn record_request_summary(
                 ?14, ?15, ?16, ?17,
                 ?18, ?19, ?20, ?21, ?22,
                 ?23, ?24, ?25, 'proxy', ?26, ?27, ?28, ?29, ?30, ?31,
-                ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39
+                ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41
             )"
         );
         let affected_rows = conn
@@ -445,6 +453,8 @@ pub fn record_request_summary(
                     summary.transport.as_str(),
                     summary.request_kind.as_str(),
                     i64::from(summary.request_kind == super::types::GatewayRequestKind::Request),
+                    summary.service_tier,
+                    summary.service_tier_multiplier,
                 ],
             )
             .map_err(|error| format!("Failed to record proxy gateway request summary: {error}"))?;
@@ -720,7 +730,8 @@ pub fn request_logs(
                     total_cost_usd, latency_ms, first_token_ms, COALESCE(duration_ms, latency_ms, 0),
                     status_code, error_message, created_at, is_streaming,
                     route_name, method, path, stream_outcome, reasoning_effort,
-                    COALESCE(data_source, 'proxy'), json(usage_metadata), extra_tokens, transport, request_kind
+                    COALESCE(data_source, 'proxy'), json(usage_metadata), extra_tokens, transport, request_kind,
+                    service_tier
              FROM proxy_request_logs l
              {where_clause}
              ORDER BY created_at DESC
@@ -756,6 +767,7 @@ pub fn request_logs(
                     provider_name: provider_names.get(&(app_type, provider_id)).cloned(),
                     upstream_model_id: row.get(3)?,
                     reasoning_effort: row.get(21)?,
+                    service_tier: row.get(27)?,
                     requested_model: row.get(4)?,
                     status_code: row.get::<_, i64>(13)?.max(0) as u16,
                     success: {
@@ -2537,7 +2549,8 @@ pub fn request_log_detail_from_summary(
                     cost_multiplier, pricing_model_source, detail_file, detail_offset,
                     route_name, method, path, upstream_status_code,
                     stream_outcome, error_category, attempt_count, total_attempt_count, reasoning_effort,
-                    COALESCE(data_source, 'proxy'), json(usage_metadata), extra_tokens, transport, request_kind
+                    COALESCE(data_source, 'proxy'), json(usage_metadata), extra_tokens, transport, request_kind,
+                    service_tier, service_tier_multiplier
              FROM proxy_request_logs
              WHERE request_id = ?1",
             [trace_id],
@@ -2599,6 +2612,8 @@ pub fn request_log_detail_from_summary(
                         requested_model: row.get(4)?,
                         upstream_model_id: Some(row.get(3)?),
                         reasoning_effort: row.get(30)?,
+                        service_tier: row.get(36)?,
+                        service_tier_multiplier: row.get(37)?,
                         upstream_url: None,
                         status_code: (!is_session && status_code != 0).then_some(status_code),
                         upstream_status_code: row
@@ -2860,6 +2875,8 @@ mod tests {
                 requested_model: Some("claude-sonnet-4-5".to_string()),
                 upstream_model_id: Some("anthropic/claude-sonnet-4-5".to_string()),
                 reasoning_effort: None,
+                service_tier: None,
+                service_tier_multiplier: None,
                 upstream_url: Some("https://example.test/v1/messages".to_string()),
                 status_code: Some(status_code),
                 upstream_status_code: None,
@@ -3194,6 +3211,63 @@ mod tests {
         assert_eq!(row.5, 1);
     }
 
+    /// Fast/Ultrafast billing is opt-in per channel: with no provider multiplier
+    /// the tier is still recorded at the standard price, and a configured one
+    /// stacks on top of the provider cost multiplier.
+    #[test]
+    fn service_tier_multiplier_stacks_on_the_provider_multiplier() {
+        let db = test_db();
+        insert_model_pricing(&db, "gpt-5.6-sol", "1", "0");
+
+        let settings = ProxyGatewaySettings::default();
+        // Both the provider multiplier and the tier multiplier are resolved by
+        // the runtime/observability and travel on the summary.
+        let record = |trace_id: &str, service_tier: Option<&str>, tier_multiplier: Option<&str>| {
+            let mut detail = make_detail_for_cli(
+                GatewayCliKey::Codex,
+                trace_id,
+                "provider-alpha",
+                200,
+                1_000_000,
+                0,
+            );
+            detail.summary.requested_model = Some("gpt-5.6-sol".to_string());
+            detail.summary.upstream_model_id = Some("gpt-5.6-sol".to_string());
+            detail.summary.cost_multiplier = Some("2".to_string());
+            detail.summary.service_tier = service_tier.map(str::to_string);
+            detail.summary.service_tier_multiplier = tier_multiplier.map(str::to_string);
+            record_request_summary(&db, &settings, &detail).expect("record summary");
+            db.with_conn(|conn| {
+                conn.query_row(
+                    "SELECT total_cost_usd, service_tier FROM proxy_request_logs WHERE request_id = ?1",
+                    [trace_id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+                )
+                .map_err(|error| error.to_string())
+            })
+            .expect("cost row")
+        };
+
+        // No surcharge configured: the tier is recorded but the price stays standard.
+        let (standard_cost, standard_tier) = record("trace-tier-standard", Some("fast"), Some("1.0"));
+        assert_eq!(standard_cost, "2.000000");
+        assert_eq!(standard_tier.as_deref(), Some("fast"));
+
+        // 1 USD base × provider 2 × fast 2.5.
+        let (fast_cost, fast_tier) = record("trace-tier-fast", Some("fast"), Some("2.5"));
+        assert_eq!(fast_cost, "5.000000");
+        assert_eq!(fast_tier.as_deref(), Some("fast"));
+
+        // 1 USD base × provider 2 × ultrafast 6.
+        let (ultrafast_cost, _) = record("trace-tier-ultrafast", Some("ultrafast"), Some("6"));
+        assert_eq!(ultrafast_cost, "12.000000");
+
+        // A request that declares no premium tier keeps the plain provider multiplier.
+        let (no_tier_cost, no_tier) = record("trace-tier-none", None, None);
+        assert_eq!(no_tier_cost, "2.000000");
+        assert_eq!(no_tier, None);
+    }
+
     #[test]
     fn request_log_detail_falls_back_to_sqlite_summary() {
         let db = test_db();
@@ -3204,6 +3278,7 @@ mod tests {
         detail.summary.cost_multiplier = Some("1.75".to_string());
         detail.summary.pricing_model_source = Some("requested".to_string());
         detail.summary.reasoning_effort = Some("xhigh".to_string());
+        detail.summary.service_tier = Some("ultrafast".to_string());
 
         record_request_summary(&db, &ProxyGatewaySettings::default(), &detail)
             .expect("record summary");
@@ -3219,6 +3294,7 @@ mod tests {
         assert_eq!(fallback.summary.cache_creation_tokens, Some(2));
         assert_eq!(fallback.summary.total_tokens, Some(35));
         assert_eq!(fallback.summary.reasoning_effort.as_deref(), Some("xhigh"));
+        assert_eq!(fallback.summary.service_tier.as_deref(), Some("ultrafast"));
         assert_eq!(fallback.summary.cost_multiplier.as_deref(), Some("1.75"));
         assert_eq!(
             fallback.summary.pricing_model_source.as_deref(),

@@ -9,6 +9,7 @@ import {
   formatDurationPair,
   formatModelRoute,
   formatModelWithEffort,
+  formatModelQualifiers,
   formatTps,
   formatUsd,
   gatewayRequestDisplayKind,
@@ -20,6 +21,7 @@ import {
   requestLineText,
   resolveGatewayRequestRange,
   resolveGatewayUsageRange,
+  serviceTierLabel,
   shouldShowBodyComparison,
   unpricedModelIds,
 } from '../../../../../features/coding/gateway/utils/gatewayFormatters.ts';
@@ -123,6 +125,24 @@ test('effort display uses explicit metadata and cache rate distinguishes zero fr
   assert.equal(formatCacheHitRate(0), '0.0%');
   assert.equal(formatCacheHitRate(1), '100.0%');
   assert.equal(formatCacheHitRate(null), '-');
+});
+
+test('service tier labels only recognize the canonical Fast/Ultrafast ids', () => {
+  assert.equal(serviceTierLabel('fast'), 'Fast');
+  assert.equal(serviceTierLabel(' Fast '), 'Fast');
+  assert.equal(serviceTierLabel('ultrafast'), 'Ultrafast');
+  assert.equal(serviceTierLabel('ULTRAFAST'), 'Ultrafast');
+  for (const tier of ['priority', 'default', 'auto', 'flex', '', null, undefined]) {
+    assert.equal(serviceTierLabel(tier), null);
+  }
+});
+
+test('model qualifiers join effort and service tier without inventing placeholders', () => {
+  assert.equal(formatModelQualifiers('gpt-5.6-sol', ['high', 'Fast']), 'gpt-5.6-sol (high · Fast)');
+  assert.equal(formatModelQualifiers('gpt-5.6-sol', [null, 'Ultrafast']), 'gpt-5.6-sol (Ultrafast)');
+  assert.equal(formatModelQualifiers('gpt-5.6-sol', [' high ', ' ']), 'gpt-5.6-sol (high)');
+  assert.equal(formatModelQualifiers('gpt-5.6-sol', []), 'gpt-5.6-sol');
+  assert.equal(formatModelQualifiers('gpt-5.6-sol', [null, undefined]), 'gpt-5.6-sol');
 });
 
 test('formatUsd uses two decimals by default and allows precise small values', () => {

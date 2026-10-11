@@ -632,6 +632,8 @@ mod tests {
             requested_model: Some("claude".to_string()),
             upstream_model_id: Some("claude".to_string()),
             reasoning_effort: Some("high".to_string()),
+            service_tier: None,
+            service_tier_multiplier: None,
             upstream_url: Some("https://api.example.com/v1/messages".to_string()),
             status_code: Some(200),
             upstream_status_code: None,

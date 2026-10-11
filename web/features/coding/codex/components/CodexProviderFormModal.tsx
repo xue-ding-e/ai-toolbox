@@ -30,6 +30,11 @@ import {
   type ModelRewritesState,
 } from '@/features/coding/shared/providerModelRewrites/modelRewritesUtils';
 import {
+  getServiceTierOverridesFromMeta,
+  mergeServiceTierOverridesIntoMeta,
+  type ServiceTierOverridesState,
+} from '@/features/coding/shared/providerServiceTiers/serviceTierOverridesUtils';
+import {
   CUSTOM_PROVIDER_ENDPOINT_KEY,
   CUSTOM_PROVIDER_PROFILE_ID,
   findGatewayProviderEndpoint,
@@ -300,6 +305,7 @@ const CodexProviderFormModal: React.FC<CodexProviderFormModalProps> = ({
   const [billingConfig, setBillingConfig] = React.useState(() => getBillingConfigFromMeta(provider?.meta));
   const [customHeaders, setCustomHeaders] = React.useState(() => getCustomHeadersFromMeta(provider?.meta));
   const [modelRewrites, setModelRewrites] = React.useState<ModelRewritesState>(() => getModelRewritesFromMeta(provider?.meta));
+  const [modelServiceTiers, setModelServiceTiers] = React.useState<ServiceTierOverridesState>(() => getServiceTierOverridesFromMeta(provider?.meta));
   const gatewayProviderProfilesVersion = React.useSyncExternalStore(
     subscribeGatewayProviderProfiles,
     getGatewayProviderProfilesVersion,
@@ -426,6 +432,7 @@ const CodexProviderFormModal: React.FC<CodexProviderFormModalProps> = ({
     setBillingConfig(getBillingConfigFromMeta(provider?.meta));
     setCustomHeaders(getCustomHeadersFromMeta(provider?.meta));
     setModelRewrites(getModelRewritesFromMeta(provider?.meta));
+    setModelServiceTiers(getServiceTierOverridesFromMeta(provider?.meta));
 
     if (provider) {
       let settingsConfig: CodexSettingsConfig = {};
@@ -775,33 +782,38 @@ const CodexProviderFormModal: React.FC<CodexProviderFormModalProps> = ({
         // model and mappings, including user edits, imports and cleared rows.
         settingsConfig,
         apiFormat: selectedApiFormat,
-        meta: withCodexPreserveReasoningEffort(
-          mergeModelRewritesIntoMeta(
-            mergeCustomHeadersIntoMeta(
-              mergeBillingConfigIntoMeta(
-                mergeGatewayMetaIntoProviderMeta(
-                  provider?.meta,
-                  gatewayProfile,
-                  gatewayProfile ? undefined : selectedApiFormat,
+        meta: mergeServiceTierOverridesIntoMeta(
+          withCodexPreserveReasoningEffort(
+            mergeModelRewritesIntoMeta(
+              mergeCustomHeadersIntoMeta(
+                mergeBillingConfigIntoMeta(
+                  mergeGatewayMetaIntoProviderMeta(
+                    provider?.meta,
+                    gatewayProfile,
+                    gatewayProfile ? undefined : selectedApiFormat,
+                  ),
+                  selectedCategory === 'official'
+                    ? { enabled: false, pricingModelSource: 'inherit' }
+                    : billingConfig,
                 ),
                 selectedCategory === 'official'
-                  ? { enabled: false, pricingModelSource: 'inherit' }
-                  : billingConfig,
+                  ? { enabled: false, headers: [] }
+                  : customHeaders,
               ),
               selectedCategory === 'official'
-                ? { enabled: false, headers: [] }
-                : customHeaders,
+                ? { enabled: false, rewrites: [] }
+                : modelRewrites,
             ),
-            selectedCategory === 'official'
-              ? { enabled: false, rewrites: [] }
-              : modelRewrites,
+            submittedValues.preserveReasoningEffort !== false,
+            codexReasoningPassthroughApplies({
+              isOfficial: selectedCategory === 'official',
+              isCustomProvider: selectedCategory !== 'official' && !selectedEndpoint,
+              apiFormat: selectedApiFormat,
+            }),
           ),
-          submittedValues.preserveReasoningEffort !== false,
-          codexReasoningPassthroughApplies({
-            isOfficial: selectedCategory === 'official',
-            isCustomProvider: selectedCategory !== 'official' && !selectedEndpoint,
-            apiFormat: selectedApiFormat,
-          }),
+          selectedCategory === 'official'
+            ? { enabled: false, overrides: [] }
+            : modelServiceTiers,
         ),
         notes: submittedValues.notes,
         sourceProviderId: mode === 'import' ? selectedProvider?.id : undefined,
@@ -1214,12 +1226,16 @@ const CodexProviderFormModal: React.FC<CodexProviderFormModalProps> = ({
         showBilling={gatewaySupportsThisCli}
         billing={billingConfig}
         onBillingChange={setBillingConfig}
+        showBillingServiceTiers={gatewaySupportsThisCli}
         showCustomHeaders={gatewaySupportsThisCli}
         customHeaders={customHeaders}
         onCustomHeadersChange={setCustomHeaders}
         showModelRewrites={gatewaySupportsThisCli}
         modelRewrites={modelRewrites}
         onModelRewritesChange={setModelRewrites}
+        showModelServiceTiers={gatewaySupportsThisCli}
+        modelServiceTiers={modelServiceTiers}
+        onModelServiceTiersChange={setModelServiceTiers}
         notesRows={2}
         notesResetKey={notesCollapseResetKey}
       />
@@ -1333,6 +1349,8 @@ const CodexProviderFormModal: React.FC<CodexProviderFormModalProps> = ({
           onCustomHeadersChange={setCustomHeaders}
           modelRewrites={modelRewrites}
           onModelRewritesChange={setModelRewrites}
+          modelServiceTiers={modelServiceTiers}
+          onModelServiceTiersChange={setModelServiceTiers}
           notesRows={2}
           notesResetKey={notesCollapseResetKey}
         />

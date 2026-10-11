@@ -339,6 +339,44 @@ Copilot 的 warmup 模型和 Chat/Responses 动态 target 在每次 attempt 的�
 
 回归：`runtime/observability.rs::tests::final_effort_reads_explicit_upstream_dialects_without_inference`、`final_effort_ignores_fields_from_other_protocols`、`final_effort_round_trips_with_body_storage_disabled_and_metrics_only`，以及 `runtime.rs` 的同协议 Messages（含冲突协议字段）、Messages → Responses 真实转发和 `copilot_failed_requests_keep_effective_protocol_and_effort`（空响应、流式首包失败、连接失败）测试。更完整的指标范围见 [架构文档](gateway-protocol-conversion.md) §11.4 和 [Gateway 模块约束](../tauri/src/coding/proxy_gateway/AGENTS.md)。
 
+### 2.9 按模型速度档改写（model service tiers，issue #414）
+
+背景：Codex 的模型目录里声明 `service_tiers` 只是「该模型支持哪些档」的**声明**，Codex 桌面端不选就不发 `service_tier`。同一渠道上不同模型的取舍不同（例如某模型 tps 低必须走 Fast，另一模型开 Fast 又过贵），所以需要网关按模型把「没指定档位」的请求补成指定档。
+
+触发条件：
+
+- provider `data.meta.modelServiceTiers`（snake/camel 双兼容）是非空 `ModelServiceTierRule` 数组，每项 `{ model, serviceTier }`；读取侧丢掉模型名空白或档位不可识别的行，空数组视为未配置。
+- 目标是 OpenAI Chat / Responses（`service_tier` 只在 OpenAI 族协议里是有效字段）。Anthropic Messages / Gemini Native 目标静默跳过。
+- 匹配键是**最终上游模型**（`upstream_model_id`，即模型改写与聚合路由解析之后的值），归一化与 `modelRewrites` 一致：剥 `[1M]` + trim + 大小写不敏感 exact。聚合模式下命中已发布 slug 或 `<site><sep><model>` 前缀的请求解析出的真实模型同样参与匹配。
+- 请求体当前的 `service_tier` **不是**可识别的高级档（`priority` / `fast` / `ultrafast`）时才写入。CLI 自己显式选的档位永远优先，本规则只补「没选」的情况。
+
+改写语义：
+
+- 写入的是**规范化后的线上值**（`priority` = Fast / `ultrafast`），不是配置里的字面拼写：`fast` 会被归一成 `priority`，因为 OpenAI 请求侧只认 `priority`（字面 `fast` 判 unsupported tier），Codex 自身也做同样的归一。
+- 执行位置是 `build_upstream_body_for_provider` 的最后一步（协议转换与 outbound pipeline 之后、cache 注入之前），所以注入的档位与真正发往上游的 body 一致。
+- 与 `modelRewrites` 的差异：① 匹配改写后的上游模型而非请求模型；② **不**跳过连通性测试（档位不影响「被测的是哪个模型」这一语义）；③ 不需要 `allow_provider_model_mapping` 门控。
+- 计费联动：改写发生在 `observability::final_upstream_service_tier` 读数之前，所以改写出的档位会按 provider `data.meta` 的 `fastCostMultiplier` / `ultrafastCostMultiplier` 计价（未配置即只记录档位、不加价）。
+
+源码：
+
+- `types.rs::ModelServiceTierRule` / `ProviderGatewayMeta.model_service_tiers`
+- `runtime/providers.rs::model_service_tiers_from_meta()`
+- `runtime/upstream.rs::resolve_service_tier_override()` / `apply_model_service_tier_override()`，调用点在 `build_upstream_body_for_provider()`
+
+测试：
+
+- `provider_meta_reads_model_service_tiers_and_drops_unknown_tiers`
+- `provider_meta_reads_snake_case_model_service_tiers_and_defaults_to_none`
+- `forced_service_tier_fills_a_request_that_asked_for_standard`
+- `forced_service_tier_fills_a_request_that_omitted_the_tier`
+- `forced_service_tier_keeps_the_clis_own_premium_choice`
+- `forced_service_tier_skips_models_without_a_rule_and_non_openai_targets`
+- `forced_service_tier_matches_trim_case_insensitively_after_stripping_one_m`
+
+前端：
+
+- 共享编辑器 `web/features/coding/shared/providerServiceTiers/`（`ServiceTierOverridesCollapse` + `serviceTierOverridesUtils`），经 `ProviderFormSections` 的 `showModelServiceTiers` 挂载，当前只在 Codex provider 表单接线；official 渠道保存时强制清空。切换 gateway profile 时该 key 保留（`mergeGatewayProfileReferenceIntoMeta` 的 delete 白名单不含它）。
+
 ## 3. 通用响应侧兼容
 
 响应事实源是 `runtime/upstream.rs::build_gateway_response()`。

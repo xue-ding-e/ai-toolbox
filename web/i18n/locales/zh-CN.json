@@ -41,7 +41,12 @@
     "pricingModelSourceInherit": "继承全局默认",
     "pricingModelSourceRequested": "请求模型",
     "pricingModelSourceUpstream": "返回模型",
-    "pricingModelSourceHint": "选择按请求模型还是上游返回模型进行定价匹配"
+    "pricingModelSourceHint": "选择按请求模型还是上游返回模型进行定价匹配",
+    "fastCostMultiplier": "Fast 倍率",
+    "fastCostMultiplierHint": "上游以 Fast 档（service_tier = priority/fast）服务时叠加的倍率，与成本倍率相乘。留空或 1 表示按标准价记账；OpenAI 对同一档位在不同计费口径下倍数不同（订阅额度约 2.5x、购买额度约 2x、API token 约 1.6x，且按模型而异），请按你的渠道实际计费填写。",
+    "ultrafastCostMultiplier": "Ultrafast 倍率",
+    "ultrafastCostMultiplierHint": "上游以 Ultrafast 档（service_tier = ultrafast）服务时叠加的倍率，与成本倍率相乘。留空或 1 表示按标准价记账（官方订阅额度约 8x、购买额度约 6x）。",
+    "serviceTierMultiplierPlaceholder": "留空按标准价（1）"
   },
   "providerHeaders": {
     "title": "自定义请求头",
@@ -255,6 +260,7 @@
         "tpsHint": "输出 token ÷ 生成耗时。流式请求使用总耗时减去首包等待；非流式或缺少首包记录时使用总耗时。无有效输出或生成耗时显示 -。",
         "durationHint": "首字时间（近似首包）/总耗时。首包可能是 SSE 控制事件；未记录首包时仅显示总耗时。",
         "effortHint": "最终上游请求中明确设置的思考强度；未设置时不推断模型默认值。",
+        "serviceTierHint": "OpenAI 的 Fast/Ultrafast 服务档：优先取上游响应确认的档位，上游未确认时回退请求体声明的档位。是否额外计费由该供应商的计费配置（Fast / Ultrafast 倍率）决定，未配置时按标准价记账。",
         "localSession": "Session",
         "localSessionHint": "来自 CLI 本地会话日志，不包含 HTTP 状态和耗时。成本优先使用 CLI 上报值，缺失时按模型价格估算。",
         "importPartialFailure": "部分完成：新增 {{inserted}}，更新 {{updated}}，跳过 {{skipped}}；{{count}} 项未能同步，详情见应用日志。",
@@ -6404,5 +6410,13 @@
       "enabled": "启用",
       "deleteDisabledDefault": "该渠道已设为默认，不可删除"
     }
+  },
+  "providerServiceTiers": {
+    "title": "速度档改写",
+    "useCustom": "启用改写",
+    "modelPlaceholder": "上游模型，如 gpt-5.6-sol",
+    "remove": "删除此规则",
+    "add": "添加规则",
+    "description": "配置速度档改写规则：CLI 请求左列模型、且请求本身没有指定 Fast / Ultrafast 时，网关在转发前补写 service_tier。精确匹配（忽略大小写，去 [1M]）；仅在向上游发起 OpenAI Chat / Responses 请求时生效；CLI 自身显式选择的速度档始终优先。"
   }
 }

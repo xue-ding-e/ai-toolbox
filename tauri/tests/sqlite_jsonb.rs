@@ -141,6 +141,50 @@ fn v17_migration_preserves_existing_request_logs_and_nullable_effort() {
 }
 
 #[test]
+fn v27_migration_preserves_existing_request_logs_and_nullable_service_tier() {
+    let mut conn = test_conn();
+    conn.execute_batch(
+        "ALTER TABLE proxy_request_logs DROP COLUMN service_tier;
+         INSERT INTO proxy_request_logs
+             (request_id, provider_id, app_type, model, input_tokens, created_at)
+         VALUES ('legacy-tier-log', 'provider-a', 'codex', 'gpt-5.6-sol', 120, 1780000000);",
+    )
+    .expect("seed v26 request log schema");
+    migrations::set_user_version(&conn, 26).expect("set v26 schema version");
+
+    migrations::run_all(&mut conn).expect("upgrade v26");
+    migrations::run_all(&mut conn).expect("reopen upgraded schema");
+    assert_eq!(
+        migrations::get_user_version(&conn).unwrap(),
+        TARGET_SCHEMA_VERSION
+    );
+    let legacy: (String, Option<String>) = conn
+        .query_row(
+            "SELECT model, service_tier FROM proxy_request_logs WHERE request_id = 'legacy-tier-log'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("read legacy log after upgrade");
+    assert_eq!(legacy, ("gpt-5.6-sol".to_string(), None));
+    conn.execute(
+        "UPDATE proxy_request_logs SET service_tier = 'fast' WHERE request_id = 'legacy-tier-log'",
+        [],
+    )
+    .expect("write new service tier metadata");
+    // Existing-column migrations must also tolerate a restored version marker.
+    migrations::set_user_version(&conn, 26).unwrap();
+    migrations::run_all(&mut conn).expect("repeat additive migration");
+    let service_tier: String = conn
+        .query_row(
+            "SELECT service_tier FROM proxy_request_logs WHERE request_id = 'legacy-tier-log'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(service_tier, "fast");
+}
+
+#[test]
 fn session_usage_migrations_preserve_rollups_and_ledger_on_repeat() {
     let mut conn = test_conn();
     conn.execute_batch(

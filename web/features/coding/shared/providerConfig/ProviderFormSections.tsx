@@ -7,6 +7,8 @@ import CustomHeadersCollapse from '@/features/coding/shared/providerHeaders/Cust
 import type { CustomHeadersState } from '@/features/coding/shared/providerHeaders/customHeadersUtils';
 import ModelRewritesCollapse from '@/features/coding/shared/providerModelRewrites/ModelRewritesCollapse';
 import type { ModelRewritesState } from '@/features/coding/shared/providerModelRewrites/modelRewritesUtils';
+import ServiceTierOverridesCollapse from '@/features/coding/shared/providerServiceTiers/ServiceTierOverridesCollapse';
+import type { ServiceTierOverridesState } from '@/features/coding/shared/providerServiceTiers/serviceTierOverridesUtils';
 import ProviderNotesCollapse from '@/features/coding/shared/providerConfig/ProviderNotesCollapse';
 
 /**
@@ -49,6 +51,12 @@ export interface ProviderFormSectionsProps {
   showBilling?: boolean;
   billing?: BillingConfigState;
   onBillingChange?: (value: BillingConfigState) => void;
+  /**
+   * Also render the Fast / Ultrafast service-tier multipliers inside the billing
+   * section. Only Codex passes this: its upstream is the OpenAI protocol, where
+   * `service_tier` exists at all.
+   */
+  showBillingServiceTiers?: boolean;
 
   /**
    * Custom-header overrides. Like billing and rewrites, this is consumed only
@@ -64,6 +72,11 @@ export interface ProviderFormSectionsProps {
   showModelRewrites?: boolean;
   modelRewrites?: ModelRewritesState;
   onModelRewritesChange?: (value: ModelRewritesState) => void;
+
+  /** Per-model speed tier overrides (issue #414). Gateway-only, same reasoning. */
+  showModelServiceTiers?: boolean;
+  modelServiceTiers?: ServiceTierOverridesState;
+  onModelServiceTiersChange?: (value: ServiceTierOverridesState) => void;
 
   notesRows?: number;
   notesResetKey: string;
@@ -93,12 +106,16 @@ const ProviderFormSections: React.FC<ProviderFormSectionsProps> = ({
   showBilling = editable,
   billing,
   onBillingChange,
+  showBillingServiceTiers = false,
   showCustomHeaders = editable,
   customHeaders,
   onCustomHeadersChange,
   showModelRewrites = editable,
   modelRewrites,
   onModelRewritesChange,
+  showModelServiceTiers = editable,
+  modelServiceTiers,
+  onModelServiceTiersChange,
   notesRows = 3,
   notesResetKey,
 }) => {
@@ -112,7 +129,11 @@ const ProviderFormSections: React.FC<ProviderFormSectionsProps> = ({
 
       {editable && showBilling && billing && onBillingChange && (
         <Form.Item wrapperCol={PROVIDER_SECTION_WRAPPER_COL}>
-          <BillingConfigCollapse value={billing} onChange={onBillingChange} />
+          <BillingConfigCollapse
+            value={billing}
+            onChange={onBillingChange}
+            showServiceTierMultipliers={showBillingServiceTiers}
+          />
         </Form.Item>
       )}
 
@@ -125,6 +146,18 @@ const ProviderFormSections: React.FC<ProviderFormSectionsProps> = ({
       {editable && showModelRewrites && modelRewrites && onModelRewritesChange && (
         <Form.Item wrapperCol={PROVIDER_SECTION_WRAPPER_COL}>
           <ModelRewritesCollapse value={modelRewrites} onChange={onModelRewritesChange} />
+        </Form.Item>
+      )}
+
+      {editable
+        && showModelServiceTiers
+        && modelServiceTiers
+        && onModelServiceTiersChange && (
+        <Form.Item wrapperCol={PROVIDER_SECTION_WRAPPER_COL}>
+          <ServiceTierOverridesCollapse
+            value={modelServiceTiers}
+            onChange={onModelServiceTiersChange}
+          />
         </Form.Item>
       )}
 

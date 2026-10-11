@@ -41,7 +41,12 @@
     "pricingModelSourceInherit": "Inherit global default",
     "pricingModelSourceRequested": "Request model",
     "pricingModelSourceUpstream": "Response model",
-    "pricingModelSourceHint": "Choose whether pricing matches the requested model or the upstream response model"
+    "pricingModelSourceHint": "Choose whether pricing matches the requested model or the upstream response model",
+    "fastCostMultiplier": "Fast multiplier",
+    "fastCostMultiplierHint": "Extra multiplier stacked on the cost multiplier when the upstream serves the Fast tier (service_tier = priority/fast). Empty or 1 records the standard token price; OpenAI's ratio differs per billing mode (roughly 2.5x on subscription allowance, 2x on purchased credits, 1.6x on API tokens, varying by model), so set what your channel actually bills.",
+    "ultrafastCostMultiplier": "Ultrafast multiplier",
+    "ultrafastCostMultiplierHint": "Extra multiplier stacked on the cost multiplier when the upstream serves the Ultrafast tier (service_tier = ultrafast). Empty or 1 records the standard token price (roughly 8x on subscription allowance, 6x on purchased credits).",
+    "serviceTierMultiplierPlaceholder": "Empty records the standard price (1)"
   },
   "providerHeaders": {
     "title": "Custom request headers",
@@ -255,6 +260,7 @@
         "tpsHint": "Output tokens divided by generation time. Streaming uses total time minus first-chunk latency; non-streaming or missing first-chunk timing uses total time. Unavailable output or generation time is shown as -.",
         "durationHint": "First-token latency (approximated by the first chunk) / total duration. The first chunk may be an SSE control event. Only total duration is shown when first-chunk timing is unavailable.",
         "effortHint": "Explicit reasoning effort in the final upstream request. Model defaults are not inferred.",
+        "serviceTierHint": "OpenAI Fast/Ultrafast service tier: the tier the upstream confirmed wins, falling back to the tier declared in the request body. Whether it costs extra is decided by this provider's billing config (the Fast / Ultrafast multipliers); unset records the standard price.",
         "localSession": "Session",
         "localSessionHint": "From local CLI session logs, without HTTP status or latency. Cost uses the CLI-reported value when available, otherwise model pricing.",
         "importPartialFailure": "Partially synced: {{inserted}} added, {{updated}} updated, {{skipped}} skipped; {{count}} items failed. See the application log for details.",
@@ -6407,5 +6413,13 @@
       "enabled": "Enabled",
       "deleteDisabledDefault": "This is the default provider and cannot be deleted"
     }
+  },
+  "providerServiceTiers": {
+    "title": "Speed tier rewrites",
+    "useCustom": "Enable",
+    "modelPlaceholder": "Upstream model, e.g. gpt-5.6-sol",
+    "remove": "Remove this rule",
+    "add": "Add rule",
+    "description": "Configure speed tier rewrite rules: when the CLI requests the left model and the request itself asks for no Fast / Ultrafast tier, the gateway writes service_tier before forwarding. Exact match (case-insensitive, [1M] stripped); only applies to OpenAI Chat / Responses upstream requests; an explicit tier chosen by the CLI always wins."
   }
 }

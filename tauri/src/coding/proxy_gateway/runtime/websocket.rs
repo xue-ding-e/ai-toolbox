@@ -21,7 +21,7 @@ use crate::coding::proxy_gateway::types::{
     ProviderModelHealthKey, ProxyGatewaySettings,
 };
 use crate::coding::proxy_gateway::usage_parser::{
-    classify_sse_event_fields, from_response_body, SseTerminalKind,
+    classify_sse_event_fields, from_response_body, served_service_tier, SseTerminalKind,
 };
 use crate::http_client;
 use chrono::{DateTime, Utc};
@@ -1270,6 +1270,9 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin, U: AsyncRead + AsyncWrite + Un
                         response.provider_type = provider.meta.provider_type.clone();
                         response.cost_multiplier = Some(provider.meta.cost_multiplier.clone());
                         response.pricing_model_source = Some(provider.meta.pricing_model_source.clone());
+                        response.fast_cost_multiplier = provider.meta.fast_cost_multiplier.clone();
+                        response.ultrafast_cost_multiplier =
+                            provider.meta.ultrafast_cost_multiplier.clone();
                         response.requested_model = value
                             .get("model")
                             .and_then(Value::as_str)
@@ -1476,6 +1479,11 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin, U: AsyncRead + AsyncWrite + Un
                             turn.response
                                 .token_usage
                                 .merge_max(from_response_body(GatewayCliKey::Codex, text.as_bytes()));
+                            // Last-wins: the terminal snapshot is the upstream's
+                            // final word on the served tier.
+                            if let Some(tier) = served_service_tier(text.as_bytes()) {
+                                turn.response.served_service_tier = Some(tier.to_string());
+                            }
                             if terminal != Some(SseTerminalKind::Failed) {
                                 outgoing =
                                     upstream::restore_xai_namespace_json_body(&outgoing, &turn.restore_map);

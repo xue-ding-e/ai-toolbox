@@ -9,12 +9,19 @@ interface BillingConfigCollapseProps {
   value: BillingConfigState;
   onChange: (value: BillingConfigState) => void;
   className?: string;
+  /**
+   * Render the Fast / Ultrafast service-tier multipliers. Only channels that can
+   * reach an OpenAI-protocol tier (Codex) set this; the tier is meaningless for
+   * the other CLIs' upstreams.
+   */
+  showServiceTierMultipliers?: boolean;
 }
 
 const BillingConfigCollapse: React.FC<BillingConfigCollapseProps> = ({
   value,
   onChange,
   className,
+  showServiceTierMultipliers = false,
 }) => {
   const { t } = useTranslation();
   const [expanded, setExpanded] = React.useState(value.enabled);
@@ -112,6 +119,48 @@ const BillingConfigCollapse: React.FC<BillingConfigCollapseProps> = ({
             {t('providerBilling.pricingModelSourceHint')}
           </span>
         </label>
+        {showServiceTierMultipliers ? (
+          <>
+            <label className={styles.field}>
+              <span className={styles.fieldLabel}>{t('providerBilling.fastCostMultiplier')}</span>
+              <input
+                className={styles.control}
+                type="number"
+                step="0.01"
+                min="0"
+                inputMode="decimal"
+                value={value.fastCostMultiplier || ''}
+                disabled={!value.enabled}
+                placeholder={t('providerBilling.serviceTierMultiplierPlaceholder')}
+                onChange={(event) => updateConfig({
+                  fastCostMultiplier: event.target.value || undefined,
+                })}
+              />
+              <span className={styles.fieldHint}>
+                {t('providerBilling.fastCostMultiplierHint')}
+              </span>
+            </label>
+            <label className={styles.field}>
+              <span className={styles.fieldLabel}>{t('providerBilling.ultrafastCostMultiplier')}</span>
+              <input
+                className={styles.control}
+                type="number"
+                step="0.01"
+                min="0"
+                inputMode="decimal"
+                value={value.ultrafastCostMultiplier || ''}
+                disabled={!value.enabled}
+                placeholder={t('providerBilling.serviceTierMultiplierPlaceholder')}
+                onChange={(event) => updateConfig({
+                  ultrafastCostMultiplier: event.target.value || undefined,
+                })}
+              />
+              <span className={styles.fieldHint}>
+                {t('providerBilling.ultrafastCostMultiplierHint')}
+              </span>
+            </label>
+          </>
+        ) : null}
       </div>
     </ProviderConfigCollapse>
   );

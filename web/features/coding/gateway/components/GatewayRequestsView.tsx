@@ -41,8 +41,9 @@ import {
   formatGatewayError,
   gatewayWebSocketStatusKey,
   formatInteger,
-  formatModelWithEffort,
+  formatModelQualifiers,
   formatTps,
+  serviceTierLabel,
   formatUsd,
   GATEWAY_USAGE_RANGE_PRESETS,
   isGatewayRequestUsageApplicable,
@@ -603,7 +604,10 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
           )}
           <span>{t('gateway.page.requests.fields.model')}</span>
           <strong>{requestDisplay.modelApplicable
-            ? formatModelWithEffort(requestDisplay.modelText, detail.reasoning_effort)
+            ? formatModelQualifiers(requestDisplay.modelText, [
+                detail.reasoning_effort,
+                serviceTierLabel(detail.service_tier),
+              ])
             : detail.data_source === 'session'
               ? t('gateway.page.statistics.modelUnavailable')
               : t('gateway.page.requests.notApplicable')}</strong>
@@ -793,13 +797,19 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
             const requestDisplayTitle = record.data_source === 'session' && !requestDisplay.modelApplicable
               ? t('gateway.page.requests.localSession')
               : requestDisplay.titleKey ? t(requestDisplay.titleKey) : requestDisplay.modelText;
+            const tierLabel = serviceTierLabel(record.service_tier);
             return (
               <>
-                <div className={styles.modelTitle} title={formatModelWithEffort(requestDisplayTitle, record.reasoning_effort)}>
+                <div className={styles.modelTitle} title={formatModelQualifiers(requestDisplayTitle, [record.reasoning_effort, tierLabel])}>
                   <strong>{requestDisplayTitle}</strong>
                   {requestDisplay.modelApplicable && record.reasoning_effort ? (
                     <span className={styles.modelEffort} title={t('gateway.page.requests.effortHint')}>
                       ({record.reasoning_effort})
+                    </span>
+                  ) : null}
+                  {requestDisplay.modelApplicable && tierLabel ? (
+                    <span className={styles.modelTier} title={t('gateway.page.requests.serviceTierHint')}>
+                      {tierLabel}
                     </span>
                   ) : null}
                 </div>

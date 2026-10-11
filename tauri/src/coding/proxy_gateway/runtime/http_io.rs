@@ -262,8 +262,17 @@ pub(super) struct DebugHttpResponse {
     pub(super) provider_type: Option<String>,
     pub(super) cost_multiplier: Option<String>,
     pub(super) pricing_model_source: Option<String>,
+    /// Provider-level extra multipliers for the Fast / Ultrafast service tiers,
+    /// captured from the effective provider at request time. Observability picks
+    /// one based on the tier actually billed.
+    pub(super) fast_cost_multiplier: Option<String>,
+    pub(super) ultrafast_cost_multiplier: Option<String>,
     pub(super) requested_model: Option<String>,
     pub(super) upstream_model_id: Option<String>,
+    /// Canonical service tier (`fast` / `ultrafast`) the upstream confirmed in
+    /// its own response envelope. `None` when the upstream never confirmed a
+    /// premium tier, so billing falls back to the requested tier.
+    pub(super) served_service_tier: Option<String>,
     pub(super) upstream_request_body: Option<Vec<u8>>,
     /// Protocol of the final upstream attempt, independent of the client protocol.
     pub(super) target_protocol: Option<AiProtocol>,
@@ -462,6 +471,9 @@ pub(super) fn json_response(
         pricing_model_source: None,
         requested_model: None,
         upstream_model_id: None,
+        served_service_tier: None,
+        fast_cost_multiplier: None,
+        ultrafast_cost_multiplier: None,
         upstream_request_body: None,
         upstream_response_body: None,
         upstream_response_body_bytes: 0,
@@ -506,6 +518,9 @@ pub(super) fn empty_response(
         pricing_model_source: None,
         requested_model: None,
         upstream_model_id: None,
+        served_service_tier: None,
+        fast_cost_multiplier: None,
+        ultrafast_cost_multiplier: None,
         upstream_request_body: None,
         upstream_response_body: None,
         upstream_response_body_bytes: 0,
@@ -800,6 +815,8 @@ async fn write_streaming_body(
     }
 
     if let Some(cli_key) = response.cli_key {
+        // The collector is consumed by `finish`, so read the confirmed tier first.
+        response.served_service_tier = usage_collector.service_tier().map(ToString::to_string);
         response.token_usage = usage_collector.finish(cli_key);
     }
     response.stream_outcome = outcome;
@@ -1086,6 +1103,9 @@ mod tests {
             pricing_model_source: None,
             requested_model: None,
             upstream_model_id: None,
+            served_service_tier: None,
+            fast_cost_multiplier: None,
+            ultrafast_cost_multiplier: None,
             upstream_request_body: None,
             upstream_response_body: None,
             upstream_response_body_bytes: 0,

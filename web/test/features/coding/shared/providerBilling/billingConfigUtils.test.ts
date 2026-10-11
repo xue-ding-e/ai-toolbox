@@ -23,12 +23,44 @@ test('getBillingConfigFromMeta enables provider billing when meta has custom val
     enabled: true,
     costMultiplier: '1.50',
     pricingModelSource: 'requested',
+    fastCostMultiplier: undefined,
+    ultrafastCostMultiplier: undefined,
   });
 
   assert.deepEqual(getBillingConfigFromMeta(undefined), {
     enabled: false,
     costMultiplier: undefined,
     pricingModelSource: 'inherit',
+    fastCostMultiplier: undefined,
+    ultrafastCostMultiplier: undefined,
+  });
+});
+
+test('getBillingConfigFromMeta keeps service-tier multipliers and enables on them alone', () => {
+  assert.deepEqual(getBillingConfigFromMeta({
+    fastCostMultiplier: ' 2.5 ',
+    ultrafastCostMultiplier: '8',
+  }), {
+    enabled: true,
+    costMultiplier: undefined,
+    pricingModelSource: 'inherit',
+    fastCostMultiplier: '2.5',
+    ultrafastCostMultiplier: '8',
+  });
+});
+
+test('mergeBillingConfigIntoMeta round-trips service-tier multipliers', () => {
+  assert.deepEqual(mergeBillingConfigIntoMeta({
+    providerType: 'openai',
+    fastCostMultiplier: '9',
+    ultrafastCostMultiplier: '9',
+  }, {
+    enabled: true,
+    pricingModelSource: 'inherit',
+    fastCostMultiplier: ' 2.5 ',
+  }), {
+    providerType: 'openai',
+    fastCostMultiplier: '2.5',
   });
 });
 

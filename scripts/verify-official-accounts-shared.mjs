@@ -163,7 +163,7 @@ if (violations.length > 0) {
   }
   console.error(
     'See web/features/coding/shared/officialAccounts/AGENTS.md and ' +
-      'docs/new-cli-onboarding-sop.md (official-account section).',
+      'docs/new-cli-onboarding-sop.md §4.2.9 (official-account section).',
   );
 }
 

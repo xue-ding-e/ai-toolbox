@@ -82,6 +82,19 @@
 | `cost_multiplier` | provider 未显式设置计费倍率时使用的该 CLI 默认倍率。 |
 | `pricing_model_source` | provider 未显式设置定价模型来源时使用的该 CLI 默认值，支持 `upstream` / `requested`。 |
 
+## provider 级计费（`data.meta`）
+
+编辑入口是各 CLI 的「编辑供应商 → 计费配置」（`BillingConfigCollapse`），字段与 `app_configs` 的同名默认值重叠时 provider 级优先：
+
+| 字段 | 作用 |
+|---|---|
+| `costMultiplier` | 该 provider 的成本倍率，未设置时继承该 CLI 的 `app_configs.cost_multiplier`。 |
+| `pricingModelSource` | 该 provider 的定价模型来源，支持 `upstream` / `requested`。 |
+| `fastCostMultiplier` | 上游以 Fast 档（`service_tier = priority`/`fast`）服务时叠加在成本倍率之上的额外倍率。**未设置即按标准价记账**（不自动填 1.0 或「官方倍数」），由用户按自己的渠道填写——OpenAI 对同一档位在订阅额度 / 购买额度 / API token 口径下的倍数并不一致（Fast ≈ 2.5x / 2x / 1.6x，Ultrafast ≈ 8x / 6x），任何内置默认值都是错的。 |
+| `ultrafastCostMultiplier` | 同上，对应 Ultrafast 档（`service_tier = ultrafast`）。 |
+
+两个档位倍数字段只在 Codex 供应商表单渲染（只有它的上游会带 `service_tier`）；`fast_cost_multiplier` / `ultrafast_cost_multiplier` 是 camelCase 之外的兼容别名。倍率不改变统计里的档位记录，只影响 `cost`。
+
 ## 日志与统计
 
 | UI | 字段 | 默认值 | 作用 |
