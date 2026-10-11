@@ -64,6 +64,7 @@
 | 基础冷却秒 | `model_base_cooldown_seconds` | `120` | 模型首次熔断后的最短冷却时间，冷却结束后进入探测。 |
 | 最大冷却秒 | `model_max_cooldown_seconds` | `1800` | 连续熔断时冷却时间的上限，避免退避无限增长。 |
 | 探测成功次数 | `half_open_success_required` | `2` | 冷却结束进入 half-open/probing 后，需要连续成功多少次才恢复 healthy。 |
+| 跳过未声明该模型的站点 | `skip_undeclared_models` | `false` | 开启后，模型目录（Codex `modelCatalog`）里没有列出本次上游模型的站点会被**直接跳过**——不产生错误请求、不计健康分——而不是先试一次再失败（issue #414）。**前提**：至少有一个候选站点维护了非空目录，否则该开关不生效（不维护目录的 CLI 如 Claude/Grok 的 `declared_models` 恒为空，若把「空」读成「什么都不提供」会全量被拒）。全部候选因此被跳过时返回 503 `model_not_declared`，与冷却的 `model_temporarily_unavailable` 区分。细节见 [模型路由](gateway-model-routing.md)。 |
 
 ## 每 CLI 覆盖
 

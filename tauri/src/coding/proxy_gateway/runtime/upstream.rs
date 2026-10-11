@@ -1176,6 +1176,7 @@ async fn forward_to_upstream(
     let mut last_failure_response = None;
     let mut provider_attempts = Vec::new();
     let mut skipped_by_health = Vec::new();
+    let mut skipped_by_declaration = Vec::new();
     // The single-provider shortcut below means "this deployment has one
     // candidate site", not "the cross-site gate pinned *this* request to one
     // site". With cross-site failover disabled the list is narrowed on purpose,
@@ -1185,6 +1186,21 @@ async fn forward_to_upstream(
     // request-level policy intends.
     let is_single_provider = providers.len() == 1
         && aggregate_selection.is_none_or(|selection| selection.cross_site_failover);
+    // Catalog filtering (issue #414) only engages when at least one candidate
+    // declares a catalog at all. A provider without one declares nothing, and
+    // treating that as "serves nothing" would refuse every request for every
+    // CLI whose config carries no model catalog (Claude, Grok, …). Requiring a
+    // maintained catalog somewhere keeps those deployments on the old behavior.
+    //
+    // This guard deliberately looks at `declared_models` only, *not* at
+    // `default_model`, even though the skip predicate below counts both. Every
+    // provider carries some default model (Grok hardcodes `grok-build`, Kimi
+    // and Codex read their own config), so widening the guard would arm the
+    // filter for exactly the catalog-less CLIs it exists to protect.
+    let any_candidate_declares_models = settings.skip_undeclared_models
+        && providers
+            .iter()
+            .any(|provider| !provider.meta.declared_models.is_empty());
 
     'providers: for provider in providers {
         // Aggregate mode never runs the per-CLI default/family mapping: the
@@ -1216,6 +1232,24 @@ async fn forward_to_upstream(
         // 请求收窄到单站点时不算单渠道部署，冷却过滤必须继续生效（见上）。
         if !is_single_provider && !is_model_available(context, &health_key) {
             skipped_by_health.push(provider.name.clone());
+            continue;
+        }
+
+        // Catalog filter (issue #414): a site that does not list this model is
+        // skipped rather than tried and failed, so failover no longer spends a
+        // wasted request on every channel that was never going to serve it.
+        // Same shape as the cooldown skip above — no attempt counted, no health
+        // penalty — and the single-provider shortcut applies for the same
+        // reason: with one candidate there is nothing to fail over to.
+        if !is_single_provider
+            && is_undeclared_model_skip(
+                settings.skip_undeclared_models,
+                any_candidate_declares_models,
+                &provider,
+                &upstream_model_id,
+            )
+        {
+            skipped_by_declaration.push(provider.name.clone());
             continue;
         }
 
@@ -1462,6 +1496,33 @@ async fn forward_to_upstream(
         return response;
     }
 
+    // Every candidate was skipped before any request went out. Report which
+    // filter did it: a catalog miss is a configuration problem the user can fix
+    // (add the model to the site's catalog, or turn the filter off), while a
+    // cooldown clears by itself — telling them apart is the difference between
+    // a diagnosable 503 and a mystery.
+    if skipped_by_health.is_empty() && !skipped_by_declaration.is_empty() {
+        let mut response = json_response(
+            503,
+            "Service Unavailable",
+            json!({
+                "error": "model_not_declared_by_any_candidate",
+                "message": format!(
+                    "No candidate provider declares the model '{requested_model}'; no upstream request was attempted. Add it to a site's model catalog, or turn off 'skip undeclared models'.",
+                ),
+                "skipped_providers": skipped_by_declaration,
+            }),
+            route.route_name,
+            None,
+            "no candidate provider declares the requested model",
+        );
+        response.cli_key = Some(route.cli_key);
+        response.requested_model = Some(requested_model);
+        response.error_category = Some("model_not_declared".to_string());
+        response.provider_attempts = provider_attempts;
+        return response;
+    }
+
     let mut response = json_response(
         503,
         "Service Unavailable",
@@ -1469,6 +1530,7 @@ async fn forward_to_upstream(
             "error": "model_temporarily_unavailable",
             "message": "All provider candidates for this model are cooling down; no upstream request was attempted.",
             "skipped_providers": skipped_by_health,
+            "skipped_undeclared_providers": skipped_by_declaration,
         }),
         route.route_name,
         None,
@@ -5559,6 +5621,40 @@ fn resolve_model_rewrite_rule(
         .iter()
         .find(|rule| rule.from.trim().to_ascii_lowercase() == normalized_model)
         .map(|rule| strip_one_m_context_marker(rule.to.trim()).to_string())
+}
+
+/// Whether a candidate should be skipped because its model catalog does not
+/// list the model this request resolves to (issue #414).
+///
+/// `any_candidate_declares_models` is the guard that keeps the filter honest:
+/// a provider with no catalog declares nothing, and reading that as "serves
+/// nothing" would refuse every request for any CLI whose config carries no
+/// model catalog at all. Callers pass `false` when no candidate declares
+/// anything, which disables the filter for that request.
+///
+/// The provider's own `default_model` always counts as declared, even when it
+/// is absent from `meta.declared_models`. The two are collected by different
+/// rules: `declared_models` reads only the **root-level** `model`, while
+/// `default_model` prefers `[chat].model` (`codex_model_from_config`). The
+/// provider editor still writes the `[chat]` form, so a site configured that
+/// way would otherwise be filtered out by the very request this gateway
+/// rewrites *to* its default — a false skip of a working channel.
+fn is_undeclared_model_skip(
+    enabled: bool,
+    any_candidate_declares_models: bool,
+    provider: &UpstreamProvider,
+    upstream_model_id: &str,
+) -> bool {
+    if !enabled || !any_candidate_declares_models {
+        return false;
+    }
+    let declares = provider
+        .meta
+        .declared_models
+        .iter()
+        .any(|declared| declared == upstream_model_id)
+        || provider.model_mapping.default_model.as_deref() == Some(upstream_model_id);
+    !declares
 }
 
 /// Resolve the forced service (speed) tier for `upstream_model_id`, if the
@@ -13635,6 +13731,102 @@ data: {data}\r\n\r\n"
             }]),
             ..Default::default()
         }
+    }
+
+    fn declaring_provider(id: &str, models: &[&str]) -> UpstreamProvider {
+        let mut provider = provider_for_cli(GatewayCliKey::Codex);
+        provider.id = id.to_string();
+        provider.name = id.to_string();
+        provider.meta.declared_models = models.iter().map(|model| (*model).to_string()).collect();
+        provider
+    }
+
+    #[test]
+    fn undeclared_model_skip_engages_only_when_a_catalog_is_maintained() {
+        let luna_only = declaring_provider("relay", &["gpt-5.6-luna"]);
+        let no_catalog = declaring_provider("mirror", &[]);
+
+        // The catalog owner serves it; the site that never declared it is skipped.
+        assert!(!is_undeclared_model_skip(
+            true,
+            true,
+            &luna_only,
+            "gpt-5.6-luna"
+        ));
+        assert!(is_undeclared_model_skip(
+            true,
+            true,
+            &no_catalog,
+            "gpt-5.6-luna"
+        ));
+    }
+
+    #[test]
+    fn undeclared_model_skip_is_off_when_nobody_maintains_a_catalog() {
+        // The guard that keeps a catalog-less deployment (Claude, Grok, …)
+        // working: with no catalog anywhere the filter must not engage, or
+        // every request would be refused.
+        let no_catalog = declaring_provider("mirror", &[]);
+        assert!(!is_undeclared_model_skip(
+            true,
+            false,
+            &no_catalog,
+            "claude-sonnet-5"
+        ));
+
+        // And the setting itself gates it.
+        assert!(!is_undeclared_model_skip(
+            false,
+            true,
+            &no_catalog,
+            "gpt-5.6-luna"
+        ));
+    }
+
+    #[test]
+    fn undeclared_model_skip_matches_the_declared_id_exactly() {
+        let provider = declaring_provider("relay", &["gpt-5.6-luna"]);
+
+        // Exact id match, same rule the aggregate router uses.
+        assert!(!is_undeclared_model_skip(
+            true,
+            true,
+            &provider,
+            "gpt-5.6-luna"
+        ));
+        // A near miss is not a match: the user has to declare what they send.
+        assert!(is_undeclared_model_skip(
+            true,
+            true,
+            &provider,
+            "gpt-5.6-luna-1m"
+        ));
+        assert!(is_undeclared_model_skip(
+            true,
+            true,
+            &provider,
+            "gpt-5.6-astra"
+        ));
+    }
+
+    /// A provider whose default model lives only in `[chat].model` must not be
+    /// skipped: the gateway rewrites this request *to* that model, so it is a
+    /// real target. `declared_models` counts only the root-level `model`, so
+    /// without an explicit union the site would be filtered out by a request
+    /// it was about to serve correctly.
+    #[test]
+    fn undeclared_model_skip_accepts_a_chat_section_default_model() {
+        let mut provider = declaring_provider("legacy-editor", &["gpt-5.6-sol"]);
+        provider.model_mapping.default_model = Some("qwen3-coder".to_string());
+
+        // The request resolves to `qwen3-coder` (the provider's own default),
+        // so this site is the one that should serve it.
+        assert!(!is_undeclared_model_skip(
+            true,
+            true,
+            &provider,
+            "qwen3-coder"
+        ));
     }
 
     #[test]

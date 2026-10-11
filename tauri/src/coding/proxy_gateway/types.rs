@@ -505,6 +505,13 @@ pub struct ProxyGatewaySettings {
     /// Comma-separated HTTP status codes/ranges that may trigger same-provider
     /// retry or cross-provider failover. Example: `400,401,429,500-599`.
     pub retryable_status_codes: String,
+    /// Skip candidate providers whose declared model catalog does not list the
+    /// upstream model (issue #414). Off by default: a provider with no catalog
+    /// declares nothing, and the whole feature would otherwise refuse to route.
+    /// The runtime additionally requires at least one candidate to declare
+    /// *something* before the filter engages, so a deployment where nobody
+    /// maintains a catalog keeps its old behavior instead of failing outright.
+    pub skip_undeclared_models: bool,
     pub app_configs: HashMap<GatewayCliKey, AppProxyConfig>,
     pub model_failure_score_threshold: i32,
     pub model_failure_window_seconds: u64,
@@ -580,6 +587,7 @@ impl Default for ProxyGatewaySettings {
             retry_interval_secs: 1,
             retryable_status_codes: super::retryable_status::default_retryable_status_codes_compact(
             ),
+            skip_undeclared_models: false,
             app_configs: HashMap::new(),
             model_failure_score_threshold: 5,
             model_failure_window_seconds: 300,

@@ -780,7 +780,8 @@
         "lossyRejection": "有损转换硬拒绝",
         "responsesEncryptedContentRectifier": "Responses 密文恢复",
         "sessionUsage": "本地会话统计",
-        "codexWebsocket": "Codex WebSocket"
+        "codexWebsocket": "Codex WebSocket",
+        "skipUndeclaredModels": "跳过未声明该模型的站点"
       },
       "fieldHelp": {
         "perProviderRetry": "当前渠道失败后，最多在同一渠道额外重试多少次；达到后在故障转移模式下切到下一个渠道，单渠道代理则返回错误。",
@@ -809,7 +810,8 @@
         "requestLog": "把每个请求的明细保存为本地文件（包含下方勾选的 Headers、请求体、响应，受体积上限和保留天数约束），供请求详情查看；关闭后请求详情只能显示摘要信息。",
         "metrics": "把请求的 token、费用、耗时等摘要写入数据库，作为统计页和请求列表的数据来源；只要本项或请求记录任一开启，摘要就会随请求记录。",
         "codexWebsocketDefault": "默认关闭，仅用于同协议 Responses 上游。",
-        "codexWebsocket": "关闭时接管配置会写入 supports_websockets = false，Codex 直接使用 HTTP/SSE，不会先尝试一次注定失败的 WebSocket 握手；开启后才写入 true。切换后需新建 Codex 会话或重启客户端生效。需要协议转换的请求始终走 HTTP/SSE。"
+        "codexWebsocket": "关闭时接管配置会写入 supports_websockets = false，Codex 直接使用 HTTP/SSE，不会先尝试一次注定失败的 WebSocket 握手；开启后才写入 true。切换后需新建 Codex 会话或重启客户端生效。需要协议转换的请求始终走 HTTP/SSE。",
+        "skipUndeclaredModels": "开启后，模型目录里没有列出本次请求模型的站点会被直接跳过（不产生错误请求、不计入健康度），而不是先试一次再失败。前提是至少有一个站点维护了模型目录，否则该开关不生效。"
       },
       "perCli": {
         "firstByte": "首包",

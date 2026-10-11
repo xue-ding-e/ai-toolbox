@@ -920,6 +920,21 @@ const GatewaySettingsPanel: React.FC<GatewaySettingsPanelProps> = ({
                     />
                   </FieldRow>
                 </div>
+                <FieldRow
+                  label={t('settings.gateway.fields.skipUndeclaredModels')}
+                  help={t('settings.gateway.hints.skipUndeclaredModels')}
+                  wide
+                >
+                  <SwitchControl
+                    checked={draftSettings.skip_undeclared_models}
+                    label={
+                      draftSettings.skip_undeclared_models
+                        ? t('common.enabled')
+                        : t('common.disabled')
+                    }
+                    onChange={(checked) => updateDraftAndSave('skip_undeclared_models', checked)}
+                  />
+                </FieldRow>
               </div>
             </div>
           </Section>

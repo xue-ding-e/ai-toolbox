@@ -2766,6 +2766,299 @@ data: {"type":"response.completed","response":{"id":"resp_stream","status":"comp
         assert!(second_captured.contains(r#""model":"second-opus""#));
     }
 
+    /// One Codex candidate for the model-catalog filter tests: a native
+    /// Responses upstream whose `modelCatalog` lists `declared`.
+    ///
+    /// `config_model` is the provider's own top-level `model`. It matters more
+    /// than it looks: `declared_models` counts that model as declared, and in
+    /// failover mode the gateway rewrites the request to it, so a provider that
+    /// sets one always declares exactly what it receives. Pass `None` for a
+    /// passthrough channel — the only kind the catalog filter can skip.
+    fn insert_codex_catalog_provider(
+        db: &SqliteDbState,
+        name: &str,
+        base_url: &str,
+        sort_index: i64,
+        config_model: Option<&str>,
+        declared: &[&str],
+    ) {
+        let models: Vec<Value> = declared
+            .iter()
+            .map(|model| json!({ "model": model, "displayName": model }))
+            .collect();
+        let model_line = config_model
+            .map(|model| format!("model = \"{model}\"\n"))
+            .unwrap_or_default();
+        let settings_config = json!({
+            "auth": { "OPENAI_API_KEY": "key" },
+            "config": format!(
+                "model_provider = \"custom\"\n{model_line}\n[model_providers.custom]\nname = \"custom\"\nbase_url = \"{base_url}\"\nwire_api = \"responses\"\n",
+            ),
+            "modelCatalog": { "models": models },
+        })
+        .to_string();
+        db.with_conn(|conn| {
+            db_create(
+                conn,
+                DbTable::CodexProvider,
+                &json!({
+                    "name": name,
+                    "category": "custom",
+                    "settings_config": settings_config,
+                    "extra_settings_config": "{}",
+                    "is_applied": false,
+                    "is_disabled": false,
+                    "sort_index": sort_index,
+                    "meta": { "apiFormat": "openai_responses" },
+                }),
+            )
+        })
+        .expect("insert codex provider");
+    }
+
+    /// A provider whose default model is written the way the provider editor
+    /// still writes it: `[chat].model`, with no root-level `model`.
+    ///
+    /// `declared_models` counts only the root-level `model`, but the failover
+    /// rewrite prefers `[chat].model`, so this shape used to be skipped by the
+    /// very request it was about to serve.
+    fn insert_codex_chat_model_provider(
+        db: &SqliteDbState,
+        name: &str,
+        base_url: &str,
+        sort_index: i64,
+        chat_model: &str,
+    ) {
+        let settings_config = json!({
+            "auth": { "OPENAI_API_KEY": "key" },
+            "config": format!(
+                "model_provider = \"custom\"\n[chat]\nmodel = \"{chat_model}\"\n\n[model_providers.custom]\nname = \"custom\"\nbase_url = \"{base_url}\"\nwire_api = \"responses\"\n",
+            ),
+            "modelCatalog": { "models": [] },
+        })
+        .to_string();
+        db.with_conn(|conn| {
+            db_create(
+                conn,
+                DbTable::CodexProvider,
+                &json!({
+                    "name": name,
+                    "category": "custom",
+                    "settings_config": settings_config,
+                    "extra_settings_config": "{}",
+                    "is_applied": false,
+                    "is_disabled": false,
+                    "sort_index": sort_index,
+                    "meta": { "apiFormat": "openai_responses" },
+                }),
+            )
+        })
+        .expect("insert codex chat-model provider");
+    }
+
+    fn responses_body(model: &str) -> Vec<u8> {
+        serde_json::to_vec(&json!({
+            "id": "resp_test",
+            "object": "response",
+            "created_at": 1764561600,
+            "model": model,
+            "output": [{
+                "type": "message",
+                "role": "assistant",
+                "content": [{ "type": "output_text", "text": "ok", "annotations": [] }],
+                "status": "completed",
+            }],
+            "status": "completed",
+            "usage": {
+                "input_tokens": 8,
+                "input_tokens_details": { "cached_tokens": 0 },
+                "output_tokens": 2,
+                "output_tokens_details": { "reasoning_tokens": 0 },
+                "total_tokens": 10,
+            },
+        }))
+        .expect("serialize responses body")
+    }
+
+    #[test]
+    fn route_request_skips_candidates_that_do_not_declare_the_model() {
+        // The mirror never lists `gpt-5.6-luna`, so with the filter on it must
+        // not be asked at all: the relay answers, and the mirror sees nothing.
+        let (relay_base_url, relay_rx) = start_test_upstream_with_response(
+            200,
+            "OK",
+            Box::leak(responses_body("gpt-5.6-luna").into_boxed_slice()),
+        );
+        let (mirror_base_url, mirror_rx) = start_test_upstream_with_response(
+            404,
+            "Not Found",
+            br#"{"error":{"message":"model not found"}}"#,
+        );
+        let body = br#"{"model":"gpt-5.6-luna","input":"say hi"}"#;
+        let request = debug_request("POST", "/openai/v1/responses", body);
+
+        let (_dir, db) = tauri::async_runtime::block_on(create_test_db());
+        // The relay is *second* in candidate order: without the filter the
+        // mirror would be tried first and fail, which is exactly the wasted
+        // request this feature removes.
+        insert_codex_catalog_provider(&db, "Mirror", &mirror_base_url, 0, None, &["gpt-5.6-sol"]);
+        insert_codex_catalog_provider(&db, "Relay", &relay_base_url, 1, None, &["gpt-5.6-luna"]);
+
+        let mut settings = ProxyGatewaySettings::default();
+        settings.skip_undeclared_models = true;
+        let context = GatewayRuntimeContext::new(settings, Some(db), None);
+        let response = tauri::async_runtime::block_on(route_request(&request, &context));
+
+        assert_eq!(response.status_code, 200);
+        assert_eq!(response.provider_name.as_deref(), Some("Relay"));
+        // One attempt, no failover: the mirror was skipped, not tried.
+        assert_eq!(response.attempt_count, 1);
+        assert!(!response.failover);
+        assert!(mirror_rx.recv_timeout(Duration::from_millis(300)).is_err());
+        assert!(relay_rx.recv_timeout(Duration::from_secs(2)).is_ok());
+    }
+
+    #[test]
+    fn route_request_tries_every_candidate_when_the_filter_is_off() {
+        // The control: same setup, filter off. The mirror is tried first and
+        // fails, then the relay answers — the pre-#414 behavior, kept intact.
+        let (relay_base_url, _relay_rx) = start_test_upstream_with_response(
+            200,
+            "OK",
+            Box::leak(responses_body("gpt-5.6-luna").into_boxed_slice()),
+        );
+        let (mirror_base_url, mirror_rx) = start_test_upstream_with_response(
+            404,
+            "Not Found",
+            br#"{"error":{"message":"model not found"}}"#,
+        );
+        let body = br#"{"model":"gpt-5.6-luna","input":"say hi"}"#;
+        let request = debug_request("POST", "/openai/v1/responses", body);
+
+        let (_dir, db) = tauri::async_runtime::block_on(create_test_db());
+        insert_codex_catalog_provider(&db, "Mirror", &mirror_base_url, 0, None, &["gpt-5.6-sol"]);
+        insert_codex_catalog_provider(&db, "Relay", &relay_base_url, 1, None, &["gpt-5.6-luna"]);
+
+        let context = GatewayRuntimeContext::new(ProxyGatewaySettings::default(), Some(db), None);
+        let response = tauri::async_runtime::block_on(route_request(&request, &context));
+
+        assert_eq!(response.status_code, 200);
+        assert_eq!(response.provider_name.as_deref(), Some("Relay"));
+        assert_eq!(response.attempt_count, 2);
+        assert!(response.failover);
+        assert!(
+            mirror_rx.recv_timeout(Duration::from_secs(2)).is_ok(),
+            "the mirror must be tried when the filter is off"
+        );
+    }
+
+    #[test]
+    fn route_request_keeps_every_candidate_when_nobody_declares_a_catalog() {
+        // The safety valve end to end: no candidate maintains a catalog, so the
+        // filter stays out of the way even with the switch on.
+        let (first_base_url, first_rx) = start_test_upstream_with_response(
+            200,
+            "OK",
+            Box::leak(responses_body("gpt-5.6-luna").into_boxed_slice()),
+        );
+        let (_second_base_url, second_rx) = start_test_upstream_with_response(
+            200,
+            "OK",
+            Box::leak(responses_body("gpt-5.6-luna").into_boxed_slice()),
+        );
+        let body = br#"{"model":"gpt-5.6-luna","input":"say hi"}"#;
+        let request = debug_request("POST", "/openai/v1/responses", body);
+
+        let (_dir, db) = tauri::async_runtime::block_on(create_test_db());
+        // Both declare nothing, mirroring a deployment where the user never
+        // fetched a model list.
+        insert_codex_catalog_provider(&db, "First", &first_base_url, 0, None, &[]);
+        insert_codex_catalog_provider(&db, "Second", &_second_base_url, 1, None, &[]);
+
+        let mut settings = ProxyGatewaySettings::default();
+        settings.skip_undeclared_models = true;
+        let context = GatewayRuntimeContext::new(settings, Some(db), None);
+        let response = tauri::async_runtime::block_on(route_request(&request, &context));
+
+        assert_eq!(response.status_code, 200);
+        assert_eq!(response.provider_name.as_deref(), Some("First"));
+        assert!(first_rx.recv_timeout(Duration::from_secs(2)).is_ok());
+        // The second was never reached (the first answered), which proves the
+        // first was not skipped: had the filter engaged, nothing would answer.
+        assert!(second_rx.recv_timeout(Duration::from_millis(300)).is_err());
+    }
+
+    #[test]
+    fn route_request_reports_model_not_declared_when_every_candidate_is_filtered() {
+        // Every candidate lacks the model: the caller gets a diagnosable 503
+        // naming the skip reason instead of a mystery cooldown.
+        let (base_url, rx) = start_test_upstream_with_response(200, "OK", br#"{"ok":true}"#);
+        let (mirror_base_url, mirror_rx) =
+            start_test_upstream_with_response(200, "OK", br#"{"ok":true}"#);
+        let body = br#"{"model":"gpt-5.6-luna","input":"say hi"}"#;
+        let request = debug_request("POST", "/openai/v1/responses", body);
+
+        let (_dir, db) = tauri::async_runtime::block_on(create_test_db());
+        // Two candidates on purpose: with a single candidate the filter
+        // short-circuits (`is_single_provider`) and this 503 is unreachable.
+        insert_codex_catalog_provider(&db, "Relay", &base_url, 0, None, &["gpt-5.6-sol"]);
+        insert_codex_catalog_provider(&db, "Mirror", &mirror_base_url, 1, None, &["gpt-5.6-sol"]);
+
+        let mut settings = ProxyGatewaySettings::default();
+        settings.skip_undeclared_models = true;
+        let context = GatewayRuntimeContext::new(settings, Some(db), None);
+        let response = tauri::async_runtime::block_on(route_request(&request, &context));
+
+        assert_eq!(response.status_code, 503);
+        assert_eq!(
+            response.error_category.as_deref(),
+            Some("model_not_declared")
+        );
+        // Neither upstream was asked: the skip happens before any request.
+        assert!(rx.recv_timeout(Duration::from_millis(300)).is_err());
+        assert!(mirror_rx.recv_timeout(Duration::from_millis(300)).is_err());
+    }
+
+    #[test]
+    fn route_request_does_not_skip_a_provider_that_declares_only_via_chat_model() {
+        // Regression: the editor writes the default model as `[chat].model`,
+        // which `declared_models` does not collect but the failover rewrite
+        // does use. Such a site must still be asked — before the fix the
+        // filter skipped it and this request ended in a 503.
+        let (chat_base_url, chat_rx) = start_test_upstream_with_response(
+            200,
+            "OK",
+            Box::leak(responses_body("qwen3-coder").into_boxed_slice()),
+        );
+        let (mirror_base_url, mirror_rx) = start_test_upstream_with_response(
+            404,
+            "Not Found",
+            br#"{"error":{"message":"model not found"}}"#,
+        );
+        let body = br#"{"model":"gpt-5.6-luna","input":"say hi"}"#;
+        let request = debug_request("POST", "/openai/v1/responses", body);
+
+        let (_dir, db) = tauri::async_runtime::block_on(create_test_db());
+        // The mirror *does* maintain a catalog, which is what arms the filter;
+        // the chat-model site maintains none, so only the default-model
+        // allowance can keep it in the candidate set.
+        insert_codex_catalog_provider(&db, "Mirror", &mirror_base_url, 0, None, &["gpt-5.6-sol"]);
+        insert_codex_chat_model_provider(&db, "Legacy", &chat_base_url, 1, "qwen3-coder");
+
+        let mut settings = ProxyGatewaySettings::default();
+        settings.skip_undeclared_models = true;
+        let context = GatewayRuntimeContext::new(settings, Some(db), None);
+        let response = tauri::async_runtime::block_on(route_request(&request, &context));
+
+        // The mirror is genuinely undeclared and gets skipped; the legacy site
+        // is asked (with the request rewritten to its `[chat].model`).
+        assert_eq!(response.status_code, 200);
+        assert_eq!(response.provider_name.as_deref(), Some("Legacy"));
+        assert_eq!(response.attempt_count, 1);
+        assert!(mirror_rx.recv_timeout(Duration::from_millis(300)).is_err());
+        assert!(chat_rx.recv_timeout(Duration::from_secs(2)).is_ok());
+    }
+
     #[test]
     fn gateway_connectivity_test_overrides_provider_without_failover() {
         let (_first_base_url, first_rx) =

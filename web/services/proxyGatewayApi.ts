@@ -141,6 +141,8 @@ export interface ProxyGatewaySettings {
   metrics_enabled: boolean;
   /** Whether locally imported CLI session usage shows up in stats and requests. */
   session_usage_enabled: boolean;
+  /** Skip candidates whose model catalog does not list the requested model (issue #414). */
+  skip_undeclared_models: boolean;
   store_request_body: boolean;
   store_headers: boolean;
   store_response_body: boolean;
