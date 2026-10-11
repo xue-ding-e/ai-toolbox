@@ -809,7 +809,7 @@
         "requestLog": "Save each request's detail file locally (including the Headers, request body and response parts selected below, subject to size limits and retention), used by the request detail view; when off, request details can only show summary fields.",
         "metrics": "Write per-request token, cost and latency summaries into the local database for the statistics page and request list; summaries are recorded while either this or request logging is on.",
         "codexWebsocketDefault": "Off by default. Only for upstreams using the Responses protocol.",
-        "codexWebsocket": "When off, new connections use HTTP/SSE and existing connections close once idle. After enabling, start a new Codex session or restart the client to retry WebSocket. Requests requiring protocol conversion still use HTTP/SSE."
+        "codexWebsocket": "While off, the takeover writes supports_websockets = false so Codex goes straight to HTTP/SSE instead of opening a WebSocket that would be rejected; it is only written as true once enabled. Toggling takes effect in a new Codex session or after restarting the client. Requests requiring protocol conversion always use HTTP/SSE."
       },
       "perCli": {
         "firstByte": "First byte",

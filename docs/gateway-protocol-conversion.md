@@ -1026,9 +1026,11 @@ WebSocket 是 runtime 的传输方式，不扩展上述转换矩阵。聚合模�
 
 开启后的升级顺序是：读取真实候选 provider → 判断 effective target protocol → 完成并校验上游握手 → 再次检查开关 → 才向 Codex 写出 `101`。实际目标不是 Responses、Copilot 这类需要按请求模型动态选协议的 provider，或上游配置明确 `supports_websockets=false` 时，在升级前返回 `426`。未配置该能力的 Responses provider 可以发起一次真实握手确认；只有上游返回有效 `101` 才启用，因此不能仅从接管后的 `wire_api="responses"` 推断支持。上游不接受升级时返回 `426`；鉴权、限流和其他真实错误保留错误语义，具体状态规则见兼容文档 §7.1。
 
-single/failover 接管写入的 `supports_websockets=true` 描述本机网关能力，并纳入接管受管字段；恢复直连恢复原值或移除新建字段。已有接管配置需重新接管一次以写入该能力，单纯重启网关只重建 runtime。真实上游能力仍从数据库 provider 的原始配置读取。Codex 在握手阶段收到 `426` 后使用原有 HTTP/SSE 请求，转换请求仍进入现有 `ConversionRoute`。已经建立的 WS 内出现 error event 不再具备握手回退语义。聚合模式投影 `supports_websockets=false`，与 single/failover 的能力投影相反。
+single/failover 接管写入的 `supports_websockets` 描述本机网关能力，并纳入接管受管字段；投影值是**两个门控的合取**（issue #426）：`mode != aggregate && codex_websocket_enabled`。网关关闭 WS 时把该字段投影为 `false`（而非只写 `true`），使 Codex 在建连前就选 HTTP/SSE；否则 Codex 每会话都会先发起一次注定被 `426` 拒绝的握手再回退，表现为大量回退错误。恢复直连恢复原值或移除新建字段。真实上游能力仍从数据库 provider 的原始配置读取。Codex 在握手阶段收到 `426` 后使用原有 HTTP/SSE 请求，转换请求仍进入现有 `ConversionRoute`。已经建立的 WS 内出现 error event 不再具备握手回退语义。聚合模式投影 `supports_websockets=false`，与开关无关。
 
-single/failover 模式切换开关不改写 CLI 文件，也不重启网关。关闭后已有连接等待 pending 轮次全部结算再关闭；空闲等待期间收到新帧也要重新检查开关，不能再放行一轮。关闭空闲连接本身不产生模型失败或额外调用数。开启后已回退 HTTP 的 Codex 会话可能继续使用 HTTP，需要新建会话或重启客户端重新尝试 WS。同一 provider 的不同会话可以同时使用 WS/HTTP；排障应核对实际 path、会话标识与业务终态，不能仅凭 provider 相同推断重复记账或回退。
+切换 `codex_websocket_enabled` 会立即重投影已接管 CLI 的这一个受管字段（`reproject_codex_websocket_capability`），不重新接管、不改动 manifest/备份/其他受管字段，也不重启网关；聚合模式与非接管 CLI 不参与重投影。投影失败只告警，不回滚已保存的设置，下一次切换或重新接管会重写该字段。Codex 在启动时读取 `config.toml`，因此开关生效需要新会话或重启客户端。存量接管配置（写入 `true` 的旧版本）在下一次切换开关或重新接管时修正。
+
+关闭后已有连接等待 pending 轮次全部结算再关闭；空闲等待期间收到新帧也要重新检查开关，不能再放行一轮。关闭空闲连接本身不产生模型失败或额外调用数。开启后已回退 HTTP 的 Codex 会话可能继续使用 HTTP，需要新建会话或重启客户端重新尝试 WS。同一 provider 的不同会话可以同时使用 WS/HTTP；排障应核对实际 path、会话标识与业务终态，不能仅凭 provider 相同推断重复记账或回退。
 
 逐轮处理遵守以下不变量：
 

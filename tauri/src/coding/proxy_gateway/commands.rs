@@ -95,6 +95,7 @@ pub async fn proxy_gateway_preview_privacy(
 pub async fn proxy_gateway_update_settings(
     gateway_state: tauri::State<'_, ProxyGatewayState>,
     sqlite_state: tauri::State<'_, SqliteDbState>,
+    app: tauri::AppHandle,
     mut settings: ProxyGatewaySettings,
 ) -> Result<ProxyGatewaySettings, String> {
     // Normalize/validate before touching runtime so invalid expressions never
@@ -109,13 +110,34 @@ pub async fn proxy_gateway_update_settings(
     if running {
         settings.enabled_on_startup = true;
     }
+    let previous = settings::load_settings_from_sqlite_state(&sqlite_state)?;
     let saved = settings::save_settings(&sqlite_state, settings)?;
+    let websocket_gate_changed = saved.codex_websocket_enabled != previous.codex_websocket_enabled;
     if running {
         let mut manager = gateway_state
             .manager
             .lock()
             .map_err(|_| "Proxy gateway manager lock poisoned".to_string())?;
         manager.update_runtime_settings(saved.clone())?;
+    }
+    // The Codex WebSocket gate decides whether the gateway accepts upgrades, so a
+    // taken-over `config.toml` must follow it (issue #426): leaving
+    // `supports_websockets = true` behind while the runtime answers `426` costs
+    // every Codex session a failed handshake before it falls back to HTTP.
+    // The settings are already saved at this point, so a projection failure is
+    // reported as a warning rather than rolling back a valid save; the next
+    // toggle or re-engage rewrites the field.
+    if websocket_gate_changed {
+        let projection = proxy_gateway_paths(&app).and_then(|paths| {
+            cli_proxy::reproject_codex_websocket_capability(&paths, saved.codex_websocket_enabled)
+        });
+        match projection {
+            Ok(true) => emit_gateway_cli_wsl_sync_request(&app, GatewayCliKey::Codex),
+            Ok(false) => {}
+            Err(error) => log::warn!(
+                "Failed to project the Codex WebSocket setting onto the taken-over config: {error}"
+            ),
+        }
     }
     Ok(saved)
 }

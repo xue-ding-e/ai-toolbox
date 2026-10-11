@@ -1383,6 +1383,78 @@ pub async fn restore_cli_direct(
     Ok(cli_takeover_status(db, paths, cli_key, gateway_status).await)
 }
 
+/// Re-project the Codex WebSocket capability after the gateway setting changed.
+///
+/// The setting gates the gateway's own upgrade handling (issue #426), so the
+/// taken-over `config.toml` must follow it: leaving `supports_websockets = true`
+/// on disk while the runtime answers `426` makes Codex open a WebSocket it can
+/// never use and retry HTTP on every session. Only Codex owns this capability;
+/// other CLIs have no equivalent field, and a CLI that was never taken over is
+/// left alone because the setting only describes the gateway transport.
+///
+/// This rewrites one managed field instead of re-engaging, so the takeover
+/// manifest, backups, and every other managed field stay untouched. Codex reads
+/// `config.toml` at startup, hence the caller's restart hint.
+///
+/// Returns whether a file was rewritten; the caller uses that to decide if the
+/// change needs propagating to a WSL-direct install.
+pub fn reproject_codex_websocket_capability(
+    paths: &ProxyGatewayPaths,
+    codex_websocket_enabled: bool,
+) -> Result<bool, String> {
+    let cli_key = GatewayCliKey::Codex;
+    let Some(manifest) = read_manifest(paths, cli_key).map_err(|error| error.to_string())? else {
+        return Ok(false);
+    };
+    if !manifest.enabled {
+        return Ok(false);
+    }
+    // Aggregate mode keeps its own projection (`false` regardless of the gate);
+    // this function only follows the setting for single/failover takeovers.
+    if manifest.mode == GatewayProxyMode::Aggregate {
+        return Ok(false);
+    }
+    let config_file = manifest
+        .files
+        .iter()
+        .find(|file| file.kind == CODEX_CONFIG_KIND)
+        .ok_or_else(|| "Gateway manifest has no Codex config.toml target".to_string())?;
+    let config_path = PathBuf::from(&config_file.path);
+    if !config_path.exists() {
+        // A missing runtime file is a drifted takeover; recreating it here would
+        // produce a provider table without `base_url` that looks taken over.
+        return Ok(false);
+    }
+
+    let mut document = read_or_new_toml_document(&config_path)?;
+    // Prefer the provider table this takeover actually wrote. Re-resolving the
+    // active provider from the document would follow a post-takeover edit and
+    // could stamp the capability onto a real upstream provider instead.
+    let provider_id = managed_codex_provider_id(&config_file.managed_fields)
+        .unwrap_or_else(|| resolve_codex_takeover_provider_id(&document));
+    let provider_table = document["model_providers"]
+        .as_table_mut()
+        .and_then(|providers| providers.get_mut(provider_id.as_str()))
+        .and_then(Item::as_table_mut)
+        .ok_or_else(|| format!("Codex [model_providers.{provider_id}] must be a table"))?;
+    provider_table["supports_websockets"] = value(codex_websocket_enabled);
+    write_toml_file(&config_path, &document)?;
+    Ok(true)
+}
+
+/// Provider table key recorded in a takeover's managed fields.
+///
+/// Manifests written before the WebSocket feature carry the other managed keys
+/// but not `supports_websockets`; those fall back to the document's active id.
+fn managed_codex_provider_id(managed_fields: &[String]) -> Option<String> {
+    managed_fields.iter().find_map(|field| {
+        field
+            .strip_prefix("model_providers.")?
+            .strip_suffix(".supports_websockets")
+            .map(str::to_string)
+    })
+}
+
 pub async fn stop_preflight(
     db: &SqliteDbState,
     paths: &ProxyGatewayPaths,
@@ -2314,11 +2386,14 @@ fn apply_gateway_config(
         }
         GatewayCliKey::Codex => {
             let config_path = required_target_path(targets, CODEX_CONFIG_KIND)?;
+            let codex_websocket_enabled =
+                settings::load_settings_from_sqlite_state(db)?.codex_websocket_enabled;
             let provider_id = patch_codex_config(
                 config_path,
                 &cli_gateway_endpoint(cli_key, base_origin),
                 preserve_codex_official_auth,
                 mode,
+                codex_websocket_enabled,
             )?;
             // `[agents]` defaults only exist for aggregate mode; the empty value
             // every other mode passes makes this a no-op.
@@ -3147,6 +3222,7 @@ fn patch_codex_config(
     gateway_endpoint: &str,
     preserve_official_auth: bool,
     mode: GatewayProxyMode,
+    codex_websocket_enabled: bool,
 ) -> Result<String, String> {
     let mut document = read_or_new_toml_document(path)?;
     let provider_id = resolve_codex_takeover_provider_id(&document);
@@ -3181,7 +3257,14 @@ fn patch_codex_config(
     // This describes the local gateway transport, not the upstream protocol.
     // Aggregate mode cannot choose a site during the handshake because the
     // model arrives in the first response.create event, so Codex must use HTTP/SSE.
-    provider_table["supports_websockets"] = value(mode != GatewayProxyMode::Aggregate);
+    //
+    // The runtime gate is projected too (issue #426): with the setting off the
+    // gateway answers every upgrade with 426, so advertising `true` would make
+    // Codex open a WebSocket it cannot use and fall back on every session. Codex
+    // defaults a missing `supports_websockets` to false, which is why writing the
+    // line only when the gate is open is enough to keep it on HTTP/SSE.
+    provider_table["supports_websockets"] =
+        value(mode != GatewayProxyMode::Aggregate && codex_websocket_enabled);
     if provider_table.get("requires_openai_auth").is_none() {
         provider_table["requires_openai_auth"] = value(true);
     }
@@ -4341,38 +4424,174 @@ mod tests {
 
     #[test]
     fn codex_takeover_writes_mode_specific_websocket_capability_and_restores_original() {
+        // The projected value is the AND of two independent gates: aggregate mode
+        // can never use WS (the model is unknown at handshake time), and the
+        // single/failover runtime answers `426` while the setting is off (#426).
         for mode in [
             GatewayProxyMode::Single,
             GatewayProxyMode::Failover,
             GatewayProxyMode::Aggregate,
         ] {
-            for original in [None, Some(false), Some(true)] {
-                let directory = tempfile::tempdir().unwrap();
-                let path = directory.path().join("config.toml");
-                let capability = original
-                    .map(|value| format!("supports_websockets = {value}\n"))
-                    .unwrap_or_default();
-                let backup = format!("model_provider = \"custom\"\n[model_providers.custom]\nbase_url = \"https://upstream.example/v1\"\n{capability}");
-                write_text_file(&path, &backup).unwrap();
-                patch_codex_config(&path, "http://127.0.0.1:37123/openai/v1", false, mode).unwrap();
-                let patched = parse_toml_file(&path).unwrap();
-                assert_eq!(
-                    patched["model_providers"]["custom"]["supports_websockets"].as_bool(),
-                    Some(mode != GatewayProxyMode::Aggregate)
-                );
-                assert!(codex_config_managed_fields_for_provider("custom")
-                    .contains(&"model_providers.custom.supports_websockets".to_string()));
-                restore_codex_config(&path, Some(&backup), &DEFAULT_AGGREGATE_SUBAGENT_DEFAULTS)
+            for websocket_enabled in [false, true] {
+                for original in [None, Some(false), Some(true)] {
+                    let directory = tempfile::tempdir().unwrap();
+                    let path = directory.path().join("config.toml");
+                    let capability = original
+                        .map(|value| format!("supports_websockets = {value}\n"))
+                        .unwrap_or_default();
+                    let backup = format!("model_provider = \"custom\"\n[model_providers.custom]\nbase_url = \"https://upstream.example/v1\"\n{capability}");
+                    write_text_file(&path, &backup).unwrap();
+                    patch_codex_config(
+                        &path,
+                        "http://127.0.0.1:37123/openai/v1",
+                        false,
+                        mode,
+                        websocket_enabled,
+                    )
                     .unwrap();
-                let restored = parse_toml_file(&path).unwrap();
-                assert_eq!(
-                    restored["model_providers"]["custom"]
-                        .get("supports_websockets")
-                        .and_then(Item::as_bool),
-                    original
-                );
+                    let patched = parse_toml_file(&path).unwrap();
+                    assert_eq!(
+                        patched["model_providers"]["custom"]["supports_websockets"].as_bool(),
+                        Some(mode != GatewayProxyMode::Aggregate && websocket_enabled)
+                    );
+                    assert!(codex_config_managed_fields_for_provider("custom")
+                        .contains(&"model_providers.custom.supports_websockets".to_string()));
+                    restore_codex_config(&path, Some(&backup), &DEFAULT_AGGREGATE_SUBAGENT_DEFAULTS)
+                        .unwrap();
+                    let restored = parse_toml_file(&path).unwrap();
+                    assert_eq!(
+                        restored["model_providers"]["custom"]
+                            .get("supports_websockets")
+                            .and_then(Item::as_bool),
+                        original
+                    );
+                }
             }
         }
+    }
+
+    /// Build a taken-over Codex runtime config plus its manifest, so the
+    /// setting-driven re-projection has a real file to edit.
+    fn write_taken_over_codex_config(
+        paths: &ProxyGatewayPaths,
+        mode: GatewayProxyMode,
+        capability: Option<bool>,
+    ) -> std::path::PathBuf {
+        let cli_key = GatewayCliKey::Codex;
+        let config_dir = paths.root().join("codex-runtime");
+        fs::create_dir_all(&config_dir).unwrap();
+        let config_path = config_dir.join("config.toml");
+        let capability_line = capability
+            .map(|value| format!("supports_websockets = {value}\n"))
+            .unwrap_or_default();
+        write_text_file(
+            &config_path,
+            &format!(
+                "model_provider = \"custom\"\n\n[model_providers.custom]\nbase_url = \"http://127.0.0.1:37123/openai/v1\"\nwire_api = \"responses\"\n{capability_line}"
+            ),
+        )
+        .unwrap();
+
+        let mut manifest = CliProxyManifest::new(
+            cli_key,
+            "http://127.0.0.1:37123".to_string(),
+            "2026-06-01T00:00:00Z".to_string(),
+            mode,
+            "provider-1".to_string(),
+        );
+        manifest.files = vec![CliProxyManifestFile {
+            kind: CODEX_CONFIG_KIND.to_string(),
+            path: path_to_string(&config_path),
+            existed: true,
+            backup_rel_path: format!("{CODEX_CONFIG_KIND}.bak"),
+            backup_sha256: None,
+            backup_size: None,
+            managed_fields: codex_config_managed_fields_for_provider("custom"),
+        }];
+        write_manifest(paths, cli_key, &manifest).unwrap();
+        config_path
+    }
+
+    fn codex_capability_on_disk(config_path: &Path) -> Option<bool> {
+        parse_toml_file(config_path).unwrap()["model_providers"]["custom"]
+            .get("supports_websockets")
+            .and_then(Item::as_bool)
+    }
+
+    #[test]
+    fn codex_websocket_setting_reprojection_follows_the_gate_and_skips_aggregate() {
+        for mode in [GatewayProxyMode::Single, GatewayProxyMode::Failover] {
+            for enabled in [false, true] {
+                let dir = tempfile::tempdir().unwrap();
+                let paths = ProxyGatewayPaths::new(dir.path());
+                // Start from the opposite value so the rewrite is observable.
+                let config_path =
+                    write_taken_over_codex_config(&paths, mode, Some(!enabled));
+
+                assert!(reproject_codex_websocket_capability(&paths, enabled).unwrap());
+
+                assert_eq!(codex_capability_on_disk(&config_path), Some(enabled));
+            }
+        }
+
+        // Aggregate always projects `false`; the setting must not re-enable WS.
+        let dir = tempfile::tempdir().unwrap();
+        let paths = ProxyGatewayPaths::new(dir.path());
+        let config_path = write_taken_over_codex_config(&paths, GatewayProxyMode::Aggregate, None);
+        assert!(!reproject_codex_websocket_capability(&paths, true).unwrap());
+        assert_eq!(codex_capability_on_disk(&config_path), None);
+    }
+
+    #[test]
+    fn codex_websocket_reprojection_skips_untaken_over_and_missing_configs() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = ProxyGatewayPaths::new(dir.path());
+        // No manifest at all: nothing to project onto.
+        assert!(!reproject_codex_websocket_capability(&paths, true).unwrap());
+
+        // Disabled manifest: the CLI is back to direct mode and must be left alone.
+        let config_path = write_taken_over_codex_config(&paths, GatewayProxyMode::Single, None);
+        let mut manifest = read_manifest(&paths, GatewayCliKey::Codex)
+            .unwrap()
+            .expect("manifest");
+        manifest.enabled = false;
+        write_manifest(&paths, GatewayCliKey::Codex, &manifest).unwrap();
+        assert!(!reproject_codex_websocket_capability(&paths, true).unwrap());
+        assert_eq!(codex_capability_on_disk(&config_path), None);
+
+        // Enabled manifest whose runtime file vanished: do not recreate it.
+        manifest.enabled = true;
+        write_manifest(&paths, GatewayCliKey::Codex, &manifest).unwrap();
+        fs::remove_file(&config_path).unwrap();
+        assert!(!reproject_codex_websocket_capability(&paths, true).unwrap());
+        assert!(!config_path.exists());
+    }
+
+    #[test]
+    fn codex_websocket_reprojection_uses_the_managed_provider_not_the_active_one() {
+        // A user edit that repoints `model_provider` must not make the gateway
+        // stamp the capability onto an unrelated upstream provider.
+        let dir = tempfile::tempdir().unwrap();
+        let paths = ProxyGatewayPaths::new(dir.path());
+        let config_path = write_taken_over_codex_config(&paths, GatewayProxyMode::Single, None);
+        let mut document = read_or_new_toml_document(&config_path).unwrap();
+        document["model_provider"] = value("other");
+        document["model_providers"]["other"] =
+            Item::Table(toml_edit::Table::new());
+        document["model_providers"]["other"]["base_url"] =
+            value("https://upstream.example/v1");
+        write_toml_file(&config_path, &document).unwrap();
+
+        assert!(reproject_codex_websocket_capability(&paths, true).unwrap());
+
+        let patched = parse_toml_file(&config_path).unwrap();
+        assert_eq!(
+            patched["model_providers"]["custom"]["supports_websockets"].as_bool(),
+            Some(true)
+        );
+        assert!(patched["model_providers"]["other"]
+            .get("supports_websockets")
+            .is_none());
     }
 
     #[test]
@@ -4400,6 +4619,7 @@ command = "node"
             "http://127.0.0.1:37123/openai/v1",
             false,
             GatewayProxyMode::Single,
+            true,
         )
         .unwrap();
         assert_eq!(provider_id, "custom");
@@ -4485,6 +4705,7 @@ env_key = "OPENAI_API_KEY"
                 "http://127.0.0.1:37123/openai/v1",
                 false,
                 mode,
+                true,
             )
             .unwrap();
             assert_eq!(provider_id, "custom");
@@ -4533,6 +4754,7 @@ env_key = "OPENAI_API_KEY"
             "http://127.0.0.1:37123/openai/v1",
             true,
             GatewayProxyMode::Single,
+            true,
         )
         .unwrap();
         let patched = parse_toml_file(&config_path).unwrap();
@@ -4567,6 +4789,7 @@ command = "node"
             "http://127.0.0.1:37123/openai/v1",
             false,
             GatewayProxyMode::Single,
+            true,
         )
         .unwrap();
         assert_eq!(provider_id, "custom");
@@ -4602,6 +4825,7 @@ command = "node"
             "http://127.0.0.1:37123/openai/v1",
             false,
             GatewayProxyMode::Single,
+            true,
         )
         .unwrap();
         assert_eq!(provider_id, "custom");
@@ -4777,6 +5001,7 @@ base_url = "http://127.0.0.1:9999/openai/v1"
             "http://127.0.0.1:37123/openai/v1",
             false,
             GatewayProxyMode::Single,
+            true,
         )
         .unwrap();
         assert_eq!(provider_id, "custom");
@@ -4828,6 +5053,7 @@ base_url = "http://127.0.0.1:9999/openai/v1"
             "http://127.0.0.1:37123/openai/v1",
             true,
             GatewayProxyMode::Single,
+            true,
         )
         .unwrap();
         assert_eq!(provider_id, "custom");

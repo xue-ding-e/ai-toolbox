@@ -809,7 +809,7 @@
         "requestLog": "把每个请求的明细保存为本地文件（包含下方勾选的 Headers、请求体、响应，受体积上限和保留天数约束），供请求详情查看；关闭后请求详情只能显示摘要信息。",
         "metrics": "把请求的 token、费用、耗时等摘要写入数据库，作为统计页和请求列表的数据来源；只要本项或请求记录任一开启，摘要就会随请求记录。",
         "codexWebsocketDefault": "默认关闭，仅用于同协议 Responses 上游。",
-        "codexWebsocket": "关闭后，新连接使用 HTTP/SSE，已有连接空闲后关闭。开启后，请新建 Codex 会话或重启客户端以重新尝试 WebSocket；需要协议转换的请求仍走 HTTP/SSE。"
+        "codexWebsocket": "关闭时接管配置会写入 supports_websockets = false，Codex 直接使用 HTTP/SSE，不会先尝试一次注定失败的 WebSocket 握手；开启后才写入 true。切换后需新建 Codex 会话或重启客户端生效。需要协议转换的请求始终走 HTTP/SSE。"
       },
       "perCli": {
         "firstByte": "首包",
