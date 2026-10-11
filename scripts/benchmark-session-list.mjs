@@ -103,13 +103,19 @@ async function openBrowser() {
   browser.stderr.on('data', data => { browserErrors += data; });
   let socket;
   try {
-    let targets;
-    for (let attempt = 0; attempt < 150; attempt++) {
-      try { targets = await (await fetch('http://127.0.0.1:' + debugPort + '/json/list')).json(); break; }
-      catch { await delay(100); }
+    // Wait for the page target, not merely for the DevTools HTTP endpoint: the
+    // endpoint answers before the first page exists, and reading that early
+    // list crashes on `.webSocketDebuggerUrl` of an absent page.
+    let pageTarget;
+    for (let attempt = 0; attempt < 600 && !pageTarget; attempt++) {
+      try {
+        const targets = await (await fetch('http://127.0.0.1:' + debugPort + '/json/list')).json();
+        pageTarget = targets.find(target => target.type === 'page' && target.webSocketDebuggerUrl);
+      } catch { /* Endpoint not up yet. */ }
+      if (!pageTarget) await delay(100);
     }
-    if (!targets) throw new Error('Browser did not start: ' + browserErrors.slice(-1500));
-    socket = new WebSocket(targets.find(target => target.type === 'page').webSocketDebuggerUrl);
+    if (!pageTarget) throw new Error('Browser did not start: ' + browserErrors.slice(-1500));
+    socket = new WebSocket(pageTarget.webSocketDebuggerUrl);
     await new Promise((resolve, reject) => {
       socket.addEventListener('open', resolve, { once: true });
       socket.addEventListener('error', reject, { once: true });
