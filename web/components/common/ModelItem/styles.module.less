@@ -1,3 +1,36 @@
+// The row's text block: takes what the actions leave, truncating rather than
+// wrapping. The row is one line by construction — a wrapped model id pushes the
+// actions' baseline off centre and grows the row for no added information.
+.summary {
+  flex: 1 1 220px;
+  // The text keeps a readable share of the row and the actions wrap to their
+  // own line when they cannot share it. They are hover-revealed with
+  // `visibility`, so they hold their width whether or not the pointer is over
+  // the row — in the 478px detail sidebar two labelled buttons are 362px, which
+  // left the text 60px and truncated a model id to three characters. Wrapping
+  // is decided by the space they always occupy, so hovering never re-lays-out
+  // the row.
+  min-width: 220px;
+}
+
+.summaryLine {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+// antd's `Text` is inline, so the two spans keep their own spacing; the gap
+// belongs to the element between them rather than to a text node.
+.modelName {
+  font-size: 13px;
+}
+
+.modelMeta {
+  margin-left: 8px;
+  font-size: 12px;
+}
+
 .container:hover .primaryAction {
   opacity: 1;
   pointer-events: auto;

@@ -143,6 +143,30 @@ export async function verifyCodexCardView({ send, evaluate, baseUrl, artifactRoo
       footerButtonFontSize: summary.footerButtonFontSize,
     }),
   ), { titleFontSize: '14px', subtitleFontSize: '11px', footerButtonFontSize: '11px' });
+  // The grid stretches every card in a row to the tallest, and the card body
+  // absorbs the difference — so a provider without a model line used to grow
+  // 17px of slack directly above its footer, reading as "the divider drifted
+  // away from the text" (reported 2026-10-12). The line is reserved whether or
+  // not a card states one, which is what keeps the two heights equal.
+  check(
+    'a card without a model line is the same height as one with it',
+    await evaluate(`(() => {
+      const heightOf = (id) => Math.round(document.querySelector('[data-provider-id="' + id + '"]').getBoundingClientRect().height);
+      return heightOf('provider-d') === heightOf('provider-a');
+    })()`),
+  );
+  check(
+    'the model line sits the same distance above the divider on both',
+    await evaluate(`(() => {
+      const gapAboveDivider = (id) => {
+        const card = document.querySelector('[data-provider-id="' + id + '"]');
+        const subtitle = card.querySelector('[data-provider-subtitle]');
+        const footer = card.querySelector('[data-provider-card-footer]');
+        return Math.round(footer.getBoundingClientRect().top - subtitle.getBoundingClientRect().bottom);
+      };
+      return gapAboveDivider('provider-a') === gapAboveDivider('provider-b');
+    })()`),
+  );
 
   // --- state tags: applied, and the official heading ----------------------
   check(
@@ -256,6 +280,39 @@ export async function verifyCodexCardView({ send, evaluate, baseUrl, artifactRoo
   check(
     'the sidebar catalog keeps the per-row auto-review action',
     await fixture('detailTextIncludes("已是自动审批模型")'),
+  );
+  // The row's text is one line, and the row is wide enough for it. Both halves
+  // were broken: the hover-revealed actions hold their full width even while
+  // invisible (two labelled buttons are ~362px of this sidebar's 478px row), so
+  // the text was squeezed to 29px and wrapped mid-word — "DeepSee / k V4.1 /
+  // Flash (d / eepseek-…" (reported 2026-10-12). The text is now the part that
+  // gives way, with an ellipsis, and the actions wrap below it when they cannot
+  // share the line.
+  check(
+    'a model row keeps its name, id and limits on one line',
+    await evaluate(`(() => {
+      const panel = codexCardViewFixture.detailPanel();
+      const row = [...panel.querySelectorAll('div')].find((d) => d.querySelector('.anticon-holder'));
+      const text = row.querySelector('span[title]');
+      return text.scrollWidth <= text.getBoundingClientRect().width + 1;
+    })()`),
+  );
+  check(
+    'the model text is given a readable share of the row, not the leftovers',
+    await evaluate(`(() => {
+      const panel = codexCardViewFixture.detailPanel();
+      const row = [...panel.querySelectorAll('div')].find((d) => d.querySelector('.anticon-holder'));
+      const text = row.querySelector('span[title]');
+      return Math.round(text.getBoundingClientRect().width) >= 200;
+    })()`),
+  );
+  check(
+    'a model row is one text line tall, not a wrapped block',
+    await evaluate(`(() => {
+      const panel = codexCardViewFixture.detailPanel();
+      const row = [...panel.querySelectorAll('div')].find((d) => d.querySelector('.anticon-holder'));
+      return Math.round(row.querySelector('span[title]').getBoundingClientRect().height) < 30;
+    })()`),
   );
   // The catalog is a working manager, not a read-only list: its toolbar came
   // with it.

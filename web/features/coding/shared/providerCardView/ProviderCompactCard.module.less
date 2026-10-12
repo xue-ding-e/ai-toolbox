@@ -182,7 +182,18 @@
   gap: 6px;
   min-width: 0;
   flex: 1;
-  padding: 0 12px 10px;
+  padding: 0 12px 6px;
+  // The model line is reserved whether or not this card has one: the subtitle's
+  // own 17px plus the 6px bottom padding above (the box is `border-box`, so the
+  // padding is inside this number).
+  //
+  // The grid stretches every card in a row to the tallest, and the body is the
+  // flex child that absorbs the difference — so a provider without a model used
+  // to be 87px beside a 104px neighbour and grew its 17px of slack directly
+  // above the footer, reading as "the divider drifted away from the text".
+  // Reserving the line makes every card the same height on its own, so the
+  // divider keeps a fixed distance from whatever is above it.
+  min-height: 23px;
 }
 
 // The models the card states, as one line of `Role: value` pairs. The role is

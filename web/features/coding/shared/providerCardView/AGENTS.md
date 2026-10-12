@@ -24,6 +24,7 @@
 - **accent 高亮必须走 `providerCardVariants/cardChrome.ts` 的 `resolveProviderAccentChrome`，不要内联复制一份。** 这是仓库记录在案的高危漂移点：四个 bespoke 卡片迁到共享外壳时没把 accent 一起搬，卡片**静默**变成统一灰边框——没有报错、类型也通过。两个外壳（`CardShell` 与 `ProviderCompactCard`）现在共用同一个函数，改一处两边生效。
 - **accent 必须走 inline style，不能靠 CSS 类的 hover 规则。** 高亮是「这张卡片处于某个状态」，不是「指针在它上面」；写进 class 会让 hover 重绘它。
 - **hover 浮出的「更多」按钮只能改 `opacity`，不能改 `display`/`width`。** 按钮在未 hover 时也占着盒子，否则指针划过卡片时标题会重排（DESIGN.md 明确禁止布局跳动）。
+- **第二行的高度必须预留，且预留值要连 `.body` 自己的下内边距一起算。** 网格把一行里每张卡片都拉到最高那张的高度，差额由 `.body`（`flex: 1`）吸收——**没有模型行的卡片**（Codex 的官方/`__local__` 行）因此把 17px 余量堆在 footer 分隔线正上方，用户 2026-10-12 报「副标题离下面的分隔线太远」。`.body` 的 `min-height: 23px` 把这一行按自己的尺寸预留掉（17px 文字行 + 6px 下内边距；盒子是 `border-box`，所以内边距要算进这个数里——写 22px 就差 1px）。**判据：卡片高度是「有没有这一行」的函数，不是「这一行多长」的函数。** 回归：`test:codex-card-view` 断言「有/无模型行的卡片等高」且「两张卡片的第二行到分隔线距离相同」。
 - **`content` 区的两组组件都是共享的**：模型目录走 `providerCardVariants/ProviderModelSection.tsx`（Codex / OpenCode 的列表卡片与侧栏共用同一份 `modelSection.*` 映射），官方账号块走 `shared/officialAccounts/OfficialAccountsSection`。**不要在侧栏里另起一个「侧栏版目录」**——目录是**能用的管理器**（批量删除 / 模型测试 / 获取模型 / 添加模型），搬进去的必须是同一个组件，否则卡片视图下的模型管理会是残缺的一套。
 - **底部两个主按钮走 `providerCardVariants/providerCardActions.tsx` 的 `renderProviderLaunchAction` / `renderProviderPrimaryAction`，不要在本模块内联一份。** 详情侧栏渲染的是**同一对**函数——「侧栏提供的能力和卡片一致」因此是代码事实，不是每次改按钮都要重新核对的对齐工作。两个样式卡片（`ClaudeStyleCard` / `CodexStyleCard`）的主按钮也已改为调用它。
 - **标题后面不再显示地址，但标题本身仍是链接。** 地址（`baseUrl`）搬到了详情侧栏的「连接信息」区；标题则把 `baseUrl` 交给 `ProviderNameLink`，于是**悬停显示该 provider 的来源域名、点击用系统浏览器打开**——与列表卡片逐字同款。标题因此不再有 `max-width: 65%` 的上限（那是为了给旁边的长 URL 让位，URL 一走就只是浪费空间）。
@@ -53,7 +54,7 @@
 ## 最小验证
 
 - `pnpm run test:provider-card-view`（53 项真浏览器断言）：切换生效并落库、**切换按钮的图标不与「通用配置」重复且文字跟随目标布局**、副标题三种形态与 `Role:` 前缀、**相邻条目之间有 `|` 分隔而单条时没有**、卡片标题不再带地址但**悬停给出域名、点击调 `open_url`**、**三段式字号（14/11/11/10）**、**已应用卡片陈述「已应用」标签而非只有边框**、已应用卡片是网关按钮而非「应用」、hover 浮出「更多」、菜单项与列表卡片同构（多一个「模型测试」）、**点卡片主体开侧栏而点控件不开**、**多选模式下主体点击被抑制**（进入/离开两侧都验）、侧栏「连接信息」陈述协议、**长 API Key 单行中间省略而复制按钮给出完整值**、侧栏 footer 动作与卡片一致且字号同为 11px、`data-provider-id` 仍在、**网格内真拖拽后顺序变化且回写后端**、切回列表恢复、暗色主题。
-- `pnpm run test:codex-card-view`（55 项真浏览器断言，挂**真实 `CodexPage`**）：切换生效并落库、格子只有主模型且无地址/目录、`主模型: gpt-5 (high)`、没配模型就不出第二行、三段式字号、官方卡片是 🔗 官方账号 (2) 且图标在标题之前、footer 是网关/应用、hover 浮出「更多」、标题悬停给域名并可点开、**侧栏含连接信息/模型配置/模型列表目录/官方账号，且目录带全部管理动作**、自定义供应商**没有**账号块、长 key 中间省略而复制给出完整值、`data-provider-id` 仍在、网格内真拖拽后回写、切回列表后目录仍在、暗色主题。
+- `pnpm run test:codex-card-view`（60 项真浏览器断言，挂**真实 `CodexPage`**）：切换生效并落库、格子只有主模型且无地址/目录、`主模型: gpt-5 (high)`、没配模型就不出第二行、三段式字号、官方卡片是 🔗 官方账号 (2) 且图标在标题之前、footer 是网关/应用、hover 浮出「更多」、标题悬停给域名并可点开、**侧栏含连接信息/模型配置/模型列表目录/官方账号，且目录带全部管理动作**、自定义供应商**没有**账号块、长 key 中间省略而复制给出完整值、`data-provider-id` 仍在、网格内真拖拽后回写、切回列表后目录仍在、暗色主题。
 - `pnpm run test:provider-card-layout`：新组件不得让映射层守卫报错，`PENDING_MIGRATION` 不变（3）；`ProviderModelSection` 已列入该脚本的「render point」文件表，否则 `modelSection.*` 会被误报成死 prop。
 - `pnpm run test:provider-list-locate` / `test:provider-list-drag`：列表布局未受影响。
 

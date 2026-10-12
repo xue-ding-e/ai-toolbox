@@ -89,7 +89,14 @@ const ModelItem: React.FC<ModelItemProps> = ({
     borderRadius: 4,
     padding: '8px 12px',
     display: 'flex',
+    // Items centre within their own flex line, and the lines stack from the
+    // top — so a wrapped action group sits under the text rather than floating
+    // against the row's middle.
     alignItems: 'center',
+    // Narrow hosts (the 478px detail sidebar) cannot fit the text and the
+    // action group side by side; see `.summary`.
+    flexWrap: 'wrap',
+    rowGap: 4,
     gap: 8,
   };
 
@@ -127,19 +134,26 @@ const ModelItem: React.FC<ModelItemProps> = ({
       {/* One line: name, id, context limit, default marker. The limits used to
           sit on a second line labelled in full; folding the context window into
           the parentheses keeps the row scannable and drops a line that repeated
-          the same information for every model in the list. */}
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <Text strong style={{ fontSize: 13 }}>
-          {model.name}
-        </Text>
-        <Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
-          {contextLimit ? `(${model.id} | ${contextLimit})` : `(${model.id})`}
-        </Text>
-        {model.isPrimary && (
-          <Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
-            · {t('common.model.currentPrimary')}
+          the same information for every model in the list.
+
+          One line by construction, not by luck: the actions beside this block
+          are hover-revealed with `visibility`, so they hold their width at all
+          times. See `.summary` in the stylesheet for what that costs on a
+          narrow host. */}
+      <div className={styles.summary}>
+        <span className={styles.summaryLine} title={`${model.name} (${model.id}${contextLimit ? ` | ${contextLimit}` : ''})`}>
+          <Text strong className={styles.modelName}>
+            {model.name}
           </Text>
-        )}
+          <Text type="secondary" className={styles.modelMeta}>
+            {contextLimit ? `(${model.id} | ${contextLimit})` : `(${model.id})`}
+          </Text>
+          {model.isPrimary && (
+            <Text type="secondary" className={styles.modelMeta}>
+              · {t('common.model.currentPrimary')}
+            </Text>
+          )}
+        </span>
       </div>
 
       <Space>
