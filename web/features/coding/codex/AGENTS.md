@@ -115,7 +115,7 @@ sequenceDiagram
 
 - 至少验证：修改根目录后页面重新读取到新的路径来源。
 - 至少验证：导入同源 provider 冲突时有明确覆盖/副本分支。
-- 改卡片布局或侧栏时，跑 `pnpm run test:codex-card-view`（真 Chromium 挂真实 `CodexPage`，52 项断言）：切换并落库、格子只有主模型、目录/账号块进侧栏、格子内拖拽回写、切回列表后目录仍在。
+- 改卡片布局或侧栏时，跑 `pnpm run test:codex-card-view`（真 Chromium 挂真实 `CodexPage`，55 项断言）：切换并落库、格子只有主模型、目录/账号块进侧栏、格子内拖拽回写、切回列表后目录仍在。
 - 模型目录改动运行 `pnpm test` 与 `pnpm exec tsc --noEmit`。`web/test/features/coding/codex/utils/codexCatalogModelRows.test.ts` 覆盖行身份、upsert/删除/排序、弹窗表单值往返、图片能力三态与连通性 model id 并集；`codexProviderCatalogSave.test.ts` 覆盖 single/failover/aggregate 的回放顺序。模型目录的浏览器检查（`pnpm test:codex-model-import`）目前仍指向已移除的表单内映射 UI，迁移到卡片模型列表前不要把它当作有效结论。
 - 若本机存在 `~/.cc-switch/cc-switch.db`，Codex 页应出现「从 CC Switch 导入」；导入后带 `sourceProviderId=ccs:codex:...`、默认未应用；MCP-only 空壳不应进入列表。
 - 改历史同步 UI 时，至少验证会话管理标题栏入口、来源切换、本机/WSL 状态弹窗、同步确认、恢复最新备份强确认和 Session Manager 刷新触发。

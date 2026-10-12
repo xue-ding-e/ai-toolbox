@@ -246,6 +246,17 @@ export async function verifyCodexCardView({ send, evaluate, baseUrl, artifactRoo
     'opening it lists the provider\'s models, with their display names',
     await fixture('detailTextIncludes("GPT-5 mini")'),
   );
+  // Codex's two auto-review affordances are part of the catalog, not of the
+  // card: the line above the rows and the per-row "set as auto-review" button.
+  // A sidebar rendering the catalog without them would still look right.
+  check(
+    'the sidebar catalog keeps the auto-review line',
+    await fixture('detailTextIncludes("自动审批模型: gpt-5-mini")'),
+  );
+  check(
+    'the sidebar catalog keeps the per-row auto-review action',
+    await fixture('detailTextIncludes("已是自动审批模型")'),
+  );
   // The catalog is a working manager, not a read-only list: its toolbar came
   // with it.
   check(
@@ -272,6 +283,12 @@ export async function verifyCodexCardView({ send, evaluate, baseUrl, artifactRoo
     "the sidebar state line carries the card's action row",
     await fixture('detailStatusActions()'),
     ['网关代理'],
+  );
+  // The same tag row the grid cell states, because it *is* that row.
+  check(
+    "the sidebar states the cell's state tags verbatim",
+    await fixture('detailStatusTagLabels()'),
+    await fixture('cardTagLabels("provider-a")'),
   );
   await screenshot('codex-card-view-detail');
 

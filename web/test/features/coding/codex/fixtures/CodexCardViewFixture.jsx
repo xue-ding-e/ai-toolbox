@@ -57,7 +57,7 @@ const longApiKey = 'sk-codex-fixture-0123456789abcdefghijklmnopqrstuvwxyz-TAIL';
  * field, and the protocol comes from `meta.apiFormat` when the user picked one
  * (otherwise it is derived from the wire API in the TOML).
  */
-const createProvider = ({ id, name, createdAt, category = 'custom', model, effort, apiFormat, apiKey, notes, models = [] }) => ({
+const createProvider = ({ id, name, createdAt, category = 'custom', model, effort, apiFormat, apiKey, notes, models = [], autoReview }) => ({
   id,
   name,
   category,
@@ -73,6 +73,10 @@ const createProvider = ({ id, name, createdAt, category = 'custom', model, effor
       `base_url = "https://${id}.example.test/v1"`,
     ].filter(Boolean).join('\n'),
     modelCatalog: { models: models.map((entry) => ({ model: entry.model, displayName: entry.displayName, contextWindow: 128000 })) },
+    // Only provider-a declares one: the auto-review line and the per-row
+    // action are Codex-only affordances of the catalog, and the sidebar has to
+    // carry them with it.
+    ...(autoReview ? { autoReviewModelOverride: autoReview } : {}),
   }),
   meta: apiFormat ? { apiFormat } : undefined,
   notes,
@@ -133,6 +137,7 @@ const state = {
         { model: 'gpt-5', displayName: 'GPT-5' },
         { model: 'gpt-5-mini', displayName: 'GPT-5 mini' },
       ],
+      autoReview: 'gpt-5-mini',
     }),
     // No catalog, no note: the plain case.
     createProvider({
@@ -395,6 +400,17 @@ window.codexCardViewFixture = {
     return [...footer.querySelectorAll('button')]
       .map((button) => button.textContent.trim())
       .filter(Boolean);
+  },
+  /**
+   * The state tags the sidebar's title line states, in order.
+   *
+   * The same fragment the cell's tag row renders — a sidebar that listed the
+   * tags by hand would drift the moment either side gained one.
+   */
+  detailStatusTagLabels() {
+    const line = document.querySelector('[data-provider-detail-status]');
+    if (!line) return null;
+    return [...line.querySelectorAll('.ant-tag')].map((tag) => tag.textContent.trim());
   },
   detailStatusActions() {
     const line = document.querySelector('[data-provider-detail-status]');

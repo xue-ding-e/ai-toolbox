@@ -67,10 +67,13 @@ import type {
 } from '@/features/coding/shared/providerCardVariants/types';
 import { renderProviderPrimaryAction } from '@/features/coding/shared/providerCardVariants/providerCardActions';
 import ProviderModelSection from '@/features/coding/shared/providerCardVariants/ProviderModelSection';
-import ProviderCompactCard from '@/features/coding/shared/providerCardView/ProviderCompactCard';
-import ProviderDetailPanel, {
+// Through the module's barrel, the way the sibling shared modules are consumed
+// (`shared/providerList`, `shared/officialAccounts`).
+import {
+  ProviderCompactCard,
+  ProviderDetailPanel,
   type ProviderDetailSection,
-} from '@/features/coding/shared/providerCardView/ProviderDetailPanel';
+} from '@/features/coding/shared/providerCardView';
 import type { ProviderViewMode } from '@/features/coding/shared/providerList';
 import {
   CODEX_LOCAL_PROVIDER_ID,

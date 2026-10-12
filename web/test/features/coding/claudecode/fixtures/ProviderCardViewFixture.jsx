@@ -403,6 +403,17 @@ window.providerCardViewFixture = {
    * The labels of the action row that shares the title's state line — the
    * card's own actions, minus the state tags that sit on the same line.
    */
+  /**
+   * The state tags the sidebar's title line states, in order.
+   *
+   * The same fragment the cell's tag row renders — a sidebar that listed the
+   * tags by hand would drift the moment either side gained one.
+   */
+  detailStatusTagLabels() {
+    const line = document.querySelector('[data-provider-detail-status]');
+    if (!line) return null;
+    return [...line.querySelectorAll('.ant-tag')].map((tag) => tag.textContent.trim());
+  },
   detailStatusActions() {
     const line = document.querySelector('[data-provider-detail-status]');
     if (!line) return null;

@@ -38,11 +38,15 @@ import type {
   ProviderCardMetaEntry,
   ProviderCardVariantProps,
 } from '@/features/coding/shared/providerCardVariants/types';
-import ProviderCompactCard from '@/features/coding/shared/providerCardView/ProviderCompactCard';
-import ProviderDetailPanel, {
+// Through the module's barrel, the way the sibling shared modules are consumed
+// (`shared/providerList`, `shared/officialAccounts`): the directory is the
+// module, and its public surface is one list rather than four file paths.
+import {
+  ProviderCompactCard,
+  ProviderDetailPanel,
   type ProviderDetailField,
   type ProviderDetailSection,
-} from '@/features/coding/shared/providerCardView/ProviderDetailPanel';
+} from '@/features/coding/shared/providerCardView';
 import type { ProviderViewMode } from '@/features/coding/shared/providerList';
 import { useSettingsStore } from '@/stores/settingsStore';
 import {

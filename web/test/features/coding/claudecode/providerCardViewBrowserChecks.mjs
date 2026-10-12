@@ -293,6 +293,14 @@ export async function verifyProviderCardView({ send, evaluate, baseUrl, artifact
     await fixture('detailStatusActions()'),
     ['CLI 启动', '网关代理'],
   );
+  // The same tag row the grid cell states, because it *is* that row — the
+  // sidebar used to list three of the tags by hand and would have gone on
+  // saying nothing about 代理 / 绕过 / P0.
+  check(
+    "the sidebar states the cell's state tags verbatim",
+    await fixture('detailStatusTagLabels()'),
+    await fixture('cardTagLabels("Provider Opus")'),
+  );
   check(
     'the sidebar footer keeps the quieter actions, each with an icon',
     await fixture('detailFooterActions()'),

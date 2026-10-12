@@ -133,7 +133,7 @@ import {
   useProviderListSort,
   useProviderListViewPrefs,
 } from '@/features/coding/shared/providerList';
-import ProviderCardGrid from '@/features/coding/shared/providerCardView/ProviderCardGrid';
+import { ProviderCardGrid } from '@/features/coding/shared/providerCardView';
 import {
   deleteFavoriteProvider,
   listFavoriteProviders,
