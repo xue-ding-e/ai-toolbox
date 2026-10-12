@@ -1,0 +1,267 @@
+// The compact provider card's visual language is copied from the Skills
+// management card (`skills/components/SkillCard.module.less`): a three-zone
+// vertical card — compact header row (drag/select slot + title + hover-revealed
+// actions), a body (the model subtitle), and a footer action bar separated by a
+// hairline border. Colors come from the shared App.css tokens only.
+//
+// Deliberate differences from the Skills card, both because this is a *card
+// grid* rather than a browse surface:
+// - radius 10px matches the Skills card; the list provider cards use antd's 8px.
+//   `ProviderListSection`'s locate ring reads `--locate-flash-radius` so the
+//   flash follows whichever radius the current layout uses.
+// - the card body opens the detail sidebar, but it is a plain div with a click
+//   handler, not a link or button: the card contains its own controls (grip,
+//   checkbox, footer buttons, the "more" menu) and a nested interactive element
+//   inside a `<button>` is invalid markup. The handler filters those out by
+//   target instead.
+
+.cardOuter {
+  container-type: inline-size;
+  container-name: providerCompactCard;
+}
+
+.card {
+  position: relative;
+  display: flex;
+  height: 100%;
+  flex-direction: column;
+  border-radius: var(--provider-compact-card-radius, 10px);
+  border: 1px solid var(--color-border-card);
+  background: var(--color-bg-container);
+  box-shadow: var(--shadow-card-sm);
+  transition:
+    border-color 0.16s ease,
+    background 0.16s ease,
+    box-shadow 0.16s ease;
+
+  &:hover {
+    box-shadow: var(--shadow-card-sm-hover);
+
+    .name {
+      color: var(--color-primary);
+    }
+  }
+
+  &:focus-within {
+    border-color: var(--color-border);
+  }
+
+  // Only when the body actually opens something. The card always contains
+  // controls, so an unconditional `cursor: pointer` would advertise a click
+  // target that is not there — and in batch-selection mode the body click is
+  // deliberately suppressed.
+  &[data-provider-card-clickable] {
+    cursor: pointer;
+  }
+}
+
+// ---------------------------------------------------------------- header ----
+
+.headerRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px 12px 4px;
+}
+
+.dragHandle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  color: var(--color-text-tertiary);
+  cursor: grab;
+  touch-action: none;
+  transition: color 0.16s ease;
+
+  &:hover {
+    color: var(--color-text);
+  }
+
+  &:active {
+    cursor: grabbing;
+  }
+}
+
+// State tags beside the title. `flex-shrink: 0` — they are the fixed part of
+// the row and the title is the part that truncates; letting a tag compress
+// would clip 已应用 down to an unreadable sliver on a long provider name.
+.nameTags {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+
+  // The state tags come down one step with the rest of the card's type: antd's
+  // default 12px/22px tag is the size of a toolbar tag, and next to an 11px
+  // footer and an 11px model line it read as the largest thing on the card.
+  // Scoped to this row — the detail sidebar renders the same tags at the size
+  // its own field grid calls for.
+  :global(.ant-tag) {
+    height: 18px;
+    margin: 0;
+    padding: 0 6px;
+    font-size: 10px;
+    line-height: 16px;
+
+    :global(.anticon) {
+      margin-inline-end: 3px;
+    }
+  }
+}
+
+.name {
+  // The title is the card's only text line, so it takes whatever the header
+  // row has left and truncates past that. It used to be capped at 65% to leave
+  // room for the endpoint beside it; the endpoint moved to the detail sidebar
+  // (2026-10-11), so the cap only wasted space now.
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-primary);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.35;
+  transition: color 0.16s ease;
+}
+
+// Hover-revealed "more" action. Revealed on card hover and on focus-within so
+// keyboard users can reach it. Opacity only — never a width/display change, or
+// the title would reflow as the pointer crosses the card.
+.hoverActions {
+  display: inline-flex;
+  align-items: center;
+  margin-left: auto;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.16s ease;
+
+  .card:hover &,
+  .card:focus-within & {
+    opacity: 1;
+  }
+}
+
+.miniBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  transition:
+    background 0.16s ease,
+    color 0.16s ease;
+
+  &:hover {
+    color: var(--color-text-primary);
+    background: var(--color-bg-hover);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--color-border-secondary);
+    outline-offset: 1px;
+  }
+}
+
+// ------------------------------------------------------------------- body ----
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+  padding: 0 12px 10px;
+}
+
+// The models the card states, as one line of `Role: value` pairs. The role is
+// plain secondary text and the value monospaced — a model id as often as it is
+// a display name, and the list card renders the same values as `code`.
+//
+// A block with `nowrap` + `ellipsis`, not a flex row: flex children clip at the
+// last whole item and show no ellipsis, whereas inline content lets the browser
+// place one at the truncation point. The card's height must also stay uniform
+// across the grid, so the line never wraps — the `title` carries the full text.
+.subtitle {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--color-text-secondary);
+  // One step below the card title and level with the Skills card's own meta
+  // line (`SkillCard`'s `.note` / `.groupTag`, both 11px): the models are a
+  // glance-line under the name, not a second heading.
+  font-size: 11px;
+  line-height: 16px;
+}
+
+// One `Role: value` pair, with a hairline `|` between consecutive pairs.
+//
+// The gap between pairs is the entry's own padding so it disappears with the
+// entry when the line truncates mid-pair. The bar is a pseudo-element rather
+// than a rendered node: it is punctuation between two facts, not a third fact,
+// and as a real span it would have to be skipped by every reader that rebuilds
+// this line (`title`, the browser fixture) or it would show up as an entry.
+.subtitleEntry {
+  display: inline;
+
+  & + & {
+    margin-left: 8px;
+
+    &::before {
+      content: '|';
+      margin-right: 8px;
+      color: var(--color-text-tertiary);
+    }
+  }
+}
+
+.subtitleLabel {
+  margin-right: 4px;
+}
+
+.subtitleValue {
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+}
+
+// ----------------------------------------------------------------- footer ----
+
+.footerRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-top: auto;
+  padding: 7px 12px;
+  border-top: 1px solid var(--color-border-card-subtle);
+
+  // The footer is a meta bar, and the Skills card sets its whole meta bar at
+  // 11px (`SkillCard`'s `.sourceBtn` / `.footerTime`). Sizing it here rather
+  // than inside the shared button renderers is deliberate: the list cards and
+  // the detail sidebar render the *same* buttons at their own scale, so the
+  // density belongs to the surface, not to the button.
+  :global(.ant-btn) {
+    font-size: 11px;
+  }
+}
+
+.footerActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+  flex-shrink: 0;
+  white-space: nowrap;
+}

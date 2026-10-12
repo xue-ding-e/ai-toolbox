@@ -1,0 +1,119 @@
+import { Switch, Typography } from 'antd';
+import type { MenuProps } from 'antd';
+import {
+  CopyOutlined,
+  DeleteOutlined,
+  EditOutlined,
+} from '@ant-design/icons';
+import { Share2 } from 'lucide-react';
+import type { TFunction } from 'i18next';
+import type { ProviderCardActions } from './types';
+
+const { Text } = Typography;
+
+interface BuildProviderCardMenuItemsOptions {
+  t: TFunction;
+  actions?: ProviderCardActions;
+  isDisabled?: boolean;
+  onToggleDisabled?: (enabled: boolean) => void;
+  /**
+   * Extra entries for this CLI, inserted after 分享 and **before** the divider
+   * that precedes 删除 — so a tool-specific action reads as part of the "acts
+   * on this provider" group rather than as part of the destructive one.
+   *
+   * Used by the compact card, which folds the list card's inline 连通性测试
+   * here: the grid cell has room for the two primary actions only.
+   */
+  extraItems?: NonNullable<MenuProps['items']>;
+}
+
+/**
+ * The provider card's "more" menu: **a contract, not decoration**.
+ *
+ * The order and furniture are fixed — enable (with its state sub-label) → edit
+ * → copy → share → extra → ─── → delete, every entry carrying its icon, delete
+ * behind a divider. These were in the bespoke cards before the styles were
+ * extracted; a migration that dropped the icons or flattened the divider
+ * produces a menu that looks like a different product while still working, and
+ * nothing fails (see `providerCardVariants/AGENTS.md`, "「更多」菜单是契约").
+ *
+ * Shared by the two Claude/Codex-style list cards and the compact card view.
+ * The OpenCode style does not use it: its actions are header icon buttons.
+ *
+ * Built on antd `Dropdown` rather than the Skills page's `ManagementMenu`
+ * because the enable row contains a real `<Switch>`; `ManagementMenu` renders
+ * its entries as `<button>`, and nesting an interactive control inside one is
+ * invalid markup.
+ */
+export function buildProviderCardMenuItems({
+  t,
+  actions,
+  isDisabled,
+  onToggleDisabled,
+  extraItems,
+}: BuildProviderCardMenuItemsOptions): NonNullable<MenuProps['items']> {
+  return [
+    // The enable/disable switch lives in the menu, not the header: it is a
+    // rarely-used, stateful toggle, and a Switch in the header row would sit
+    // beside the primary action and compete with it.
+    ...(onToggleDisabled
+      ? [{
+          key: 'toggle',
+          label: (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                <span>{t('common.enable', { defaultValue: '启用' })}</span>
+                {actions?.enabledStateLabel && (
+                  <Text type="secondary" style={{ fontSize: 11 }}>
+                    {actions.enabledStateLabel}
+                  </Text>
+                )}
+              </div>
+              <Switch checked={!isDisabled} onChange={onToggleDisabled} size="small" />
+            </div>
+          ),
+        }]
+      : []),
+    actions?.onEdit && {
+      key: 'edit',
+      label: t('common.edit', { defaultValue: '编辑' }),
+      icon: <EditOutlined />,
+    },
+    actions?.onCopy && {
+      key: 'copy',
+      label: t('common.copy', { defaultValue: '复制' }),
+      icon: <CopyOutlined />,
+    },
+    actions?.onShare && {
+      key: 'share',
+      label: t('common.share'),
+      icon: <Share2 size={14} />,
+    },
+    ...(extraItems ?? []),
+    ...(actions?.onDelete
+      ? [
+          { type: 'divider' as const },
+          {
+            key: 'delete',
+            label: t('common.delete', { defaultValue: '删除' }),
+            icon: <DeleteOutlined />,
+            danger: true,
+          },
+        ]
+      : []),
+  ].filter(Boolean) as NonNullable<MenuProps['items']>;
+}
+
+/**
+ * Dispatch a menu click to the matching action. Kept beside the builder so the
+ * keys and the handlers cannot drift apart in one card but not another.
+ */
+export function dispatchProviderCardMenuClick(
+  key: string,
+  actions?: ProviderCardActions,
+): void {
+  if (key === 'edit') actions?.onEdit?.();
+  else if (key === 'copy') actions?.onCopy?.();
+  else if (key === 'share') actions?.onShare?.();
+  else if (key === 'delete') actions?.onDelete?.();
+}

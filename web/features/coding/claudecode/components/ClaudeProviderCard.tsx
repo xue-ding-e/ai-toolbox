@@ -1,9 +1,9 @@
 import React from 'react';
-import { Button, Tag, Tooltip, Typography, message } from 'antd';
-import { ApiOutlined, CheckOutlined, CodeOutlined } from '@ant-design/icons';
+import { Button, Drawer, Space, Tag, Tooltip, Typography, message } from 'antd';
+import { ApiOutlined, CheckOutlined, CodeOutlined, CopyOutlined, DeleteOutlined, EditOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
-import { BarChart2 } from 'lucide-react';
+import { BarChart2, Share2 } from 'lucide-react';
 import type { ClaudeCodeProvider } from '@/types/claudecode';
 import {
   engageProxyGatewaySingle,
@@ -29,15 +29,26 @@ import {
 } from '@/features/coding/shared/gateway';
 import type { ProviderConnectivityStatusItem } from '@/components/common/ProviderCard/types';
 import ClaudeStyleCard from '@/features/coding/shared/providerCardVariants/ClaudeStyleCard';
+import {
+  renderProviderLaunchAction,
+  renderProviderPrimaryAction,
+} from '@/features/coding/shared/providerCardVariants/providerCardActions';
 import type {
   ProviderCardMetaEntry,
   ProviderCardVariantProps,
 } from '@/features/coding/shared/providerCardVariants/types';
+import ProviderCompactCard from '@/features/coding/shared/providerCardView/ProviderCompactCard';
+import type { ProviderViewMode } from '@/features/coding/shared/providerList';
+import ClaudeProviderDetailPanel, {
+  type ClaudeProviderDetailBinding,
+} from './ClaudeProviderDetailPanel';
 import { useSettingsStore } from '@/stores/settingsStore';
 import {
+  CLAUDE_CARD_ROLE_LABELS,
   getClaudeConfiguredModelIds,
   getClaudeProviderModelConfig,
   parseClaudeSettingsConfig,
+  resolveClaudeCardSubtitles,
 } from '../utils/claudeModelConfig';
 import { LOCAL_CONFIG_ID } from '../../shared/localConfig';
 
@@ -70,6 +81,14 @@ interface ClaudeProviderCardProps {
    * `grab` cursor, and refuses to move.
    */
   dragDisabled?: boolean;
+  /**
+   * `'card'` renders the compact grid card instead of the list card.
+   *
+   * Both branches consume the same computed `providerState` / `actions` /
+   * `nameTags`, so the apply / gateway / launch behaviour cannot differ between
+   * the two layouts.
+   */
+  viewMode?: ProviderViewMode;
 }
 
 /**
@@ -107,6 +126,7 @@ const ClaudeProviderCard: React.FC<ClaudeProviderCardProps> = ({
   selected = false,
   onSelectChange,
   dragDisabled = false,
+  viewMode = 'list',
 }) => {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -116,6 +136,8 @@ const ClaudeProviderCard: React.FC<ClaudeProviderCardProps> = ({
   const [restoringDirect, setRestoringDirect] = React.useState(false);
   const [switchingGatewayProvider, setSwitchingGatewayProvider] = React.useState(false);
   const [launchingCli, setLaunchingCli] = React.useState(false);
+  /** The card view's detail sidebar. */
+  const [detailOpen, setDetailOpen] = React.useState(false);
 
   const settingsConfig = React.useMemo(
     () => parseClaudeSettingsConfig(provider.settingsConfig),
@@ -164,6 +186,27 @@ const ClaudeProviderCard: React.FC<ClaudeProviderCardProps> = ({
       ? settingsConfigApiFormat.api_format
       : undefined,
   );
+  /**
+   * The protocol as a readable name, for the detail sidebar's connection
+   * section. `null` when there is nothing to say — an official subscription
+   * provider does not carry a protocol of its own, and an unknown value would
+   * only restate the raw key the gateway vocabulary already normalized away.
+   */
+  const apiFormatLabel = React.useMemo(() => {
+    if (!providerApiFormat || isOfficialProvider) {
+      return null;
+    }
+    if (providerApiFormat === 'openai_responses') {
+      return t('claudecode.provider.apiFormatOpenAIResponses');
+    }
+    if (providerApiFormat === 'openai_chat') {
+      return t('claudecode.provider.apiFormatOpenAIChat');
+    }
+    if (providerApiFormat === 'anthropic_messages') {
+      return t('claudecode.provider.apiFormatAnthropic');
+    }
+    return t('claudecode.provider.apiFormatGeminiNative');
+  }, [isOfficialProvider, providerApiFormat, t]);
   // Official providers and the `__local__` bridge never route through the
   // gateway; everything else is the exact check the Claude Code page and the
   // aggregate settings panel run, kept in one place.
@@ -350,20 +393,59 @@ const ClaudeProviderCard: React.FC<ClaudeProviderCardProps> = ({
         modelConfig.legacyReasoningModel,
     );
 
+  /**
+   * The detail sidebar's binding rows: every configured role, in the same
+   * order and with the same labels as the list card's meta line.
+   */
+  const detailModelBindings = React.useMemo<ClaudeProviderDetailBinding[]>(() => {
+    const bindings: ClaudeProviderDetailBinding[] = [];
+    const push = (label: string, model?: string) => {
+      if (model) {
+        bindings.push({ label, model });
+      }
+    };
+
+    push(t('claudecode.model.defaultLabel'), modelConfig.fallbackModel);
+    push('Haiku', modelConfig.roles.haiku.model);
+    push('Sonnet', modelConfig.roles.sonnet.model);
+    push('Opus', modelConfig.roles.opus.model);
+    push('Fable', modelConfig.roles.fable.model);
+    push(t('claudecode.model.reasoningLabel'), modelConfig.legacyReasoningModel);
+    return bindings;
+  }, [modelConfig, t]);
+
   const showProxyTag = showRuntimeApplied && gatewayProxyActive;
 
-  const nameTags = (
+  /** Footer's left button, shared by the compact card and the detail panel. */
+  const launchAction = {
+    label: t('claudecode.provider.launchCli'),
+    icon: <CodeOutlined />,
+    onClick: () => {
+      void handleLaunchCli();
+    },
+    loading: launchingCli,
+    disabled: provider.isDisabled,
+    tooltip: t('claudecode.provider.launchCliHint'),
+  };
+
+  const localConfigHint = isLocalProvider ? (
+    <Text type="secondary" style={{ fontSize: 11 }}>
+      ({t('claudecode.localConfigHint')})
+    </Text>
+  ) : null;
+
+  /**
+   * The state tags both layouts state beside the name, in render order:
+   * official / bypassed / applied / proxied / failover priority.
+   *
+   * Split out of `nameTags` because the two layouts do not agree on the
+   * *endpoint* — the list card states it beside the name, the card grid moved
+   * it into the detail sidebar (2026-10-11) — while they must agree on
+   * everything else. Composing both lines from this one fragment is what keeps
+   * 「已应用」from being visible in one layout and missing in the other.
+   */
+  const stateTags = (
     <>
-      {isLocalProvider && (
-        <Text type="secondary" style={{ fontSize: 11 }}>
-          ({t('claudecode.localConfigHint')})
-        </Text>
-      )}
-      {configuredBaseUrl && (
-        <Text type="secondary" style={{ fontSize: 11 }}>
-          {configuredBaseUrl}
-        </Text>
-      )}
       {isOfficialProvider && (
         <Tag>{t('claudecode.provider.modeOfficial')}</Tag>
       )}
@@ -450,6 +532,27 @@ const ClaudeProviderCard: React.FC<ClaudeProviderCardProps> = ({
           </Tooltip>
         </>
       )}
+    </>
+  );
+
+  /** The list card's name row: the state tags, with the endpoint among them. */
+  const nameTags = (
+    <>
+      {localConfigHint}
+      {configuredBaseUrl && (
+        <Text type="secondary" style={{ fontSize: 11 }}>
+          {configuredBaseUrl}
+        </Text>
+      )}
+      {stateTags}
+    </>
+  );
+
+  /** The grid card's: the same tags, without the endpoint it does not state. */
+  const cardNameTags = (
+    <>
+      {localConfigHint}
+      {stateTags}
     </>
   );
 
@@ -647,6 +750,110 @@ const ClaudeProviderCard: React.FC<ClaudeProviderCardProps> = ({
       </div>
     ) : undefined,
   };
+
+  if (viewMode === 'card') {
+    const cardSubtitles = resolveClaudeCardSubtitles(modelConfig);
+    return (
+      <>
+        <ProviderCompactCard
+          provider={{
+            id: provider.id,
+            name: provider.name,
+            baseUrl: configuredBaseUrl,
+          }}
+          subtitle={cardSubtitles.map((entry) => ({
+            label: t(CLAUDE_CARD_ROLE_LABELS[entry.role]),
+            value: entry.model,
+          }))}
+          providerState={props.providerState}
+          actions={props.actions}
+          nameTags={cardNameTags}
+          launchAction={launchAction}
+          // The list card renders 连通性测试 inline on its meta line; the grid
+          // cell has room for the two primary actions only, so the diagnostic
+          // moves into the menu rather than disappearing.
+          extraMenuItems={[{
+            key: 'connectivity',
+            label: t('opencode.connectivity.button'),
+            icon: <ApiOutlined />,
+            disabled: !canRunConnectivityTest,
+            onClick: () => onTest(provider),
+          }]}
+          // The card owns the drawer it opens. Threading this through the page
+          // would let a caller pass an `onOpenDetail` that renders a second
+          // drawer — or, more likely, one that silently does nothing.
+          onOpenDetail={() => setDetailOpen(true)}
+        />
+        <Drawer
+          placement="right"
+          // `size`, not `width`: antd 6 deprecated `width`/`height` in favour of
+          // one `size` prop, and warns about it in dev. The other drawers in
+          // this repo still use `width`; this one is new, so it starts on the
+          // supported API.
+          size={420}
+          open={detailOpen}
+          onClose={() => setDetailOpen(false)}
+          destroyOnHidden
+          closable={false}
+          styles={{ body: { padding: 0, display: 'flex', flexDirection: 'column' } }}
+        >
+          <ClaudeProviderDetailPanel
+            provider={provider}
+            baseUrl={configuredBaseUrl}
+            apiKey={configuredApiKey}
+            apiFormatLabel={apiFormatLabel}
+            modelBindings={detailModelBindings}
+            showRuntimeApplied={showRuntimeApplied}
+            isOfficialProvider={isOfficialProvider}
+            isLocalProvider={isLocalProvider}
+            onClose={() => setDetailOpen(false)}
+            // The panel renders the same computed actions the grid cell does,
+            // through the same two renderers — so "the sidebar offers what the
+            // card offers" is a fact about the code, not a thing to re-check
+            // every time either side gains a button.
+            primaryActions={(
+              <>
+                {renderProviderLaunchAction(launchAction)}
+                {gatewayActions}
+                {renderProviderPrimaryAction(props.actions?.primaryAction)}
+              </>
+            )}
+            // Same icons as the card's "more" menu, so the two surfaces that
+            // offer these actions read as the same set rather than as two
+            // different lists of words.
+            secondaryActions={(
+              <Space size={4} wrap>
+                <Button
+                  size="small"
+                  type="text"
+                  icon={<ApiOutlined />}
+                  onClick={() => onTest(provider)}
+                  disabled={!canRunConnectivityTest}
+                  title={isOfficialProvider ? t('claudecode.provider.officialConnectivityHint') : undefined}
+                >
+                  {t('opencode.connectivity.button')}
+                </Button>
+                <Button size="small" type="text" icon={<EditOutlined />} onClick={() => onEdit(provider)}>
+                  {t('common.edit')}
+                </Button>
+                <Button size="small" type="text" icon={<CopyOutlined />} onClick={() => onCopy(provider)}>
+                  {t('common.copy')}
+                </Button>
+                <Button size="small" type="text" icon={<Share2 size={14} aria-hidden="true" />} onClick={() => onShare(provider)}>
+                  {t('common.share')}
+                </Button>
+                {!isLocalProvider && (
+                  <Button size="small" type="text" danger icon={<DeleteOutlined />} onClick={() => onDelete(provider)}>
+                    {t('common.delete')}
+                  </Button>
+                )}
+              </Space>
+            )}
+          />
+        </Drawer>
+      </>
+    );
+  }
 
   return <ClaudeStyleCard {...props} />;
 };

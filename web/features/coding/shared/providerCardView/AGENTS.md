@@ -1,0 +1,57 @@
+# 供应商卡片视图（providerCardView）
+
+## 一句话职责
+
+- 提供**供应商列表的第二种呈现方式**：把同一批供应商渲染成紧凑卡片网格，由用户的布局偏好切换。本次只接 Claude Code，其余 CLI 复用同一套组件。
+
+## Source of Truth
+
+- 组件本身（`ProviderCompactCard` / `ProviderCardGrid`）是这一呈现方式的唯一实现。
+- **卡片的 props 复用 `providerCardVariants/types.ts` 的 `ProviderCardState` / `ProviderCardActions`**：同一份对象既喂给列表卡片也喂给紧凑卡片。这是「两种布局下按钮行为一致」的**结构性保证**——不是靠人工对齐两套代码。
+- 布局偏好的存储在后端 `provider_view_modes` 嵌套键；前端经 `shared/providerList/useProviderListViewPrefs` 读写。
+
+## 核心设计决策（Why）
+
+- **这不是 `providerCardVariants` 的第四种样式。** 那三种样式按 **provider 模型形状**选型（有没有模型目录、有没有单一 active provider），是语义差异；本组件按**用户选的显示密度**切换，同一个 CLI 的同一份数据两种画法。把它混进变体里，会让「该用哪种样式」变成由显示偏好回答——正是那个模块要防止的混淆（见 `providerCardVariants/AGENTS.md` 与根 `AGENTS.md` Hard Rule 14）。
+- **文件名刻意避开 `*ProviderCard.tsx`。** `scripts/verify-provider-card-layout.mjs` 的后缀作用域管的是「各 CLI 的映射层不许自建 chrome」。本组件**正是** chrome 的宿主（与 `CardShell` 同级），所以叫 `ProviderCompactCard.tsx`。改名成 `CompactProviderCard.tsx` 会被守卫当成映射层扫，然后报出三条它本该做的事。
+- **它自己注册 `useSortable` / 渲染 `ManagementCheckbox` / 挂 `data-provider-id`。** 这三件正是 `CardShell` 为列表样式做的事；两个外壳共享同一套契约，`data-provider-id` 仍是「定位」在 DOM 里找卡片的唯一锚点。
+- **网格不虚拟化**（与 Skills / MCP 的关键差异）。供应商是几十条，列表布局本身也是全量渲染；一旦虚拟化，屏幕外的卡片不在 DOM 里，「定位」的 `[data-provider-id]` 查询会直接查不到——用户会看到「当前列表里找不到已应用的供应商」，而它其实就在下面一点。Skills/MCP 虚拟化是因为它们要管几百项。
+- **详情侧栏是卡片视图的一部分，不是可选装饰。** 一个格子只放得下标题、角色模型行、两个主按钮；供应商的其余事实（地址、全部角色绑定、备注）和其余动作（测试/编辑/复制/分享/删除）总得有个去处，否则卡片视图就是「信息更少的列表」。侧栏由**映射层**（`ClaudeProviderCard`）持有并渲染，不是共享组件——它承载的是 CLI 特有的字段（Claude 的 `settings_config` JSON），与 `ProviderCompactCard` 只负责摆位的定位不同。卡片那一行动作在侧栏里与状态标签同处标题行（主行动要在首屏），次要动作留在 footer。
+
+## 关键约束（改这里之前必读）
+
+- **accent 高亮必须走 `providerCardVariants/cardChrome.ts` 的 `resolveProviderAccentChrome`，不要内联复制一份。** 这是仓库记录在案的高危漂移点：四个 bespoke 卡片迁到共享外壳时没把 accent 一起搬，卡片**静默**变成统一灰边框——没有报错、类型也通过。两个外壳（`CardShell` 与 `ProviderCompactCard`）现在共用同一个函数，改一处两边生效。
+- **accent 必须走 inline style，不能靠 CSS 类的 hover 规则。** 高亮是「这张卡片处于某个状态」，不是「指针在它上面」；写进 class 会让 hover 重绘它。
+- **hover 浮出的「更多」按钮只能改 `opacity`，不能改 `display`/`width`。** 按钮在未 hover 时也占着盒子，否则指针划过卡片时标题会重排（DESIGN.md 明确禁止布局跳动）。
+- **底部两个主按钮走 `providerCardVariants/providerCardActions.tsx` 的 `renderProviderLaunchAction` / `renderProviderPrimaryAction`，不要在本模块内联一份。** 详情侧栏（`ClaudeProviderDetailPanel`）渲染的是**同一对**函数——「侧栏提供的能力和卡片一致」因此是代码事实，不是每次改按钮都要重新核对的对齐工作。两个样式卡片（`ClaudeStyleCard` / `CodexStyleCard`）的主按钮也已改为调用它。
+- **标题后面不再显示地址，但标题本身仍是链接。** 地址（`baseUrl`）搬到了详情侧栏的「连接信息」区；标题则把 `baseUrl` 交给 `ProviderNameLink`，于是**悬停显示该 provider 的来源域名、点击用系统浏览器打开**——与列表卡片逐字同款。标题因此不再有 `max-width: 65%` 的上限（那是为了给旁边的长 URL 让位，URL 一走就只是浪费空间）。
+- **第二行是「全部角色模型」的单行列表，不是单个模型。** `subtitle` 收 `{ label, value }[]`，每个条目渲染成 `Role: value`（label 次要色、value 等宽），**相邻条目之间由 `::before` 画一根 `|` 分隔线**（是伪元素不是节点：它是两件事之间的标点，不是第三件事；做成 `<span>` 就得让每个重建这一行的地方——`title`、浏览器夹具——都把它跳过去）。**必须用 block + `white-space: nowrap` + `text-overflow: ellipsis`，不能用 flex 行**：flex 子项只在整项处裁断、不出现省略号，inline 内容才会在截断点放一个。卡片高度在网格里必须一致，所以这一行永不换行，完整内容走 `title` 属性。条目之间与 label/value 之间的间距都是 CSS margin（不是文本节点）——任何按 `textContent` 断言的测试必须重建这一行，否则会得到 `Opus:claude-opus-4-8Sonnet:...`。
+- **字号跟随 Skills 卡片的三段式预算：标题 14px/600、第二行 11px、footer 与状态标签 11px/10px。** 这是「同一张卡片语言」的可观察部分，`SkillCard.module.less` 是它的 source of truth（标题 14px/600，footer meta 栏整条 11px）。**字号由上层面（`.footerRow` / `.nameTags`）设定，不写在 `providerCardActions.tsx` 的共享渲染函数里**：列表卡片与详情侧栏渲染的是同一对按钮，各自要各自的密度，内联字号会盖住两边。
+- **状态标签走 `nameTags`，与列表卡片同一个槽位。** 映射层把「哪些事实这张卡片要陈述」算成一棵树，两种布局各取所需：列表卡片那行含地址，卡片视图用**去掉地址的同一棵子树**（Claude 的映射层里是 `stateTags` + `localConfigHint`）。**不要用「卡片视图自己判断 `isApplied` 然后画个标签」来替代**——那正是「同一状态在一种布局里可见、在另一种里消失」的成因（2026-10-12 用户报「卡片上的已应用标识没了」：格子当时只有 accent 边框，边框说了「它特殊」却没说「为什么特殊」）。header 行里 `.nameTags` 用 `flex-shrink: 0`，让标题先截断而不是把标签压成一条缝。
+- **卡片主体点击开侧栏，但 `handleCardClick` 必须过滤掉自身控件、并在多选模式下整体让位。** `button, a, input, [role="menuitem"], [role="checkbox"]` 的点击不冒泡成「开侧栏」，否则点「应用」或拖拽把手也会盖上一层抽屉；多选模式下主体点击的含义是「选中这张卡片」，再弹侧栏就没法连续多选了（`SkillCard` 同款处理）。卡片主体是 `<div>` 而不是 `<button>`：卡片内部有自己的交互元素，嵌套进 button 是不合法标记。可点击时根节点带 `data-provider-card-clickable`，`cursor: pointer` 挂在它上面——无条件加 `cursor: pointer` 会承诺一个并不存在的点击目标。
+- **闪光环半径读 `--locate-flash-radius`。** 列表卡片是 antd Card 的 8px，这里是 10px（Skills 口径）；`ProviderListSection.module.less` 的 `.locateFlash` 用 `var(--locate-flash-radius, 8px)`，本组件从自己的根元素发布 10px。不发布就会在圆角卡片外画一个方角环。
+- **「更多」菜单走 `providerCardVariants/providerCardMenu.tsx` 的 `buildProviderCardMenuItems`**，不要在本模块重写一份：菜单顺序（启用 → 编辑 → 复制 → 分享 → 额外项 → 分隔线 → 删除）是契约。额外项（Claude 的「模型测试」）走 `extraMenuItems`，插在「分享」之后、分隔线之前——它是「对这个 provider 做点什么」，不是破坏性动作。
+- **用 antd `Dropdown`，不要换成 `management/ManagementMenu`。** 启用项里要放真实 `<Switch>`，而 `ManagementMenu` 的项是 `<button>`，嵌套交互元素不合法。
+- **`launchAction` 是单个动作，`actions.gatewayActions` / `actions.primaryAction` 原样透传。** 底部按钮的**出现条件**由映射层算（`ClaudeProviderCard` 里那套 `canShowGatewayProxyButton` / `showDirectApplyAction` / …），本组件只负责摆位——与列表卡片同一套判据，这是「按钮逻辑一致」的落点。
+
+## 跨模块依赖
+
+- `providerCardVariants/types.ts`：`ProviderCardModel` / `ProviderCardState` / `ProviderCardActions`（复用，不重定义）。
+- `providerCardVariants/cardChrome.ts`：accent 与阴影常量。
+- `providerCardVariants/providerCardMenu.tsx`：菜单构建与分发。
+- `providerCardVariants/providerCardActions.tsx`：底部两个主按钮的渲染函数（本组件与详情侧栏共用）。
+- `shared/management`：`ManagementCheckbox`、`useAutoGridColumns`。
+- `shared/providerList`：`useProviderListViewPrefs`（布局偏好）、`ProviderViewMode` 类型。
+- 使用方：`claudecode`（2026-10-11 接入）。接入方式：映射层（`*ProviderCard.tsx`）加 `viewMode` 一个 prop，`'card'` 分支渲染 `ProviderCompactCard` + 它自己持有的详情 `Drawer`；页面把列表容器换成 `ProviderCardGrid`，`SortableContext` 的 strategy 与 `DndContext` 的 modifiers 随视图切换。
+- **布局切换控件在 `shared/ProviderListSection`**，是**一个「图标 + 文字」按钮**（不是分段控件），位置在**一键测试之前**（与它左边的定位、搜索、排序同属「列表本身怎么摆」那一组）：`data-provider-view-toggle` 带当前模式，**图标与文字都表示「点了会切到哪种布局」**（文字是目标布局名：卡片 / 列表），tooltip 与 `aria-label` 用整句说明同一件事。两处细节是踩过的坑：图标用 antd 的 `LayoutOutlined` / `UnorderedListOutlined`，**不能用 lucide 的 `LayoutGrid`——那是 2×2 方块，和「通用配置」的 `AppstoreOutlined` 一模一样**（用户 2026-10-12 报「布局切换按钮和通用配置的 icon 一样」）；`data-provider-view-toggle` 即使有了文字也保留，因为文字是会被改写的文案，夹具不该匹配它。
+
+## 最小验证
+
+- `pnpm run test:provider-card-view`（52 项真浏览器断言）：切换生效并落库、**切换按钮的图标不与「通用配置」重复且文字跟随目标布局**、副标题三种形态与 `Role:` 前缀、**相邻条目之间有 `|` 分隔而单条时没有**、卡片标题不再带地址但**悬停给出域名、点击调 `open_url`**、**三段式字号（14/11/11/10）**、**已应用卡片陈述「已应用」标签而非只有边框**、已应用卡片是网关按钮而非「应用」、hover 浮出「更多」、菜单项与列表卡片同构（多一个「模型测试」）、**点卡片主体开侧栏而点控件不开**、**多选模式下主体点击被抑制**（进入/离开两侧都验）、侧栏「连接信息」陈述协议、**长 API Key 单行中间省略而复制按钮给出完整值**、侧栏 footer 动作与卡片一致且字号同为 11px、`data-provider-id` 仍在、**网格内真拖拽后顺序变化且回写后端**、切回列表恢复、暗色主题。
+- `pnpm run test:provider-card-layout`：新组件不得让映射层守卫报错，`PENDING_MIGRATION` 不变（3）。
+- `pnpm run test:provider-list-locate` / `test:provider-list-drag`：列表布局未受影响。
+
+## 何时更新本文件
+
+- 接入第二个 CLI 时：补充「该 CLI 的副标题解析函数在哪」与它自己的角色集合。
+- 网格开始需要虚拟化时（供应商数量真的上千）：先解决「定位」如何在虚拟列表里工作，再动这里。

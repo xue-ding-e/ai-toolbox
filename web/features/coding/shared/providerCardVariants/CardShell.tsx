@@ -5,6 +5,11 @@ import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { useTranslation } from 'react-i18next';
 import { ManagementCheckbox } from '@/features/coding/shared/management';
+import {
+  PROVIDER_CARD_SHADOW,
+  PROVIDER_CARD_SHADOW_HOVER,
+  resolveProviderAccentChrome,
+} from './cardChrome';
 
 interface CardShellProps {
   /** Sortable id; without one the handle is omitted and the card is pinned. */
@@ -93,18 +98,7 @@ const CardShell: React.FC<CardShellProps> = ({
   const showHandle = draggable && !selectable;
 
   const isSelected = selectable && selected;
-  const borderColor = isSelected || accent === 'applied'
-    ? 'var(--ant-color-primary)'
-    : accent === 'gatewayPrimary'
-      ? 'var(--color-status-success)'
-      : 'var(--color-border-card)';
-  const background = isSelected
-    ? undefined
-    : accent === 'gatewayPrimary'
-      ? 'linear-gradient(135deg, color-mix(in srgb, var(--color-status-success) 12%, var(--color-bg-container)), var(--color-bg-container))'
-      : accent === 'applied'
-        ? 'var(--color-bg-selected)'
-        : undefined;
+  const { borderColor, background } = resolveProviderAccentChrome(accent, isSelected);
 
   // The ref is attached even when dragging is off: dnd-kit measures the node to
   // compute transforms, and an unregistered node cannot be dragged the moment
@@ -127,7 +121,7 @@ const CardShell: React.FC<CardShellProps> = ({
         style={{
           borderColor,
           background,
-          boxShadow: 'var(--shadow-card-sm)',
+          boxShadow: PROVIDER_CARD_SHADOW,
           transition: 'box-shadow 0.16s ease',
         }}
         /* 16, matching every provider card that has not migrated yet
@@ -139,10 +133,10 @@ const CardShell: React.FC<CardShellProps> = ({
            card's vertical margins are smaller than before"). */
         styles={{ body: { padding: 16 } }}
         onMouseEnter={(event) => {
-          event.currentTarget.style.boxShadow = 'var(--shadow-card-sm-hover)';
+          event.currentTarget.style.boxShadow = PROVIDER_CARD_SHADOW_HOVER;
         }}
         onMouseLeave={(event) => {
-          event.currentTarget.style.boxShadow = 'var(--shadow-card-sm)';
+          event.currentTarget.style.boxShadow = PROVIDER_CARD_SHADOW;
         }}
       >
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>

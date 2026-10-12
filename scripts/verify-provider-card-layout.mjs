@@ -115,10 +115,23 @@ const PROP_SOURCE_FILES = [
   'web/features/coding/shared/providerCardVariants/types.ts',
   'web/features/coding/shared/providerCardVariants/CardShell.tsx',
 ];
+/**
+ * Where a declared prop may have its render point.
+ *
+ * The three styles, plus the two shared builders the styles delegate to:
+ * `providerCardMenu.tsx` (the Claude and Codex styles moved their menu
+ * construction there, and `enabledStateLabel` is rendered *only* inside that
+ * menu) and `providerCardActions.tsx` (the primary action's `<Button>`, now
+ * shared with the compact card view and the detail sidebar). A list that
+ * omitted them would report a live prop as dead — the opposite error from the
+ * one this check exists to catch, but just as misleading.
+ */
 const STYLE_CARD_FILES = [
   'web/features/coding/shared/providerCardVariants/ClaudeStyleCard.tsx',
   'web/features/coding/shared/providerCardVariants/CodexStyleCard.tsx',
   'web/features/coding/shared/providerCardVariants/OpenCodeStyleCard.tsx',
+  'web/features/coding/shared/providerCardVariants/providerCardActions.tsx',
+  'web/features/coding/shared/providerCardVariants/providerCardMenu.tsx',
 ];
 
 /**

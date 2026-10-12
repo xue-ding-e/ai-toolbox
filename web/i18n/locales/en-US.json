@@ -1673,7 +1673,14 @@
       "locateTooltip": "Scroll to the applied provider",
       "locateNone": "No provider is applied right now",
       "locateFiltered": "The applied provider is filtered out by the current search",
-      "locateMissing": "The applied provider is not in the current list"
+      "locateMissing": "The applied provider is not in the current list",
+      "reorderHint": "Drag to reorder providers",
+      "viewMode": {
+        "switchToCard": "Switch to card layout",
+        "switchToList": "Switch to list layout",
+        "card": "Cards",
+        "list": "List"
+      }
     },
     "viewDocs": "Official Docs",
     "configPath": "Config Path",
@@ -1841,7 +1848,9 @@
       "switch": "Switch",
       "saveCurrent": "Save current login",
       "default": "Default"
-    }
+    },
+    "more": "More",
+    "copyFailed": "Copy failed"
   },
   "sessionManager": {
     "title": "Session Manager",
@@ -2942,6 +2951,11 @@
     },
     "preview": {
       "currentConfigTitle": "Current Config Preview"
+    },
+    "detail": {
+      "connectionTitle": "Connection",
+      "notConfigured": "Not configured",
+      "noModels": "No models configured"
     }
   },
   "codex": {

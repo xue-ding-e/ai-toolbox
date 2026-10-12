@@ -1673,7 +1673,14 @@
       "locateTooltip": "滚动到当前已应用的供应商",
       "locateNone": "当前没有已应用的供应商",
       "locateFiltered": "已应用的供应商被当前搜索词过滤掉了",
-      "locateMissing": "当前列表里找不到已应用的供应商"
+      "locateMissing": "当前列表里找不到已应用的供应商",
+      "reorderHint": "拖拽可调整供应商顺序",
+      "viewMode": {
+        "switchToCard": "切换到卡片布局",
+        "switchToList": "切换到列表布局",
+        "card": "卡片",
+        "list": "列表"
+      }
     },
     "viewDocs": "官方文档",
     "configPath": "配置文件路径",
@@ -1841,7 +1848,9 @@
       "switch": "切换",
       "saveCurrent": "保存当前登录",
       "default": "默认"
-    }
+    },
+    "more": "更多",
+    "copyFailed": "复制失败"
   },
   "sessionManager": {
     "title": "会话管理",
@@ -2939,6 +2948,11 @@
     },
     "preview": {
       "currentConfigTitle": "当前配置预览"
+    },
+    "detail": {
+      "connectionTitle": "连接信息",
+      "notConfigured": "未配置",
+      "noModels": "未配置任何模型"
     }
   },
   "codex": {

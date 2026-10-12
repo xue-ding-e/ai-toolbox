@@ -1,38 +1,14 @@
 import React from 'react';
+import { recordProviderLastUsed, saveProviderSortMode } from '@/services/providerListApi';
 import {
-  getProviderListState,
-  recordProviderLastUsed,
-  saveProviderSortMode,
-  type ProviderListState,
-} from '@/services/providerListApi';
+  loadProviderListState,
+  patchCachedProviderListState,
+  readCachedProviderListState,
+} from './providerListStateCache';
 import {
   isProviderSortMode,
   type ProviderSortMode,
 } from './sortProviders';
-
-/**
- * Module-level cache so the coding tabs share one `get_provider_list_state`
- * round trip (pages are KeepAlive-mounted and hydrate independently).
- * noteProviderUsed/setSortMode also mutate it in place so later-mounting
- * pages see fresh values without a refetch.
- */
-let cachedState: ProviderListState = { sort_modes: {}, last_used: {} };
-let statePromise: Promise<ProviderListState> | null = null;
-
-const loadProviderListState = (): Promise<ProviderListState> => {
-  if (!statePromise) {
-    statePromise = getProviderListState()
-      .then((state) => {
-        cachedState = {
-          sort_modes: state.sort_modes ?? {},
-          last_used: state.last_used ?? {},
-        };
-        return cachedState;
-      })
-      .catch(() => ({ sort_modes: {}, last_used: {} }));
-  }
-  return statePromise;
-};
 
 interface ProviderListSortState {
   /** Current sort mode; 'custom' (drag order) until hydration completes. */
@@ -71,7 +47,10 @@ export function useProviderListSort(moduleKey: string): ProviderListSortState {
   const setSortMode = React.useCallback(
     (mode: ProviderSortMode) => {
       setSortModeState(mode);
-      cachedState.sort_modes[moduleKey] = mode;
+      const cached = readCachedProviderListState();
+      patchCachedProviderListState({
+        sort_modes: { ...cached.sort_modes, [moduleKey]: mode },
+      });
       void saveProviderSortMode(moduleKey, mode).catch(() => {});
     },
     [moduleKey],
@@ -86,7 +65,10 @@ export function useProviderListSort(moduleKey: string): ProviderListSortState {
     (providerId: string) => {
       const key = `${moduleKey}:${providerId}`;
       const now = new Date().toISOString();
-      cachedState.last_used[key] = now;
+      const cached = readCachedProviderListState();
+      patchCachedProviderListState({
+        last_used: { ...cached.last_used, [key]: now },
+      });
       setLastUsed((prev) => ({ ...prev, [key]: now }));
       void recordProviderLastUsed(moduleKey, providerId).catch(() => {});
     },

@@ -7,11 +7,12 @@
    *applied* one, and that card already carries a primary border and the
    selected background — recolouring those would flash invisibly. */
 .locateFlash {
-  /* The card's own radius (8px, DESIGN.md `rounded.card`), matching the literal
-     every other card-level rule in this repo uses (`ManagementCard`,
-     `CliExtensionsSection`, `MagicContextSettings`, …). A square ring around a
-     rounded card reads as a rendering bug. */
-  border-radius: 8px;
+  /* The card's own radius, so the ring hugs the card instead of drawing square
+     corners around it. Read from a variable because the two layouts use
+     different radii: the list cards are antd `Card`s (8px, DESIGN.md
+     `rounded.card`), while the compact card view follows the Skills card at
+     10px and publishes `--locate-flash-radius` from its own root. */
+  border-radius: var(--locate-flash-radius, 8px);
   animation: locateFlashRing 1.4s ease-out;
 }
 

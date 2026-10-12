@@ -5,8 +5,10 @@ import {
   AppstoreOutlined,
   CheckSquareOutlined,
   DatabaseOutlined,
+  LayoutOutlined,
   PlusOutlined,
   ThunderboltOutlined,
+  UnorderedListOutlined,
 } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import ProviderBatchToolbar from './providerList/ProviderBatchToolbar';
@@ -15,6 +17,7 @@ import ProviderSearchInput from './providerList/ProviderSearchInput';
 import ProviderSortDropdown from './providerList/ProviderSortDropdown';
 import type { ProviderSortMode } from './providerList/sortProviders';
 import type { ProviderBatchSelection } from './providerList/useProviderBatchSelection';
+import type { ProviderViewMode } from './providerList/useProviderListViewPrefs';
 import styles from './ProviderListSection.module.less';
 
 const { Text } = Typography;
@@ -205,6 +208,17 @@ export interface ProviderListSectionProps {
   hint?: React.ReactNode;
 
   /**
+   * Current layout of the provider list, and its setter.
+   *
+   * Both must be supplied for the toolbar's layout switch to render — the
+   * "pass it or it is absent" rule the section's other slots follow. Omit both
+   * for a CLI whose cards have not been given a compact form yet: a switch
+   * that flips to a layout nobody implemented is worse than no switch.
+   */
+  viewMode?: ProviderViewMode;
+  onViewModeChange?: (mode: ProviderViewMode) => void;
+
+  /**
    * Rendered in place of nothing when the list is empty or a search matches
    * nothing.
    *
@@ -244,6 +258,8 @@ const ProviderListSection: React.FC<ProviderListSectionProps> = ({
   sortModes,
   onSortModeChange,
   locateProviderId,
+  viewMode,
+  onViewModeChange,
   dragDisabledBySort = false,
   onBatchTest,
   batchTesting = false,
@@ -433,6 +449,51 @@ const ProviderListSection: React.FC<ProviderListSectionProps> = ({
                       onClick={handleLocateClick}
                     >
                       {t('common.provider.locate')}
+                    </Button>
+                  </Tooltip>
+                )}
+                {viewMode && onViewModeChange && (
+                  // Sits with the other "the list itself" controls, ahead of
+                  // 一键测试 / 通用配置 / 添加供应商: those do something *to* a
+                  // provider, this one only changes how the providers are drawn.
+                  //
+                  // The glyph is antd's `LayoutOutlined` / `UnorderedListOutlined`
+                  // pair, not lucide's `LayoutGrid`: a 2×2 of squares is exactly
+                  // `AppstoreOutlined`, so the toggle read as a second 通用配置
+                  // button. The pair also shares the toolbar's outlined stroke
+                  // weight, which the lucide glyphs did not.
+                  //
+                  // It carries a word as well as a glyph. The label names the
+                  // layout the click switches **to** — the icon and the tooltip
+                  // say the same thing, because a lone layout glyph could as
+                  // easily mean "you are in this layout" as "go to it".
+                  //
+                  // `data-provider-view-toggle` is the handle the browser
+                  // fixture drives. It is kept even now that the button has
+                  // text: the label is 卡片/列表, which the fixture would have to
+                  // match against copy that is free to change.
+                  <Tooltip
+                    title={t(viewMode === 'list'
+                      ? 'common.provider.viewMode.switchToCard'
+                      : 'common.provider.viewMode.switchToList')}
+                  >
+                    <Button
+                      type="link"
+                      size="small"
+                      style={toolbarButtonStyle}
+                      data-provider-view-toggle={viewMode}
+                      aria-label={t(viewMode === 'list'
+                        ? 'common.provider.viewMode.switchToCard'
+                        : 'common.provider.viewMode.switchToList')}
+                      icon={viewMode === 'list' ? <LayoutOutlined /> : <UnorderedListOutlined />}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onViewModeChange(viewMode === 'list' ? 'card' : 'list');
+                      }}
+                    >
+                      {t(viewMode === 'list'
+                        ? 'common.provider.viewMode.card'
+                        : 'common.provider.viewMode.list')}
                     </Button>
                   </Tooltip>
                 )}

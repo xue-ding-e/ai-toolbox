@@ -103,6 +103,7 @@ pub fn from_db_value(value: Value) -> AppSettings {
         session_detail_filters: get_session_detail_filters(&value),
         provider_sort_modes: get_string_map(&value, "provider_sort_modes"),
         provider_last_used: get_string_map(&value, "provider_last_used"),
+        provider_view_modes: get_string_map(&value, "provider_view_modes"),
     }
 }
 

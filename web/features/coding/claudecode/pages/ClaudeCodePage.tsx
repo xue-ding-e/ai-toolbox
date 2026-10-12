@@ -17,9 +17,10 @@ import {
   SortableContext,
   sortableKeyboardCoordinates,
   verticalListSortingStrategy,
+  rectSortingStrategy,
   arrayMove,
 } from '@dnd-kit/sortable';
-import { restrictToVerticalAxis } from '@dnd-kit/modifiers';
+import { restrictToVerticalAxis, restrictToWindowEdges } from '@dnd-kit/modifiers';
 import type {
   ClaudeCodeProvider,
   ConfigPathInfo,
@@ -91,7 +92,9 @@ import {
   sortProviderItems,
   useProviderBatchSelection,
   useProviderListSort,
+  useProviderListViewPrefs,
 } from '@/features/coding/shared/providerList';
+import ProviderCardGrid from '@/features/coding/shared/providerCardView/ProviderCardGrid';
 import {
   deleteFavoriteProvider,
   listFavoriteProviders,
@@ -497,6 +500,7 @@ const ClaudeCodePage: React.FC = () => {
   });
 
   const { sortMode, setSortMode, lastUsedAt, noteProviderUsed } = useProviderListSort('claudecode');
+  const { viewMode, setViewMode } = useProviderListViewPrefs('claudecode');
   const [providerKeyword, setProviderKeyword] = React.useState('');
   // Search and non-custom sort modes bypass sort_index, so dragging would
   // write a stale custom order — dnd is only enabled in custom mode.
@@ -1279,6 +1283,8 @@ const ClaudeCodePage: React.FC = () => {
           sortModes={PROVIDER_SORT_MODES}
           onSortModeChange={setSortMode}
           dragDisabledBySort={sortMode !== 'custom'}
+          viewMode={viewMode}
+          onViewModeChange={setViewMode}
           locateProviderId={appliedProviderId}
           onBatchTest={handleBatchTestProviders}
           batchTesting={batchTestingProviders}
@@ -1329,45 +1335,83 @@ const ClaudeCodePage: React.FC = () => {
             </Space>
           }
         >
+          {/* One DndContext serves both layouts: only the sorting strategy and
+              the drag axis change with the view. Creating a second context for
+              the grid would duplicate the sensors and let the two disagree
+              about when dragging is off. */}
           <DndContext
             sensors={providerBatchDragDisabled ? [] : sensors}
             collisionDetection={closestCenter}
-            modifiers={[restrictToVerticalAxis]}
+            modifiers={[viewMode === 'card' ? restrictToWindowEdges : restrictToVerticalAxis]}
             onDragEnd={handleDragEnd}
           >
             <SortableContext
               items={providers.map((p) => p.id)}
-              strategy={verticalListSortingStrategy}
+              strategy={viewMode === 'card' ? rectSortingStrategy : verticalListSortingStrategy}
             >
-              <div>
-                {visibleProviders.map((provider) => (
-                  <ClaudeProviderCard
-                    key={provider.id}
-                    provider={provider}
-                    isApplied={provider.id === appliedProviderId}
-                    onEdit={handleEditProvider}
-                    onDelete={handleDeleteProvider}
-                    onCopy={handleCopyProvider}
-                    onShare={handleShareProvider}
-                    onTest={handleTestProvider}
-                    onSelect={handleSelectProvider}
-                    onToggleDisabled={handleToggleDisabled}
-                    selectable={providerBatch.selectionMode && providerBatch.isSelectable(provider.id)}
-                    selected={providerBatch.selectedIds.has(provider.id)}
-                    onSelectChange={(checked) =>
-                      providerBatch.toggleSelect(provider.id, checked)
-                    }
-                    connectivityStatus={connectivityStatuses[provider.id]}
-                    gatewayTakeoverActive={gatewayTakeoverActive}
-                    gatewayStatus={gatewayCliStatus}
-                    onGatewayStatusChange={async (status) => {
-                      setGatewayCliStatus(status);
-                      await loadConfig();
-                    }}
-                    dragDisabled={providerDragDisabled}
-                  />
-                ))}
-              </div>
+              {viewMode === 'card' ? (
+                <ProviderCardGrid
+                  items={visibleProviders}
+                  getKey={(provider) => provider.id}
+                  renderItem={(provider) => (
+                    <ClaudeProviderCard
+                      provider={provider}
+                      isApplied={provider.id === appliedProviderId}
+                      onEdit={handleEditProvider}
+                      onDelete={handleDeleteProvider}
+                      onCopy={handleCopyProvider}
+                      onShare={handleShareProvider}
+                      onTest={handleTestProvider}
+                      onSelect={handleSelectProvider}
+                      onToggleDisabled={handleToggleDisabled}
+                      selectable={providerBatch.selectionMode && providerBatch.isSelectable(provider.id)}
+                      selected={providerBatch.selectedIds.has(provider.id)}
+                      onSelectChange={(checked) =>
+                        providerBatch.toggleSelect(provider.id, checked)
+                      }
+                      connectivityStatus={connectivityStatuses[provider.id]}
+                      gatewayTakeoverActive={gatewayTakeoverActive}
+                      gatewayStatus={gatewayCliStatus}
+                      onGatewayStatusChange={async (status) => {
+                        setGatewayCliStatus(status);
+                        await loadConfig();
+                      }}
+                      dragDisabled={providerDragDisabled}
+                      viewMode="card"
+                    />
+                  )}
+                />
+              ) : (
+                <div>
+                  {visibleProviders.map((provider) => (
+                    <ClaudeProviderCard
+                      key={provider.id}
+                      provider={provider}
+                      isApplied={provider.id === appliedProviderId}
+                      onEdit={handleEditProvider}
+                      onDelete={handleDeleteProvider}
+                      onCopy={handleCopyProvider}
+                      onShare={handleShareProvider}
+                      onTest={handleTestProvider}
+                      onSelect={handleSelectProvider}
+                      onToggleDisabled={handleToggleDisabled}
+                      selectable={providerBatch.selectionMode && providerBatch.isSelectable(provider.id)}
+                      selected={providerBatch.selectedIds.has(provider.id)}
+                      onSelectChange={(checked) =>
+                        providerBatch.toggleSelect(provider.id, checked)
+                      }
+                      connectivityStatus={connectivityStatuses[provider.id]}
+                      gatewayTakeoverActive={gatewayTakeoverActive}
+                      gatewayStatus={gatewayCliStatus}
+                      onGatewayStatusChange={async (status) => {
+                        setGatewayCliStatus(status);
+                        await loadConfig();
+                      }}
+                      dragDisabled={providerDragDisabled}
+                    />
+                  ))}
+                </div>
+              )}
             </SortableContext>
           </DndContext>
         </ProviderListSection>

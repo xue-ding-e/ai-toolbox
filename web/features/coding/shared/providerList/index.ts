@@ -4,6 +4,12 @@ export { default as ProviderSearchInput } from './ProviderSearchInput';
 export { default as ProviderBatchToolbar } from './ProviderBatchToolbar';
 export { useProviderListSort } from './useProviderListSort';
 export { useProviderBatchSelection } from './useProviderBatchSelection';
+export {
+  PROVIDER_VIEW_MODES,
+  isProviderViewMode,
+  useProviderListViewPrefs,
+  type ProviderViewMode,
+} from './useProviderListViewPrefs';
 export { backupProvidersBeforeDelete } from './providerBatchOperations';
 export {
   PROVIDER_SORT_MODES,

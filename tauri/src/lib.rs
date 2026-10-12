@@ -2133,6 +2133,7 @@ pub fn run() {
             settings::save_session_detail_filters,
             settings::get_provider_list_state,
             settings::save_provider_sort_mode,
+            settings::save_provider_view_mode,
             settings::record_provider_last_used,
             settings::probe_manual_cli_version,
             settings::set_manual_cli_path,

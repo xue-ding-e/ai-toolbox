@@ -1,0 +1,23 @@
+// Mirrors `SkillsList.module.less` / `McpList.module.less`: the column count is
+// published as `--management-grid-columns` by `useAutoGridColumns`, with a
+// stable 3-column fallback so the first frame (before the ResizeObserver
+// answers) does not jump from 4 columns back to 3.
+.grid {
+  display: grid;
+  grid-template-columns: var(--management-grid-columns, repeat(3, minmax(0, 1fr)));
+  gap: 10px;
+  align-items: stretch;
+}
+
+// Below this width a 350px minimum cell no longer fits more than one column;
+// the JS measurement would already return 1, and this keeps the unmeasured
+// first frame correct too.
+.gridAuto {
+  @media (max-width: 1024px) {
+    grid-template-columns: 1fr;
+  }
+}
+
+.gridFixed {
+  grid-template-columns: var(--management-grid-columns);
+}

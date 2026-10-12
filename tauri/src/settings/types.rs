@@ -262,16 +262,22 @@ pub struct AppSettings {
     /// Module keys follow the favorite-provider source convention
     /// (opencode/claudecode/claudedesktop/codex/grok/geminicli/kimi/openclaw/pi/omp/hermes/dsh).
     pub provider_last_used: HashMap<String, String>,
+    /// Provider list layout per coding module (e.g. "claudecode" -> "card").
+    /// Values: "list" (default) or "card" (compact grid view).
+    pub provider_view_modes: HashMap<String, String>,
 }
 
-/// Combined read model for the provider list UI: per-module sort preference and
-/// the last-used timestamp map consumed by the "recently used" sort mode.
+/// Combined read model for the provider list UI: per-module sort preference,
+/// the last-used timestamp map consumed by the "recently used" sort mode, and
+/// the layout preference (list vs compact card grid).
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ProviderListState {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub sort_modes: HashMap<String, String>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub last_used: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub view_modes: HashMap<String, String>,
 }
 
 impl Default for AppSettings {
@@ -338,6 +344,7 @@ impl Default for AppSettings {
             session_detail_filters: None,
             provider_sort_modes: HashMap::new(),
             provider_last_used: HashMap::new(),
+            provider_view_modes: HashMap::new(),
         }
     }
 }

@@ -9,12 +9,14 @@ use crate::db::SqliteDbState;
 use super::adapter;
 use super::store::{load_settings_from_sqlite_state, SETTINGS_ID};
 
-/// Read the provider list UI state (per-module sort modes + last-used map).
+/// Read the provider list UI state (per-module sort modes, last-used map and
+/// list layout).
 pub fn get_provider_list_state(sqlite_state: &SqliteDbState) -> Result<ProviderListState, String> {
     let settings = load_settings_from_sqlite_state(sqlite_state)?;
     Ok(ProviderListState {
         sort_modes: settings.provider_sort_modes,
         last_used: settings.provider_last_used,
+        view_modes: settings.provider_view_modes,
     })
 }
 
@@ -33,6 +35,22 @@ pub fn save_provider_sort_mode_in_sqlite_state(
     let value = serde_json::to_value(sort_modes)
         .map_err(|error| format!("serialize provider sort modes: {error}"))?;
     patch_or_create_settings_field(sqlite_state, "provider_sort_modes", value)
+}
+
+/// Persist a single module's provider list layout (`list` / `card`). Same
+/// nested-patch semantics as the sort mode above.
+pub fn save_provider_view_mode_in_sqlite_state(
+    sqlite_state: &SqliteDbState,
+    module: &str,
+    mode: &str,
+) -> Result<(), String> {
+    let settings = load_settings_from_sqlite_state(sqlite_state)?;
+    let mut view_modes = settings.provider_view_modes;
+    view_modes.insert(module.to_string(), mode.to_string());
+
+    let value = serde_json::to_value(view_modes)
+        .map_err(|error| format!("serialize provider view modes: {error}"))?;
+    patch_or_create_settings_field(sqlite_state, "provider_view_modes", value)
 }
 
 /// Record that a provider was just applied/selected. Called from each coding
@@ -91,6 +109,7 @@ mod tests {
         let empty = get_provider_list_state(&sqlite_state).expect("read empty");
         assert!(empty.sort_modes.is_empty());
         assert!(empty.last_used.is_empty());
+        assert!(empty.view_modes.is_empty());
 
         save_provider_sort_mode_in_sqlite_state(&sqlite_state, "kimi", "recent")
             .expect("save sort mode");
@@ -126,6 +145,35 @@ mod tests {
         assert_eq!(
             state.sort_modes.get("codex").map(String::as_str),
             Some("name")
+        );
+    }
+
+    #[test]
+    fn provider_view_mode_round_trips_without_clobbering_sort_mode() {
+        let sqlite_state = SqliteDbState::in_memory_for_test().expect("sqlite");
+
+        save_provider_sort_mode_in_sqlite_state(&sqlite_state, "claudecode", "recent")
+            .expect("sort mode");
+        save_provider_view_mode_in_sqlite_state(&sqlite_state, "claudecode", "card")
+            .expect("view mode");
+
+        let state = get_provider_list_state(&sqlite_state).expect("read state");
+        assert_eq!(
+            state.view_modes.get("claudecode").map(String::as_str),
+            Some("card")
+        );
+        // The sibling nested key survives: each writer patches only its own key.
+        assert_eq!(
+            state.sort_modes.get("claudecode").map(String::as_str),
+            Some("recent")
+        );
+
+        save_provider_view_mode_in_sqlite_state(&sqlite_state, "codex", "list").expect("codex");
+        let state = get_provider_list_state(&sqlite_state).expect("read state");
+        assert_eq!(state.view_modes.len(), 2);
+        assert_eq!(
+            state.view_modes.get("codex").map(String::as_str),
+            Some("list")
         );
     }
 

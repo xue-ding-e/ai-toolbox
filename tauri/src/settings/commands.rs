@@ -68,6 +68,20 @@ pub async fn save_provider_sort_mode(
     )
 }
 
+/// Persist one module's provider list layout (`list` / `card`).
+#[tauri::command]
+pub async fn save_provider_view_mode(
+    sqlite_state: tauri::State<'_, SqliteDbState>,
+    module: String,
+    mode: String,
+) -> Result<(), String> {
+    super::provider_list_state::save_provider_view_mode_in_sqlite_state(
+        &sqlite_state,
+        &module,
+        &mode,
+    )
+}
+
 /// Record that a provider was just applied/selected. Frontend fallback for
 /// module paths where only the frontend knows the provider id (e.g. "set as
 /// default model" actions in file-based tabs); DB-backed apply flows record

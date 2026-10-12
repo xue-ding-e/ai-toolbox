@@ -14,14 +14,14 @@
 - 派生/进程内状态，不是事实源：
   - `cli_resolver` 的手动 CLI 覆盖注册表——每次 `load/save` 用持久化值**整体替换**，空设置即清空；
   - 托盘菜单、窗口代理客户端、keep-awake、自动备份调度器都是读设置的消费者，不反向持有设置。
-- provider 列表的排序偏好与最近使用时间不是独立表，存在同一条 app 记录的嵌套键 `provider_sort_modes` / `provider_last_used` 里（`provider_list_state.rs`）。
+- provider 列表的排序偏好与最近使用时间不是独立表，存在同一条 app 记录的嵌套键 `provider_sort_modes` / `provider_last_used` 里（`provider_list_state.rs`）。同一批嵌套键还有布局偏好 `provider_view_modes`（`list` / `card`），三个键各有自己的 `save_provider_*` command，`get_provider_list_state` 一次返回全部。（`provider_card_subtitle_roles` 曾与之并列，2026-10-12 随「卡片第二行改为列出全部角色模型」一并删除。）
 
 ## 核心设计决策（Why）
 
 - 用 adapter 而不是直接 serde：旧库、旧备份、旧版本记录必然缺字段或类型漂移，读取端要按字段兜底默认值且永不 panic；写入端始终产出完整结构。DB 键名即 Rust 字段名（snake_case），前端也按同一套名字读，**不做 camelCase 重命名**。
 - 默认值分两处且刻意不同：`AppSettings::default()` 表示「从未保存过」，`adapter::from_db_value` 的缺省表示「记录存在但缺这个键」。例如 `language` 缺省是**空串**（前端据此显示「系统默认」并跟随系统语言），`current_module` 在 adapter 里是 `"coding"`、在 `Default` 里是空串。把两者「统一」会让「系统默认」选项消失或让旧记录突然被钉死在某个语言上。
 - 只有整体保存，没有字段级 update 命令（少数专用命令除外）：设置是小对象，整份覆盖语义简单；代价是并发写必须由调用方串行化，且**同一记录里的所有键都必须属于 `AppSettings`**。
-- 几个高频/后台写入者走 `db_patch_fields` 只动自己的嵌套键（`session_detail_filters`、`provider_sort_modes`、`provider_last_used`、`last_auto_backup_time`），避免「后台写时间戳时用旧快照覆盖用户正在改的表单」；备份表单保存同事务内也只 patch 自己拥有的字段。它们之所以与「全量保存」不互相覆盖，是因为各自改的是不相交的键。
+- 几个高频/后台写入者走 `db_patch_fields` 只动自己的嵌套键（`session_detail_filters`、`provider_sort_modes`、`provider_last_used`、`provider_view_modes`、`last_auto_backup_time`），避免「后台写时间戳时用旧快照覆盖用户正在改的表单」；备份表单保存同事务内也只 patch 自己拥有的字段。它们之所以与「全量保存」不互相覆盖，是因为各自改的是不相交的键。**这几个供应商列表偏好键尤其重要**：它们由三个不同的写入点（排序 / 最近使用 / 布局）各自 patch，合用一个 `patch_or_create_settings_field` 但键名不同——新增一个偏好时照抄这个形状，不要退回 `save_settings` 全量写。
 - `visible_tabs` / `sidebar_hidden_by_page` 的历史默认兼容放在 adapter 读取端做「一次性识别 + 全量替换」，而不是 schema 迁移：判断依据是「当前列表逐项等于某个历史默认快照」。自定义顺序**原样保留**，也**不**给自定义列表强插新增 tab（否则用户手动关掉的 tab 会在每次重载时回来）。
 
 ## 关键流程

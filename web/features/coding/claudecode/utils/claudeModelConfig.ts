@@ -97,6 +97,61 @@ export function getClaudeProviderModelConfig(
   };
 }
 
+/**
+ * The roles a compact provider card states on its second line, in the order it
+ * states them.
+ *
+ * High tier first, because that is how these providers are compared. Only the
+ * four role bindings — the provider-wide `ANTHROPIC_MODEL` catch-all and the
+ * legacy reasoning slot are deliberately absent: the card is a glance, and the
+ * entries that are not a tier would be the ones crowding out the tiers.
+ */
+export const CLAUDE_CARD_SUBTITLE_ROLES = ['opus', 'sonnet', 'haiku', 'fable'] as const;
+
+export type ClaudeCardSubtitleRole = typeof CLAUDE_CARD_SUBTITLE_ROLES[number];
+
+/**
+ * The i18n key for each role's label, as a total map.
+ *
+ * Spelled out rather than built from the role name (`role${capitalize(role)}`)
+ * so a rename here fails to compile instead of rendering a literal key string
+ * on the card.
+ */
+export const CLAUDE_CARD_ROLE_LABELS: Record<ClaudeCardSubtitleRole, string> = {
+  opus: 'claudecode.model.roleOpus',
+  sonnet: 'claudecode.model.roleSonnet',
+  haiku: 'claudecode.model.roleHaiku',
+  fable: 'claudecode.model.roleFable',
+};
+
+/** One `Role: model` pair on the compact card's second line. */
+export interface ClaudeCardSubtitle {
+  role: ClaudeCardSubtitleRole;
+  /** Display name, or the model id with its `[1M]` marker stripped. */
+  model: string;
+}
+
+/**
+ * Every role model a compact provider card states, in tier order.
+ *
+ * The list card shows these bindings plus the default and reasoning slots on
+ * its meta line; the card grid shows only the tiers, on one truncated line.
+ * Returning the list (rather than picking one) is what makes the line stable:
+ * there is no "which role leads" preference to keep in sync with the store, and
+ * no fallback chain to explain — either a role has a model or it is not on the
+ * card.
+ *
+ * An empty array is a real answer, not a failure: a provider with no role
+ * bindings has nothing to say here, and the card renders no second line.
+ */
+export function resolveClaudeCardSubtitles(
+  modelConfig: ClaudeProviderModelConfig,
+): ClaudeCardSubtitle[] {
+  return CLAUDE_CARD_SUBTITLE_ROLES
+    .map((role) => ({ role, model: modelConfig.roles[role].displayName.trim() }))
+    .filter((entry) => Boolean(entry.model));
+}
+
 export function getClaudeConfiguredModelIds(
   settingsConfig: ClaudeSettingsConfig,
   options: { stripOneMMarker?: boolean; includeLegacyReasoning?: boolean } = {},

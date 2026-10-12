@@ -2,9 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  CLAUDE_CARD_ROLE_LABELS,
   getClaudeConfiguredModelIds,
   getClaudeProviderModelConfig,
   hasClaudeOneMMarker,
+  resolveClaudeCardSubtitles,
   setClaudeOneMMarker,
   stripClaudeOneMMarker,
 } from '../../../../../features/coding/claudecode/utils/claudeModelConfig.ts';
@@ -93,4 +95,86 @@ test('getClaudeConfiguredModelIds can strip 1M markers and dedupe ids', () => {
   });
 
   assert.deepEqual(modelIds, ['env-sonnet', 'env-opus', 'env-fable']);
+});
+
+test('resolveClaudeCardSubtitles lists the configured roles in tier order', () => {
+  const config = getClaudeProviderModelConfig({
+    env: {
+      // Deliberately out of order in the config, and with the default and
+      // reasoning slots set as well: neither belongs on the card's line.
+      ANTHROPIC_MODEL: 'fallback-model',
+      ANTHROPIC_DEFAULT_FABLE_MODEL: 'fable-model',
+      ANTHROPIC_DEFAULT_OPUS_MODEL: 'opus-model',
+      ANTHROPIC_DEFAULT_SONNET_MODEL: 'sonnet-model',
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: 'haiku-model',
+      ANTHROPIC_REASONING_MODEL: 'reasoning-model',
+    },
+  });
+
+  assert.deepEqual(resolveClaudeCardSubtitles(config), [
+    { role: 'opus', model: 'opus-model' },
+    { role: 'sonnet', model: 'sonnet-model' },
+    { role: 'haiku', model: 'haiku-model' },
+    { role: 'fable', model: 'fable-model' },
+  ]);
+});
+
+test('resolveClaudeCardSubtitles skips roles with no model and keeps the rest', () => {
+  const onlyFable = getClaudeProviderModelConfig({
+    env: { ANTHROPIC_DEFAULT_FABLE_MODEL: 'fable-model' },
+  });
+
+  // The unconfigured roles leave no gap and no placeholder entry — the line
+  // simply states what exists.
+  assert.deepEqual(resolveClaudeCardSubtitles(onlyFable), [
+    { role: 'fable', model: 'fable-model' },
+  ]);
+});
+
+test('resolveClaudeCardSubtitles prefers the display name and strips 1M markers', () => {
+  const config = getClaudeProviderModelConfig({
+    env: {
+      ANTHROPIC_DEFAULT_OPUS_MODEL: 'opus-model[1M]',
+      ANTHROPIC_DEFAULT_OPUS_MODEL_NAME: 'DeepSeek V4 Pro',
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: 'haiku-model[1M]',
+    },
+  });
+
+  assert.deepEqual(resolveClaudeCardSubtitles(config), [
+    { role: 'opus', model: 'DeepSeek V4 Pro' },
+    // No display name configured: the raw id is shown, without the 1M marker.
+    { role: 'haiku', model: 'haiku-model' },
+  ]);
+});
+
+test('resolveClaudeCardSubtitles ignores the default and reasoning slots', () => {
+  // A provider whose only models are the catch-alls the list card shows: the
+  // card grid states no role bindings, so its second line is empty.
+  const catchAllsOnly = getClaudeProviderModelConfig({
+    env: {
+      ANTHROPIC_MODEL: 'fallback-model',
+      ANTHROPIC_REASONING_MODEL: 'reasoning-model',
+    },
+  });
+
+  // An empty array, not a `null` or a blank entry: the card renders no line.
+  assert.deepEqual(resolveClaudeCardSubtitles(catchAllsOnly), []);
+});
+
+test('every card role has a label key', () => {
+  const config = getClaudeProviderModelConfig({
+    env: {
+      ANTHROPIC_DEFAULT_OPUS_MODEL: 'opus-model',
+      ANTHROPIC_DEFAULT_SONNET_MODEL: 'sonnet-model',
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: 'haiku-model',
+      ANTHROPIC_DEFAULT_FABLE_MODEL: 'fable-model',
+    },
+  });
+
+  // The labels are a total map over the roles, so a role added to the line
+  // without a label fails here rather than rendering a bare key on the card.
+  for (const entry of resolveClaudeCardSubtitles(config)) {
+    assert.equal(typeof CLAUDE_CARD_ROLE_LABELS[entry.role], 'string');
+    assert.ok(CLAUDE_CARD_ROLE_LABELS[entry.role].startsWith('claudecode.model.role'));
+  }
 });

@@ -4,6 +4,8 @@
 
 - 把「CLI 供应商卡片长什么样」这件事**固定成三种样式**，各 CLI 按自己的 provider 模型形状选用其一，不再各写各的布局。
 
+> **「卡片视图」不是这里的第四种样式。** `shared/providerCardView/` 是同一批数据的另一种**呈现密度**（紧凑卡片网格），由用户的布局偏好切换，与 provider 模型形状无关。本模块的三种样式按语义选型；把显示偏好混进来会让「该用哪种样式」这个问题失去意义。两者的共用面是 `cardChrome.ts`（accent）、`providerCardMenu.tsx`（「更多」菜单）与 `providerCardActions.tsx`（底部两个主按钮），改通用行为改这三处。
+
 ## Source of Truth
 
 - 样式的事实源就是这三个组件文件本身。`index.ts` 的对照表是**选型规则**（哪个 CLI 用哪种、依据是什么），不是样式定义。
@@ -52,6 +54,7 @@
 - `features/coding/shared/management`（`ManagementCheckbox`）：批量选择的复选框。
 - `features/coding/shared/providerConnectivity/ProviderConnectivityStatus`：连通性状态点。
 - `components/common/ProviderNameLink`、`components/common/SdkTag`：名称链接与 SDK 标签。
+- `features/coding/shared/providerCardView/`：紧凑卡片网格视图（同一批数据的另一种呈现密度，不是第四种样式）。共用 `cardChrome.ts`、`providerCardMenu.tsx` 与 `providerCardActions.tsx`；`ProviderCompactCard` 是它自己的 chrome 宿主，与 `CardShell` 同级。
 - 使用方：`claudecode`（Claude 式）、`codex` + `kimi`（Codex 式）、`zcode` + `omo_native`（OpenCode 式）。三种样式**均已落地**。
 - 仍持 bespoke 卡片的三个（claudedesktop / geminicli / grok）已登记在 `scripts/verify-provider-card-layout.mjs` 的 `PENDING_MIGRATION` 里，只减不增。
 
@@ -83,6 +86,8 @@
 | `modelSection.className` / `bodyStyle` | 模型 Collapse | 缩进适配（透明背景由 `transparentRows` 负责） | codex |
 
 ## 「更多」菜单是契约，不是装饰
+
+> **菜单的构建已抽到 `providerCardMenu.tsx`**（`buildProviderCardMenuItems` / `dispatchProviderCardMenuClick`），因为 `shared/providerCardView` 的紧凑卡片也要用同一份。顺序、图标、分隔线、副标题文案都在那里定义一次；改菜单改那一处，不要在某个卡片里另写一遍。`verify-provider-card-layout.mjs` 的 prop 覆盖检查把该文件也列为渲染点（`enabledStateLabel` 只在那里渲染）。
 
 Claude / Codex 式的菜单**固定为**：启用（含副标题）→ 编辑 → 复制 → 分享 → 分隔线 → 删除，每项带图标，`trigger={['click']}`。
 
