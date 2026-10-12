@@ -89,6 +89,15 @@ interface ProviderCompactCardProps {
   /** Same object the list card receives. */
   actions?: ProviderCardActions;
   /**
+   * Rendered immediately **before** the title.
+   *
+   * `nameTags` covers everything after the name, but nothing can reach in front
+   * of it, because the name comes from `provider.name`. Codex's official card
+   * needs that spot: its title is the heading of an account block, and such a
+   * heading reads `🔗 官方账号 (2)` — glyph before, count after.
+   */
+  namePrefix?: React.ReactNode;
+  /**
    * State tags beside the title — 已应用 / 官方 / 代理.
    *
    * The same slot the list card takes, minus the endpoint: the mapping layer
@@ -122,6 +131,7 @@ const ProviderCompactCard: React.FC<ProviderCompactCardProps> = ({
   subtitle,
   providerState,
   actions,
+  namePrefix,
   nameTags,
   launchAction,
   extraMenuItems,
@@ -223,6 +233,7 @@ const ProviderCompactCard: React.FC<ProviderCompactCardProps> = ({
             </span>
           ) : null}
           <ProviderConnectivityStatus item={connectivityStatus} />
+          {namePrefix}
           <ProviderNameLink
             name={provider.name}
             baseUrl={provider.baseUrl}

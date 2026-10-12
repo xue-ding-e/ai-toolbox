@@ -70,8 +70,8 @@ This document provides essential information for AI coding agents working on thi
 | `web/features/coding/oh_my_pi/` | Oh My Pi 前端页面、models.yml provider、Codex 订阅卡片（官方账号共享组件的 embedded 宿主）、subagent 方案与 OMP 语义诊断（复用 pi 样式） |
 | `web/features/coding/omo_native/` | OmO Native 前端页面（供应商 / 全局提示词 / 会话管理三区块）、`models.json` provider 映射与插件版 OMO 的边界 |
 | `web/features/coding/zcode/` | ZCode 前端页面、provider/模型、官方账号与 OAuth 登录、通用配置与导入 |
-| `web/features/coding/shared/providerCardVariants/` | 三种固定供应商卡片样式（Claude/Codex/OpenCode）的单一实现，各 CLI 按 provider 模型形状选用；由 `scripts/verify-provider-card-layout.mjs` 守护 |
-| `web/features/coding/shared/providerCardView/` | 紧凑卡片网格视图：同一批数据的另一种呈现密度（由布局偏好切换），不是第四种卡片样式；与三种样式共用 accent、「更多」菜单与底部两个主按钮的渲染函数 |
+| `web/features/coding/shared/providerCardVariants/` | 三种固定供应商卡片样式（Claude/Codex/OpenCode）的单一实现，各 CLI 按 provider 模型形状选用；由 `scripts/verify-provider-card-layout.mjs` 守护。`ProviderModelSection` 是 `modelSection.*` → `ModelListSection` 的唯一映射（样式卡片与卡片视图侧栏共用） |
+| `web/features/coding/shared/providerCardView/` | 紧凑卡片网格视图：同一批数据的另一种呈现密度（由布局偏好切换），不是第四种卡片样式；与三种样式共用 accent、「更多」菜单与底部两个主按钮的渲染函数。`ProviderDetailPanel` 是详情侧栏的共享外壳，内容（`sections`）由各 CLI 的映射层提供 |
 | `web/features/coding/shared/officialAccounts/` | 官方账号区块（标题 → 说明 → 账号行：切换/保存/刷新/详情/删除）的单一实现。各 CLI 只写「自家账号记录 → `OfficialAccountRowView`」的映射，宿主由调用方挑（`embedded`＝供应商卡片内 / `standalone`＝自持卡片）；登录入口是插槽，不是开关。由 `scripts/verify-official-accounts-shared.mjs` 守护 |
 | `web/features/coding/codex/` | Codex 前端页面、根目录配置、provider 与 prompt 交互 |
 | `web/features/coding/grok/` | Grok CLI 前端页面、根目录配置、provider、官方账号、plugin、prompt 与 session 交互 |

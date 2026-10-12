@@ -96,7 +96,9 @@ sequenceDiagram
 - 页面头部用共享 `CodingPageHeader`（`web/features/coding/shared/CodingPageHeader.tsx`），是本组件的首个消费方（2026-10-06 迁移）。文案一律走 `common.*`，没有 per-CLI 覆盖 prop（迁移时 `codex.*` 那批头部 key 已被 prune）。改头部结构时改组件，不要改回页面内联。
 - 供应商列表区用共享 `ProviderListSection`（`shared/ProviderListSection.tsx`），是本组件的试点 1（2026-10-06 迁移）。Gateway 的两个胶囊（Failover + Aggregate）走 `headerExtra`；`codex.pageWarning` 比 claudecode 多一句"需重启 Codex"，这正是 hint 由调用方传而非组件硬编码的原因。
 - 卡片用 `shared/providerCardVariants/CodexStyleCard`（2026-10-07 迁移），本模块只负责把 `settings_config` 映射成 `ProviderCardVariantProps`。端点/模型 Tag/masked key/备注走 `metaEntries`，连通性走 `inlineActions` 的 `InlineConnectivityButton`，官方账号折叠区走 `footer`，网关五个按钮走 `actions.gatewayActions`。映射层不得自己 `useSortable` / 自己渲染 `<Card>` / 自己写 `ManagementCheckbox`——`pnpm run test:provider-card-layout` 守护这条。
-- 模型列表经 `modelSection` 转给 `CodexStyleCard`，后者再传给 `ModelListSection`（本组件的试点 2）。**Codex 的 `rowKeyOf` 不能从 display 反推**：catalog 行标识是 `model + displayName`，而 `display.name` 在无 displayName 时回退成上游 id，重建键会错位。`rowKeyByDisplay` 这个 `Map<display 对象, rowKey>` 是唯一正确来源，改模型行相关逻辑时不要绕过它。自动审批行与行级「设为自动审批模型」分别走 `modelSection.aboveList` 与 `modelSection.renderModelExtraActions`。
+- 模型列表经 `modelSection` 转给 `CodexStyleCard`，后者再传给 `ModelListSection`（本组件的试点 2）。**Codex 的 `rowKeyOf` 不能从 display 反推**：catalog 行标识是 `model + displayName`，而 `display.name` 在无 displayName 时回退成上游 id，重建键会错位。`rowKeyByDisplay` 这个 `Map<display 对象, rowKey>` 是唯一正确来源，改模型行相关逻辑时不要绕过它。自动审批行与行级「设为自动审批模型」分别走 `modelSection.aboveList` 与 `modelSection.renderModelExtraActions`。转发本身由共享 `providerCardVariants/ProviderModelSection` 完成（Codex / OpenCode / 卡片视图侧栏共用），本模块只提供 `modelSection` 这份数据。
+- 卡片布局（issue #399 的第二种呈现）已接入（2026-10-12）：`CodexProviderCard` 收 `viewMode`，`'card'` 分支渲染共享 `ProviderCompactCard` + 它自己持有的详情 `Drawer`（`ProviderDetailPanel`）；`CodexPage` 用 `useProviderListViewPrefs('codex')` 读写偏好，列表容器换成 `ProviderCardGrid`，`SortableContext` 用 `rectSortingStrategy` + `restrictToWindowEdges`。**格子只陈述主模型**（`主模型: gpt-5 (high)`，没有模型名就不出这一行），**模型目录整块搬进侧栏**（官方/`__local__` 行本就没有目录），官方账号块也跟着进侧栏——卡片视图里官方卡片没有 `footer` 可挂它是必然的。第二行与侧栏内容都从**同一份** `providerState` / `actions` 算出来，两种布局不许各算一份。
+- 侧栏里的模型目录仍是**能用的管理器**（批量删除 / 模型测试 / 获取模型 / 添加模型），因为渲染的是同一个 `ProviderModelSection`；`ProviderDetailPanel` 是共享外壳，Codex 只提供 `sections`（连接信息 / 模型配置 / 目录 / 官方账号 / 备注）。**「模型配置」用的是 `codex.model.mappingTitle`（模型配置）而不是 `common.model.title`（模型列表）**：后者正是目录区自己的标题，一个侧栏里出现两个「模型列表」会把「一个绑定」读成「一份清单」。
 - 依赖后端 `codex::commands` 和共享 favorite provider、All API Hub 组件、以及共享 `ImportFromCcSwitchModal`（CC Switch 只读导入；无 db 不显示按钮；Codex TOML 经白名单重建后写入）。
 - 间接受 `settings/` 和 `runtime_location` 的 WSL Direct 语义影响，但页面本身只显示 path info。
 
@@ -113,6 +115,7 @@ sequenceDiagram
 
 - 至少验证：修改根目录后页面重新读取到新的路径来源。
 - 至少验证：导入同源 provider 冲突时有明确覆盖/副本分支。
+- 改卡片布局或侧栏时，跑 `pnpm run test:codex-card-view`（真 Chromium 挂真实 `CodexPage`，52 项断言）：切换并落库、格子只有主模型、目录/账号块进侧栏、格子内拖拽回写、切回列表后目录仍在。
 - 模型目录改动运行 `pnpm test` 与 `pnpm exec tsc --noEmit`。`web/test/features/coding/codex/utils/codexCatalogModelRows.test.ts` 覆盖行身份、upsert/删除/排序、弹窗表单值往返、图片能力三态与连通性 model id 并集；`codexProviderCatalogSave.test.ts` 覆盖 single/failover/aggregate 的回放顺序。模型目录的浏览器检查（`pnpm test:codex-model-import`）目前仍指向已移除的表单内映射 UI，迁移到卡片模型列表前不要把它当作有效结论。
 - 若本机存在 `~/.cc-switch/cc-switch.db`，Codex 页应出现「从 CC Switch 导入」；导入后带 `sourceProviderId=ccs:codex:...`、默认未应用；MCP-only 空壳不应进入列表。
 - 改历史同步 UI 时，至少验证会话管理标题栏入口、来源切换、本机/WSL 状态弹窗、同步确认、恢复最新备份强确认和 Session Manager 刷新触发。

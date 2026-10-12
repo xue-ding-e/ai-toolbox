@@ -15,6 +15,7 @@
  * `undefined`, which would turn a missing stub into a confusing render failure.
  */
 import './ProviderListDragStubs.js';
+import { createCodexPageInvoke } from './codexPageStubs.js';
 import { createRoot } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
 import { App, ConfigProvider, theme } from 'antd';
@@ -109,6 +110,7 @@ const state = {
   runId: parameters.get('runId'),
   requests: [],
   sortMode: parameters.get('sortMode') || 'custom',
+  viewMode: parameters.get('viewMode') || 'list',
   providers: [
     ...(isBridgeApplied
       ? [createProvider('__local__', 'default', '2026-01-04T00:00:00.000Z')]
@@ -130,21 +132,6 @@ const state = {
     : [],
 };
 
-const gatewayCliStatus = {
-  cli_key: 'codex',
-  state: 'direct',
-  dot: 'idle',
-  can_takeover: true,
-  can_restore_direct: false,
-  gateway_origin: null,
-  runtime_root: null,
-  managed_targets: [],
-  mode: null,
-  primary_provider_id: null,
-  provider_priorities: [],
-  message: null,
-};
-
 const eventListeners = new Map();
 let nextEventId = 0;
 
@@ -157,65 +144,9 @@ window.__TAURI_INTERNALS__ = {
   unregisterCallback(id) {
     eventListeners.delete(id);
   },
-  async invoke(command, args) {
-    state.requests.push({ command, args: structuredClone(args ?? null) });
-    switch (command) {
-      // --- provider list ---------------------------------------------------
-      case 'get_codex_config_file_path': return 'C:\\Users\\tester\\.codex\\config.toml';
-      case 'get_codex_root_path_info': return { path: 'C:\\Users\\tester\\.codex', source: 'default' };
-      case 'list_codex_providers': return structuredClone(state.providers);
-      case 'list_codex_official_accounts': return structuredClone(state.officialAccounts);
-      case 'reorder_codex_providers': {
-        const byId = new Map(state.providers.map(provider => [provider.id, provider]));
-        state.providers = args.ids.map(id => byId.get(id));
-        return null;
-      }
-      case 'list_opencode_favorite_providers': return [];
-      case 'refresh_tray_menu': return null;
-      case 'get_codex_common_config': return null;
-      case 'read_codex_settings': return {};
-
-      // --- provider list UI state -----------------------------------------
-      case 'get_provider_list_state':
-        return { sort_modes: { codex: state.sortMode }, last_used: {} };
-      case 'save_provider_sort_mode': {
-        state.sortMode = args.mode;
-        return null;
-      }
-      case 'record_provider_last_used': return null;
-
-      // --- gateway ---------------------------------------------------------
-      case 'proxy_gateway_cli_status': return structuredClone(gatewayCliStatus);
-      case 'proxy_gateway_cli_statuses': return [structuredClone(gatewayCliStatus)];
-      case 'proxy_gateway_supported_cli_keys': return ['codex'];
-      case 'proxy_gateway_status': return { running: false, mode: null };
-      case 'proxy_gateway_get_settings': return {};
-
-      // --- plugins / memories / sessions ----------------------------------
-      case 'get_codex_plugin_runtime_status':
-        return { feature_enabled: false, runtime_available: false, runtime_error: null, plugin_count: 0 };
-      case 'list_codex_installed_plugins': return [];
-      case 'list_codex_plugin_workspace_roots': return [];
-      case 'list_codex_memories': return { entries: [], root_path: 'C:\\Users\\tester\\.codex\\memories' };
-      case 'list_tool_sessions':
-        return { sessions: [], total: 0, has_more: false, next_cursor: null };
-
-      // --- global prompt list ---------------------------------------------
-      case 'list_codex_prompt_configs': return [];
-
-      // --- feature-availability probes ------------------------------------
-      case 'has_all_api_hub_extension': return false;
-      case 'has_cc_switch_db': return false;
-
-      // --- event plumbing --------------------------------------------------
-      case 'plugin:event|listen': return 1;
-      case 'plugin:event|unlisten': return null;
-      case 'plugin:opener|reveal_item_in_dir': return null;
-
-      default:
-        throw new Error('Unstubbed fixture command: ' + command);
-    }
-  },
+  // The page's own command table lives in `codexPageStubs.js`: the card-view
+  // fixture mounts the same page and must not drift from this one.
+  invoke: createCodexPageInvoke(state),
 };
 
 const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));

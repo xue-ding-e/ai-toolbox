@@ -3,6 +3,7 @@ import {
   firstGatewayApiFormat,
   openAiApiFormatFromBaseUrl,
   providerNeedsGatewayProxy,
+  type GatewayApiFormat,
   type GatewayProxyReason,
 } from '../../shared/gateway/providerProtocol';
 import { getGatewayProviderApiFormatFromMeta } from '../../shared/gateway/providerProfiles';
@@ -28,7 +29,21 @@ export const codexApiFormatNeedsGatewayProxy = (apiFormat?: string | null): bool
  * settings panel has to refuse the same action instead of quietly restoring a
  * config that cannot work.
  */
-export const codexProviderNeedsGatewayProxy = (provider: CodexProvider): boolean => {
+export const codexProviderNeedsGatewayProxy = (provider: CodexProvider): boolean =>
+  codexApiFormatNeedsGatewayProxy(resolveCodexProviderApiFormat(provider));
+
+/**
+ * The wire protocol a stored Codex provider speaks.
+ *
+ * Exported on its own because a second question now reads it: the provider
+ * detail sidebar states the protocol as a fact, the same way Claude's does. The
+ * gateway-proxy check above and that row must read the *same* precedence chain —
+ * a second copy of it is how the card ends up saying "OpenAI Responses" about a
+ * provider the gateway refuses to route natively.
+ */
+export const resolveCodexProviderApiFormat = (
+  provider: CodexProvider,
+): GatewayApiFormat | null => {
   const parsedSettingsConfig = parseCodexSettingsConfig(provider.settingsConfig);
   // `apiFormat` / `api_format` are tolerated legacy keys, not part of the type.
   const settingsConfig = parsedSettingsConfig as typeof parsedSettingsConfig & {
@@ -36,7 +51,7 @@ export const codexProviderNeedsGatewayProxy = (provider: CodexProvider): boolean
     api_format?: unknown;
   };
   const baseUrl = extractCodexBaseUrl(settingsConfig.config);
-  const providerApiFormat = firstGatewayApiFormat(
+  return firstGatewayApiFormat(
     getGatewayProviderApiFormatFromMeta(provider.meta, 'codex'),
     provider.meta?.apiFormat,
     typeof settingsConfig.apiFormat === 'string' ? settingsConfig.apiFormat : undefined,
@@ -44,7 +59,6 @@ export const codexProviderNeedsGatewayProxy = (provider: CodexProvider): boolean
     codexWireApiFormatFromConfig(settingsConfig.config),
     openAiApiFormatFromBaseUrl(baseUrl),
   );
-  return codexApiFormatNeedsGatewayProxy(providerApiFormat);
 };
 
 /**

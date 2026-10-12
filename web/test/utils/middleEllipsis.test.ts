@@ -4,7 +4,7 @@ import {
   KEY_HEAD_CHARS,
   KEY_TAIL_CHARS,
   middleEllipsis,
-} from '../../../../../features/coding/claudecode/utils/middleEllipsis.ts';
+} from '../../utils/middleEllipsis.ts';
 
 const buildKey = (length: number) => 'k'.repeat(length);
 

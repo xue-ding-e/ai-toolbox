@@ -17,10 +17,11 @@ import {
 import {
   SortableContext,
   sortableKeyboardCoordinates,
+  rectSortingStrategy,
   verticalListSortingStrategy,
   arrayMove,
 } from '@dnd-kit/sortable';
-import { restrictToVerticalAxis } from '@dnd-kit/modifiers';
+import { restrictToVerticalAxis, restrictToWindowEdges } from '@dnd-kit/modifiers';
 import type {
   CodexCatalogModel,
   CodexProvider,
@@ -130,7 +131,9 @@ import {
   sortProviderItems,
   useProviderBatchSelection,
   useProviderListSort,
+  useProviderListViewPrefs,
 } from '@/features/coding/shared/providerList';
+import ProviderCardGrid from '@/features/coding/shared/providerCardView/ProviderCardGrid';
 import {
   deleteFavoriteProvider,
   listFavoriteProviders,
@@ -738,6 +741,8 @@ const CodexPage: React.FC = () => {
   });
 
   const { sortMode, setSortMode, lastUsedAt, noteProviderUsed } = useProviderListSort('codex');
+  const { viewMode, setViewMode } = useProviderListViewPrefs('codex');
+
   const [providerKeyword, setProviderKeyword] = React.useState('');
   // Search and non-custom sort modes bypass sort_index, so dragging would
   // write a stale custom order — dnd is only enabled in custom mode.
@@ -2387,6 +2392,60 @@ const CodexPage: React.FC = () => {
     }
   };
 
+  /**
+   * Everything a `CodexProviderCard` needs, in one place.
+   *
+   * The card takes twenty-odd props, and the two layouts render it from
+   * different places — a mapped list and a grid's `renderItem`. Building the
+   * props twice is how the grid card and the list card start disagreeing about
+   * which handler they were handed; the layout only ever adds `viewMode` on top.
+   */
+  const codexProviderCardProps = (provider: CodexProvider) => ({
+    provider,
+    isApplied: provider.id === appliedProviderId,
+    officialAccounts: officialAccountsByProviderId[provider.id] || [],
+    onEdit: handleEditProvider,
+    onDelete: handleDeleteProvider,
+    onCopy: handleCopyProvider,
+    onShare: handleShareProvider,
+    onTest: handleTestProvider,
+    onSelect: handleSelectProvider,
+    onToggleDisabled: handleToggleDisabled,
+    onAddModel: handleAddModel,
+    onEditModel: handleEditModel,
+    onCopyModel: handleCopyModel,
+    onDeleteModel: handleDeleteModel,
+    onSetPrimaryModel: handleSetPrimaryModel,
+    onSetAutoReviewModel: handleSetAutoReviewModel,
+    onClearAutoReviewModel: handleClearAutoReviewModel,
+    onFetchModels: handleOpenFetchModels,
+    onReorderModels: handleReorderModels,
+    onToggleBatchDeleteMode: handleToggleModelBatchDeleteMode,
+    onBatchDeleteModels: handleBatchDeleteModels,
+    modelSelectionMode: modelBatchDeleteProviderId === provider.id,
+    selectedModelRowKeys: selectedModelRowKeysByProvider[provider.id] ?? [],
+    onToggleModelSelection: handleToggleModelSelection,
+    onOfficialAccountLogin: handleStartOfficialAccountOauth,
+    onOfficialLocalAccountSave: handleSaveOfficialLocalAccount,
+    onOfficialAccountApply: handleApplyOfficialAccount,
+    onOfficialAccountDelete: handleDeleteOfficialAccount,
+    onOfficialAccountRefresh: handleRefreshOfficialAccount,
+    onOfficialAccountViewDetails: handleViewOfficialAccountDetails,
+    refreshingOfficialAccountId,
+    savingOfficialAccountId,
+    connectivityStatus: connectivityStatuses[provider.id],
+    gatewayTakeoverActive,
+    gatewayStatus: gatewayCliStatus,
+    onGatewayStatusChange: async (status: GatewayCliTakeoverStatus) => {
+      applyGatewayCliStatus(status);
+      await loadConfig();
+    },
+    selectable: providerBatch.selectionMode && providerBatch.isSelectable(provider.id),
+    selected: providerBatch.selectedIds.has(provider.id),
+    onSelectChange: (checked: boolean) => providerBatch.toggleSelect(provider.id, checked),
+    dragDisabled: providerDragDisabled,
+  });
+
   return (
     <SectionSidebarLayout
       sidebarTitle={t('codex.title')}
@@ -2463,6 +2522,8 @@ const CodexPage: React.FC = () => {
           batchTesting={batchTestingProviders}
           onOpenCommonConfig={() => setCommonConfigModalOpen(true)}
           onAddProvider={handleAddProvider}
+          viewMode={viewMode}
+          onViewModeChange={setViewMode}
           headerExtra={
             <Space size={8} wrap>
               <GatewayFailoverButton
@@ -2517,68 +2578,35 @@ const CodexPage: React.FC = () => {
             </Space>
           }
         >
+          {/* One DndContext serves both layouts: only the sorting strategy and
+              the drag axis change with the view. A second context for the grid
+              would duplicate the sensors and let the two disagree about when
+              dragging is off. */}
           <DndContext
             sensors={providerBatchDragDisabled ? [] : sensors}
             collisionDetection={closestCenter}
             onDragEnd={handleDragEnd}
-            modifiers={[restrictToVerticalAxis]}
+            modifiers={[viewMode === 'card' ? restrictToWindowEdges : restrictToVerticalAxis]}
           >
             <SortableContext
               items={providers.map((p) => p.id)}
-              strategy={verticalListSortingStrategy}
+              strategy={viewMode === 'card' ? rectSortingStrategy : verticalListSortingStrategy}
             >
-              <div>
-                {visibleProviders.map((provider) => (
-                  <CodexProviderCard
-                    key={provider.id}
-                    provider={provider}
-                    isApplied={provider.id === appliedProviderId}
-                    officialAccounts={officialAccountsByProviderId[provider.id] || []}
-                    onEdit={handleEditProvider}
-                    onDelete={handleDeleteProvider}
-                    onCopy={handleCopyProvider}
-                    onShare={handleShareProvider}
-                    onTest={handleTestProvider}
-                    onSelect={handleSelectProvider}
-                    onToggleDisabled={handleToggleDisabled}
-                    onAddModel={handleAddModel}
-                    onEditModel={handleEditModel}
-                    onCopyModel={handleCopyModel}
-                    onDeleteModel={handleDeleteModel}
-                    onSetPrimaryModel={handleSetPrimaryModel}
-                    onSetAutoReviewModel={handleSetAutoReviewModel}
-                    onClearAutoReviewModel={handleClearAutoReviewModel}
-                    onFetchModels={handleOpenFetchModels}
-                    onReorderModels={handleReorderModels}
-                    onToggleBatchDeleteMode={handleToggleModelBatchDeleteMode}
-                    onBatchDeleteModels={handleBatchDeleteModels}
-                    modelSelectionMode={modelBatchDeleteProviderId === provider.id}
-                    selectedModelRowKeys={selectedModelRowKeysByProvider[provider.id] ?? []}
-                    onToggleModelSelection={handleToggleModelSelection}
-                    onOfficialAccountLogin={handleStartOfficialAccountOauth}
-                    onOfficialLocalAccountSave={handleSaveOfficialLocalAccount}
-                    onOfficialAccountApply={handleApplyOfficialAccount}
-                    onOfficialAccountDelete={handleDeleteOfficialAccount}
-                    onOfficialAccountRefresh={handleRefreshOfficialAccount}
-                    onOfficialAccountViewDetails={handleViewOfficialAccountDetails}
-                    refreshingOfficialAccountId={refreshingOfficialAccountId}
-                    savingOfficialAccountId={savingOfficialAccountId}
-                    connectivityStatus={connectivityStatuses[provider.id]}
-                    gatewayTakeoverActive={gatewayTakeoverActive}
-                    gatewayStatus={gatewayCliStatus}
-                    onGatewayStatusChange={async (status) => {
-                      applyGatewayCliStatus(status);
-                      await loadConfig();
-                    }}
-                    selectable={providerBatch.selectionMode && providerBatch.isSelectable(provider.id)}
-                    selected={providerBatch.selectedIds.has(provider.id)}
-                    onSelectChange={(checked) =>
-                      providerBatch.toggleSelect(provider.id, checked)
-                    }
-                    dragDisabled={providerDragDisabled}
-                  />
-                ))}
-              </div>
+              {viewMode === 'card' ? (
+                <ProviderCardGrid
+                  items={visibleProviders}
+                  getKey={(provider) => provider.id}
+                  renderItem={(provider) => (
+                    <CodexProviderCard {...codexProviderCardProps(provider)} viewMode="card" />
+                  )}
+                />
+              ) : (
+                <div>
+                  {visibleProviders.map((provider) => (
+                    <CodexProviderCard key={provider.id} {...codexProviderCardProps(provider)} />
+                  ))}
+                </div>
+              )}
             </SortableContext>
           </DndContext>
         </ProviderListSection>

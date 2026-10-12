@@ -118,13 +118,18 @@ const PROP_SOURCE_FILES = [
 /**
  * Where a declared prop may have its render point.
  *
- * The three styles, plus the two shared builders the styles delegate to:
+ * The three styles, plus the shared builders the styles delegate to:
  * `providerCardMenu.tsx` (the Claude and Codex styles moved their menu
  * construction there, and `enabledStateLabel` is rendered *only* inside that
- * menu) and `providerCardActions.tsx` (the primary action's `<Button>`, now
- * shared with the compact card view and the detail sidebar). A list that
- * omitted them would report a live prop as dead — the opposite error from the
- * one this check exists to catch, but just as misleading.
+ * menu), `providerCardActions.tsx` (the primary action's `<Button>`, now
+ * shared with the compact card view and the detail sidebar), and
+ * `ProviderModelSection.tsx` (the `modelSection.*` mapping, which the Codex,
+ * OpenCode and compact-card hosts now share — listing the styles alone would
+ * report every one of those props as unrendered, because the styles no longer
+ * name them).
+ *
+ * A list that omitted them would report a live prop as dead — the opposite
+ * error from the one this check exists to catch, but just as misleading.
  */
 const STYLE_CARD_FILES = [
   'web/features/coding/shared/providerCardVariants/ClaudeStyleCard.tsx',
@@ -132,6 +137,7 @@ const STYLE_CARD_FILES = [
   'web/features/coding/shared/providerCardVariants/OpenCodeStyleCard.tsx',
   'web/features/coding/shared/providerCardVariants/providerCardActions.tsx',
   'web/features/coding/shared/providerCardVariants/providerCardMenu.tsx',
+  'web/features/coding/shared/providerCardVariants/ProviderModelSection.tsx',
 ];
 
 /**

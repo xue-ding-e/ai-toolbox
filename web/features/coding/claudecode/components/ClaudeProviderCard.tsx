@@ -16,6 +16,7 @@ import { refreshTrayMenu } from '@/services/appApi';
 import { open as openDirectoryDialog } from '@tauri-apps/plugin-dialog';
 import AppliedTag from '@/components/common/AppliedTag';
 import ProxyTag from '@/components/common/ProxyTag';
+import ProviderNameLink from '@/components/common/ProviderNameLink';
 import {
   canApplyProviderWithGatewayProxy,
   firstGatewayApiFormat,
@@ -38,10 +39,11 @@ import type {
   ProviderCardVariantProps,
 } from '@/features/coding/shared/providerCardVariants/types';
 import ProviderCompactCard from '@/features/coding/shared/providerCardView/ProviderCompactCard';
+import ProviderDetailPanel, {
+  type ProviderDetailField,
+  type ProviderDetailSection,
+} from '@/features/coding/shared/providerCardView/ProviderDetailPanel';
 import type { ProviderViewMode } from '@/features/coding/shared/providerList';
-import ClaudeProviderDetailPanel, {
-  type ClaudeProviderDetailBinding,
-} from './ClaudeProviderDetailPanel';
 import { useSettingsStore } from '@/stores/settingsStore';
 import {
   CLAUDE_CARD_ROLE_LABELS,
@@ -394,25 +396,78 @@ const ClaudeProviderCard: React.FC<ClaudeProviderCardProps> = ({
     );
 
   /**
-   * The detail sidebar's binding rows: every configured role, in the same
-   * order and with the same labels as the list card's meta line.
+   * The detail sidebar's content: the connection facts, every configured role
+   * binding in the list card's order, and the notes.
+   *
+   * Built here rather than inside the panel because the panel is shared with
+   * the other CLIs — it knows how to lay a section out, not which facts *this*
+   * CLI states.
    */
-  const detailModelBindings = React.useMemo<ClaudeProviderDetailBinding[]>(() => {
-    const bindings: ClaudeProviderDetailBinding[] = [];
-    const push = (label: string, model?: string) => {
+  const detailSections = React.useMemo<ProviderDetailSection[]>(() => {
+    const bindingFields: ProviderDetailField[] = [];
+    const push = (key: string, label: string, model?: string) => {
       if (model) {
-        bindings.push({ label, model });
+        bindingFields.push({ key, label, value: model });
       }
     };
 
-    push(t('claudecode.model.defaultLabel'), modelConfig.fallbackModel);
-    push('Haiku', modelConfig.roles.haiku.model);
-    push('Sonnet', modelConfig.roles.sonnet.model);
-    push('Opus', modelConfig.roles.opus.model);
-    push('Fable', modelConfig.roles.fable.model);
-    push(t('claudecode.model.reasoningLabel'), modelConfig.legacyReasoningModel);
-    return bindings;
-  }, [modelConfig, t]);
+    push('fallback', t('claudecode.model.defaultLabel'), modelConfig.fallbackModel);
+    push('haiku', 'Haiku', modelConfig.roles.haiku.model);
+    push('sonnet', 'Sonnet', modelConfig.roles.sonnet.model);
+    push('opus', 'Opus', modelConfig.roles.opus.model);
+    push('fable', 'Fable', modelConfig.roles.fable.model);
+    push('reasoning', t('claudecode.model.reasoningLabel'), modelConfig.legacyReasoningModel);
+
+    const sections: ProviderDetailSection[] = [{
+      key: 'connection',
+      title: t('common.provider.connectionTitle'),
+      fields: [
+        {
+          key: 'baseUrl',
+          label: t('claudecode.provider.baseUrl'),
+          value: configuredBaseUrl,
+          emptyText: t('common.provider.notConfigured'),
+          copyable: true,
+        },
+        // No `emptyText`: a provider without a protocol of its own (an official
+        // subscription) drops the row instead of rendering a placeholder.
+        {
+          key: 'apiFormat',
+          label: t('claudecode.provider.apiFormat'),
+          value: apiFormatLabel ?? undefined,
+        },
+        {
+          key: 'apiKey',
+          label: t('claudecode.provider.apiKey'),
+          value: configuredApiKey,
+          emptyText: t('common.provider.notConfigured'),
+          copyable: true,
+          elideMiddle: true,
+        },
+      ],
+    }, {
+      key: 'models',
+      title: t('claudecode.model.mappingTitle'),
+      // The empty state is a sentence rather than an empty row, so it comes in
+      // as content.
+      fields: bindingFields,
+      content: bindingFields.length === 0 ? (
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          {t('claudecode.detail.noModels')}
+        </Text>
+      ) : undefined,
+    }];
+
+    if (provider.notes) {
+      sections.push({
+        key: 'notes',
+        title: t('common.provider.notes'),
+        content: <Text type="secondary" style={{ fontSize: 12 }}>{provider.notes}</Text>,
+      });
+    }
+
+    return sections;
+  }, [apiFormatLabel, configuredApiKey, configuredBaseUrl, modelConfig, provider.notes, t]);
 
   const showProxyTag = showRuntimeApplied && gatewayProxyActive;
 
@@ -797,15 +852,15 @@ const ClaudeProviderCard: React.FC<ClaudeProviderCardProps> = ({
           closable={false}
           styles={{ body: { padding: 0, display: 'flex', flexDirection: 'column' } }}
         >
-          <ClaudeProviderDetailPanel
-            provider={provider}
-            baseUrl={configuredBaseUrl}
-            apiKey={configuredApiKey}
-            apiFormatLabel={apiFormatLabel}
-            modelBindings={detailModelBindings}
-            showRuntimeApplied={showRuntimeApplied}
-            isOfficialProvider={isOfficialProvider}
-            isLocalProvider={isLocalProvider}
+          <ProviderDetailPanel
+            title={<ProviderNameLink name={provider.name} baseUrl={configuredBaseUrl} />}
+            // The cell's own tag row, verbatim: the sidebar states this state
+            // about the very provider whose cell you just clicked, so the two
+            // must not be able to disagree (an earlier version listed three of
+            // the tags by hand and would have missed any added later — 代理,
+            // 绕过, the failover priority).
+            statusTags={cardNameTags}
+            sections={detailSections}
             onClose={() => setDetailOpen(false)}
             // The panel renders the same computed actions the grid cell does,
             // through the same two renderers — so "the sidebar offers what the

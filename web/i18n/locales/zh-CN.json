@@ -1680,7 +1680,9 @@
         "switchToList": "切换到列表布局",
         "card": "卡片",
         "list": "列表"
-      }
+      },
+      "connectionTitle": "连接信息",
+      "notConfigured": "未配置"
     },
     "viewDocs": "官方文档",
     "configPath": "配置文件路径",
@@ -2950,8 +2952,6 @@
       "currentConfigTitle": "当前配置预览"
     },
     "detail": {
-      "connectionTitle": "连接信息",
-      "notConfigured": "未配置",
       "noModels": "未配置任何模型"
     }
   },
@@ -3198,7 +3198,9 @@
       "setAutoReviewSuccess": "已将 {{name}} 设为自动审批模型",
       "clearAutoReview": "清除自动审批模型",
       "clearAutoReviewSuccess": "已清除自动审批模型",
-      "editModelHint": "模型目录只写入 model_catalog_json，不会修改 config.toml 里的模型名称。"
+      "editModelHint": "模型目录只写入 model_catalog_json，不会修改 config.toml 里的模型名称。",
+      "primaryLabel": "主模型",
+      "mappingTitle": "模型配置"
     },
     "apply": {
       "success": "配置应用成功"

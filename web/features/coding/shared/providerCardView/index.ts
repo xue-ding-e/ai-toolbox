@@ -11,3 +11,8 @@
 export { default as ProviderCompactCard } from './ProviderCompactCard';
 export type { ProviderCompactCardLaunchAction } from './ProviderCompactCard';
 export { default as ProviderCardGrid } from './ProviderCardGrid';
+export { default as ProviderDetailPanel } from './ProviderDetailPanel';
+export type {
+  ProviderDetailField,
+  ProviderDetailSection,
+} from './ProviderDetailPanel';

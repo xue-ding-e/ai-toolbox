@@ -1215,6 +1215,37 @@ const ClaudeCodePage: React.FC = () => {
     }
   };
 
+  /**
+   * Everything a `ClaudeProviderCard` needs, in one place.
+   *
+   * The card takes a dozen-odd props and the two layouts render it from
+   * different places — a mapped list and a grid's `renderItem`. Building the
+   * props twice is how the grid card and the list card start disagreeing about
+   * which handler they were handed; the layout only ever adds `viewMode` on top.
+   */
+  const claudeProviderCardProps = (provider: ClaudeCodeProvider) => ({
+    provider,
+    isApplied: provider.id === appliedProviderId,
+    onEdit: handleEditProvider,
+    onDelete: handleDeleteProvider,
+    onCopy: handleCopyProvider,
+    onShare: handleShareProvider,
+    onTest: handleTestProvider,
+    onSelect: handleSelectProvider,
+    onToggleDisabled: handleToggleDisabled,
+    selectable: providerBatch.selectionMode && providerBatch.isSelectable(provider.id),
+    selected: providerBatch.selectedIds.has(provider.id),
+    onSelectChange: (checked: boolean) => providerBatch.toggleSelect(provider.id, checked),
+    connectivityStatus: connectivityStatuses[provider.id],
+    gatewayTakeoverActive,
+    gatewayStatus: gatewayCliStatus,
+    onGatewayStatusChange: async (status: GatewayCliTakeoverStatus) => {
+      setGatewayCliStatus(status);
+      await loadConfig();
+    },
+    dragDisabled: providerDragDisabled,
+  });
+
   return (
     <SectionSidebarLayout
       sidebarTitle={t('claudecode.title')}
@@ -1354,61 +1385,13 @@ const ClaudeCodePage: React.FC = () => {
                   items={visibleProviders}
                   getKey={(provider) => provider.id}
                   renderItem={(provider) => (
-                    <ClaudeProviderCard
-                      provider={provider}
-                      isApplied={provider.id === appliedProviderId}
-                      onEdit={handleEditProvider}
-                      onDelete={handleDeleteProvider}
-                      onCopy={handleCopyProvider}
-                      onShare={handleShareProvider}
-                      onTest={handleTestProvider}
-                      onSelect={handleSelectProvider}
-                      onToggleDisabled={handleToggleDisabled}
-                      selectable={providerBatch.selectionMode && providerBatch.isSelectable(provider.id)}
-                      selected={providerBatch.selectedIds.has(provider.id)}
-                      onSelectChange={(checked) =>
-                        providerBatch.toggleSelect(provider.id, checked)
-                      }
-                      connectivityStatus={connectivityStatuses[provider.id]}
-                      gatewayTakeoverActive={gatewayTakeoverActive}
-                      gatewayStatus={gatewayCliStatus}
-                      onGatewayStatusChange={async (status) => {
-                        setGatewayCliStatus(status);
-                        await loadConfig();
-                      }}
-                      dragDisabled={providerDragDisabled}
-                      viewMode="card"
-                    />
+                    <ClaudeProviderCard {...claudeProviderCardProps(provider)} viewMode="card" />
                   )}
                 />
               ) : (
                 <div>
                   {visibleProviders.map((provider) => (
-                    <ClaudeProviderCard
-                      key={provider.id}
-                      provider={provider}
-                      isApplied={provider.id === appliedProviderId}
-                      onEdit={handleEditProvider}
-                      onDelete={handleDeleteProvider}
-                      onCopy={handleCopyProvider}
-                      onShare={handleShareProvider}
-                      onTest={handleTestProvider}
-                      onSelect={handleSelectProvider}
-                      onToggleDisabled={handleToggleDisabled}
-                      selectable={providerBatch.selectionMode && providerBatch.isSelectable(provider.id)}
-                      selected={providerBatch.selectedIds.has(provider.id)}
-                      onSelectChange={(checked) =>
-                        providerBatch.toggleSelect(provider.id, checked)
-                      }
-                      connectivityStatus={connectivityStatuses[provider.id]}
-                      gatewayTakeoverActive={gatewayTakeoverActive}
-                      gatewayStatus={gatewayCliStatus}
-                      onGatewayStatusChange={async (status) => {
-                        setGatewayCliStatus(status);
-                        await loadConfig();
-                      }}
-                      dragDisabled={providerDragDisabled}
-                    />
+                    <ClaudeProviderCard key={provider.id} {...claudeProviderCardProps(provider)} />
                   ))}
                 </div>
               )}

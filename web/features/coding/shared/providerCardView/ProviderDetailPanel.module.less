@@ -1,10 +1,12 @@
-// The provider detail sidebar. Three zones, mirroring the Skill detail panel:
-// a sticky header (name + state line + close), a scrolling body of sections,
-// and a sticky footer of the quieter actions.
+// The provider detail sidebar, shared by every CLI's card view. Three zones,
+// mirroring the Skill detail panel: a sticky header (name + state line +
+// close), a scrolling body of sections, and a sticky footer of the quieter
+// actions.
 //
 // The card's own action row lives on the header's state line, not in the
 // footer: they are what the sidebar was opened to do, and on a provider with
-// several model bindings the footer is far enough down to need a scroll.
+// several model bindings — or a model *catalog*, as Codex has — the footer is
+// far enough down to need a scroll.
 
 .panel {
   display: flex;
@@ -143,8 +145,7 @@
   // The secondary actions are plain text links: no borders, so they read as a
   // quieter row than the primary actions above them — and they run at the
   // Skills meta-bar scale (11px), the same step down the card's own footer
-  // takes. Five labelled buttons on a 420px drawer need the smaller size to
-  // stay on one line.
+  // takes. Five labelled buttons need the smaller size to stay on one line.
   :global(.ant-btn) {
     padding-inline: 4px;
     font-size: 11px;

@@ -5,6 +5,10 @@
  * because that is the shape this repo keeps pure text logic in: the unit test
  * imports this file directly and never drags React or antd into a node test
  * (`CodexMemoriesPanel/memoriesSource.ts` is the precedent).
+ *
+ * It lives in `web/utils/` and not beside the panel because **every** CLI's
+ * detail sidebar states a credential, and a credential is shortened the same
+ * way whichever CLI issued it.
  */
 
 /**

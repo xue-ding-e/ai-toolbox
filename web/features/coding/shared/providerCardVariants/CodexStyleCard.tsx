@@ -4,8 +4,8 @@ import { ApiOutlined, MoreOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import ProviderNameLink from '@/components/common/ProviderNameLink';
 import ProviderConnectivityStatus from '@/features/coding/shared/providerConnectivity/ProviderConnectivityStatus';
-import ModelListSection from '@/features/coding/shared/ModelListSection';
 import CardShell from './CardShell';
+import ProviderModelSection from './ProviderModelSection';
 import { renderProviderPrimaryAction } from './providerCardActions';
 import {
   buildProviderCardMenuItems,
@@ -153,36 +153,7 @@ const CodexStyleCard: React.FC<ProviderCardVariantProps> = ({
           short of the model toolbar's. */}
       {footer && <div style={{ marginTop: 8 }}>{footer}</div>}
 
-      {modelSection && (
-        <ModelListSection
-          models={modelSection.models}
-          rowKeyOf={modelSection.rowKeyOf}
-          sectionKey={`provider-models-${provider.id}`}
-          className={modelSection.className}
-          bodyStyle={modelSection.bodyStyle}
-          transparentRows
-          modelsDraggable={modelSection.modelsDraggable}
-          onReorderModels={modelSection.onReorderModels}
-          selectionMode={modelSection.modelSelectionMode}
-          selectedIds={modelSection.selectedModelIds}
-          onToggleSelection={modelSection.onToggleModelSelection}
-          onToggleBatchDeleteMode={modelSection.onToggleBatchDeleteMode}
-          onBatchDelete={modelSection.onBatchDeleteModels}
-          onTest={modelSection.onTestModels}
-          testDisabled={modelSection.testModelsDisabled}
-          testDisabledTooltip={modelSection.testModelsDisabledTooltip}
-          onFetchModels={modelSection.onFetchModels}
-          fetchDisabled={modelSection.fetchDisabled}
-          fetchDisabledTooltip={modelSection.fetchDisabledTooltip}
-          onAddModel={modelSection.onAddModel}
-          onEditModel={modelSection.onEditModel}
-          onCopyModel={modelSection.onCopyModel}
-          onDeleteModel={modelSection.onDeleteModel}
-          onSetPrimaryModel={modelSection.onSetPrimaryModel}
-          renderModelExtraActions={modelSection.renderModelExtraActions}
-          aboveList={modelSection.aboveList}
-        />
-      )}
+      <ProviderModelSection providerId={provider.id} modelSection={modelSection} />
     </CardShell>
   );
 };

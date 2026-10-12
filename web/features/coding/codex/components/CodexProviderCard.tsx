@@ -1,6 +1,8 @@
 import React from 'react';
 import {
   Button,
+  Drawer,
+  Space,
   Tag,
   Typography,
   Tooltip,
@@ -9,12 +11,15 @@ import {
 import {
   ApiOutlined,
   CheckOutlined,
+  CopyOutlined,
+  DeleteOutlined,
+  EditOutlined,
   LinkOutlined,
   SafetyOutlined,
 } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
-import { BarChart2 } from 'lucide-react';
+import { BarChart2, Share2 } from 'lucide-react';
 import type {
   CodexCatalogModel,
   CodexOfficialAccount,
@@ -31,6 +36,7 @@ import { refreshTrayMenu } from '@/services/appApi';
 import { extractCodexBaseUrl, extractCodexModel, extractCodexReasoningEffort } from '@/utils/codexConfigUtils';
 import AppliedTag from '@/components/common/AppliedTag';
 import ProxyTag from '@/components/common/ProxyTag';
+import ProviderNameLink from '@/components/common/ProviderNameLink';
 import type { ModelDisplayData } from '@/components/common/ProviderCard/types';
 import {
   canApplyProviderWithGatewayProxy,
@@ -56,14 +62,22 @@ import type {
 } from '@/features/coding/shared/officialAccounts';
 import type {
   ProviderCardMetaEntry,
+  ProviderCardModels,
   ProviderCardVariantProps,
 } from '@/features/coding/shared/providerCardVariants/types';
+import { renderProviderPrimaryAction } from '@/features/coding/shared/providerCardVariants/providerCardActions';
+import ProviderModelSection from '@/features/coding/shared/providerCardVariants/ProviderModelSection';
+import ProviderCompactCard from '@/features/coding/shared/providerCardView/ProviderCompactCard';
+import ProviderDetailPanel, {
+  type ProviderDetailSection,
+} from '@/features/coding/shared/providerCardView/ProviderDetailPanel';
+import type { ProviderViewMode } from '@/features/coding/shared/providerList';
 import {
   CODEX_LOCAL_PROVIDER_ID,
   isCodexLocalProviderId,
   shouldShowCodexOfficialAccounts,
 } from '../utils/localProvider';
-import { codexProviderNeedsGatewayProxy } from '../utils/codexGatewayProxyNeed';
+import { codexProviderNeedsGatewayProxy, resolveCodexProviderApiFormat } from '../utils/codexGatewayProxyNeed';
 import { buildOfficialAccountResetLine } from '../utils/codexQuotaDisplay';
 import { codexCatalogRowKey } from '../utils/codexCatalogModels';
 
@@ -125,6 +139,16 @@ interface CodexProviderCardProps {
    * `grab` cursor, and refuses to move.
    */
   dragDisabled?: boolean;
+  /**
+   * `'card'` renders the compact grid card, and moves everything the list card
+   * shows below its header — the model catalog and the official accounts — into
+   * the detail sidebar the cell opens.
+   *
+   * Both branches consume the same computed `providerState` / `actions` /
+   * `nameTags` / `modelSection`, so the apply / gateway / catalog behaviour
+   * cannot differ between the two layouts.
+   */
+  viewMode?: ProviderViewMode;
 }
 
 /**
@@ -187,10 +211,13 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
   selected = false,
   onSelectChange,
   dragDisabled = false,
+  viewMode = 'list',
 }) => {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const [accountsCollapsed, setAccountsCollapsed] = React.useState(true);
+  /** The card view's detail sidebar. */
+  const [detailOpen, setDetailOpen] = React.useState(false);
   const [engagingGatewayProxy, setEngagingGatewayProxy] = React.useState(false);
   const [restoringDirect, setRestoringDirect] = React.useState(false);
   const [switchingGatewayProvider, setSwitchingGatewayProvider] = React.useState(false);
@@ -306,6 +333,34 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
     () => !isOfficialProvider && !isLocalProvider && codexProviderNeedsGatewayProxy(provider),
     [gatewayProviderProfilesVersion, isLocalProvider, isOfficialProvider, provider],
   );
+  const providerApiFormat = React.useMemo(
+    () => resolveCodexProviderApiFormat(provider),
+    [gatewayProviderProfilesVersion, provider],
+  );
+  /**
+   * The protocol as a readable name, for the detail sidebar.
+   *
+   * A per-CLI key map rather than a shared one keyed by template string: the
+   * four suffixes are identical in every CLI's namespace, but a dynamic
+   * `t(\`\${prefix}.apiFormatX\`)` is invisible to `i18n:check`, which is how
+   * the CLI-prefixed locale schemes failed here before. Same shape as
+   * `ClaudeProviderCard`'s and `GrokProviderCard`'s maps.
+   */
+  const apiFormatLabel = React.useMemo(() => {
+    if (!providerApiFormat || isOfficialProvider) {
+      return null;
+    }
+    if (providerApiFormat === 'openai_responses') {
+      return t('codex.provider.apiFormatOpenAIResponses');
+    }
+    if (providerApiFormat === 'openai_chat') {
+      return t('codex.provider.apiFormatOpenAIChat');
+    }
+    if (providerApiFormat === 'anthropic_messages') {
+      return t('codex.provider.apiFormatAnthropicMessages');
+    }
+    return t('codex.provider.apiFormatGeminiNative');
+  }, [isOfficialProvider, providerApiFormat, t]);
   const restoreDirectUnavailableTitle = t(
     'gateway.proxy.restoreDirectUnavailableHintProtocol',
     { cli: t('settings.gateway.cli.codex') },
@@ -802,6 +857,103 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
     </>
   );
 
+  /**
+   * The model catalog, as data.
+   *
+   * Extracted from the props literal because the card view renders it in a
+   * *different place* — the detail sidebar — not because it states something
+   * different. Building it before the branch is what keeps the two layouts
+   * offering the same catalog with the same actions.
+   *
+   * The official and `__local__` rows have no persisted catalog (`showModelList`
+   * is false for them), and a provider whose catalog is empty still gets the
+   * section: an empty list with an 添加模型 button is the only way to start one.
+   */
+  const modelSectionProps: ProviderCardModels | undefined = showModelList
+    ? {
+        models: modelRows.map((row) => row.display),
+        rowKeyOf: (model) => rowKeyByDisplay.get(model) ?? model.id,
+        // Indent only: the transparent Collapse layers come from
+        // `transparentRows`, which ModelListSection applies itself.
+        bodyStyle: { paddingLeft: 18, background: 'transparent' },
+        modelsDraggable: !modelSelectionMode,
+        onReorderModels: onReorderModels
+          ? (orderedRowKeys) => onReorderModels(provider, orderedRowKeys)
+          : undefined,
+        modelSelectionMode,
+        selectedModelIds: selectedModelRowKeys,
+        onToggleModelSelection: onToggleModelSelection
+          ? (rowKey, isSelected) => onToggleModelSelection(provider, rowKey, isSelected)
+          : undefined,
+        onToggleBatchDeleteMode: onToggleBatchDeleteMode
+          ? () => onToggleBatchDeleteMode(provider)
+          : undefined,
+        onBatchDeleteModels: onBatchDeleteModels
+          ? () => onBatchDeleteModels(provider)
+          : undefined,
+        onTestModels: () => onTest(provider),
+        testModelsDisabled: !canRunConnectivityTest,
+        testModelsDisabledTooltip: isOfficialProvider
+          ? t('codex.provider.officialConnectivityHint')
+          : t('common.modelMissing'),
+        onFetchModels: onFetchModels ? () => onFetchModels(provider) : undefined,
+        fetchDisabled: !canFetchModels,
+        fetchDisabledTooltip: t('opencode.provider.completeUrlAndKey'),
+        onAddModel: onAddModel ? () => onAddModel(provider) : undefined,
+        onEditModel: onEditModel
+          ? (rowKey) => onEditModel(provider, rowKey)
+          : undefined,
+        onCopyModel: onCopyModel
+          ? (rowKey) => onCopyModel(provider, rowKey)
+          : undefined,
+        onDeleteModel: onDeleteModel
+          ? (rowKey) => onDeleteModel(provider, rowKey)
+          : undefined,
+        onSetPrimaryModel: onSetPrimaryModel
+          ? (rowKey) => onSetPrimaryModel(provider, rowKey)
+          : undefined,
+        // The per-row auto-review action and the line above the rows are
+        // Codex-only; both go through the model section's own slots.
+        renderModelExtraActions: onSetAutoReviewModel
+          ? (model, rowKey) => {
+              const isAutoReviewRow =
+                Boolean(codexAutoReviewModelOverride) &&
+                model.id.trim() === codexAutoReviewModelOverride;
+              return (
+                <Button
+                  size="small"
+                  type="text"
+                  icon={<SafetyOutlined />}
+                  disabled={isAutoReviewRow}
+                  onClick={() => onSetAutoReviewModel(provider, rowKey)}
+                >
+                  {isAutoReviewRow
+                    ? t('codex.model.alreadyAutoReview')
+                    : t('codex.model.autoReview')}
+                </Button>
+              );
+            }
+          : undefined,
+        aboveList: codexAutoReviewModelOverride ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+            <Text type="secondary" style={{ fontSize: 10 }}>
+              {t('codex.model.autoReviewCurrent')}: {codexAutoReviewModelOverride}
+            </Text>
+            {onClearAutoReviewModel && (
+              <Button
+                type="link"
+                size="small"
+                style={{ height: 'auto', padding: 0, fontSize: 10 }}
+                onClick={() => onClearAutoReviewModel(provider)}
+              >
+                {t('codex.model.clearAutoReview')}
+              </Button>
+            )}
+          </div>
+        ) : undefined,
+      }
+    : undefined;
+
   const props: ProviderCardVariantProps = {
     provider: {
       id: provider.id,
@@ -870,91 +1022,180 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
       </>
     ),
     footer: renderOfficialAccounts() ?? undefined,
-    modelSection: showModelList
-      ? {
-          models: modelRows.map((row) => row.display),
-          rowKeyOf: (model) => rowKeyByDisplay.get(model) ?? model.id,
-          // Indent only: the transparent Collapse layers come from
-          // `transparentRows`, which ModelListSection applies itself.
-          bodyStyle: { paddingLeft: 18, background: 'transparent' },
-          modelsDraggable: !modelSelectionMode,
-          onReorderModels: onReorderModels
-            ? (orderedRowKeys) => onReorderModels(provider, orderedRowKeys)
-            : undefined,
-          modelSelectionMode,
-          selectedModelIds: selectedModelRowKeys,
-          onToggleModelSelection: onToggleModelSelection
-            ? (rowKey, isSelected) => onToggleModelSelection(provider, rowKey, isSelected)
-            : undefined,
-          onToggleBatchDeleteMode: onToggleBatchDeleteMode
-            ? () => onToggleBatchDeleteMode(provider)
-            : undefined,
-          onBatchDeleteModels: onBatchDeleteModels
-            ? () => onBatchDeleteModels(provider)
-            : undefined,
-          onTestModels: () => onTest(provider),
-          testModelsDisabled: !canRunConnectivityTest,
-          testModelsDisabledTooltip: isOfficialProvider
-            ? t('codex.provider.officialConnectivityHint')
-            : t('common.modelMissing'),
-          onFetchModels: onFetchModels ? () => onFetchModels(provider) : undefined,
-          fetchDisabled: !canFetchModels,
-          fetchDisabledTooltip: t('opencode.provider.completeUrlAndKey'),
-          onAddModel: onAddModel ? () => onAddModel(provider) : undefined,
-          onEditModel: onEditModel
-            ? (rowKey) => onEditModel(provider, rowKey)
-            : undefined,
-          onCopyModel: onCopyModel
-            ? (rowKey) => onCopyModel(provider, rowKey)
-            : undefined,
-          onDeleteModel: onDeleteModel
-            ? (rowKey) => onDeleteModel(provider, rowKey)
-            : undefined,
-          onSetPrimaryModel: onSetPrimaryModel
-            ? (rowKey) => onSetPrimaryModel(provider, rowKey)
-            : undefined,
-          // The per-row auto-review action and the line above the rows are
-          // Codex-only; both go through the model section's own slots.
-          renderModelExtraActions: onSetAutoReviewModel
-            ? (model, rowKey) => {
-                const isAutoReviewRow =
-                  Boolean(codexAutoReviewModelOverride) &&
-                  model.id.trim() === codexAutoReviewModelOverride;
-                return (
-                  <Button
-                    size="small"
-                    type="text"
-                    icon={<SafetyOutlined />}
-                    disabled={isAutoReviewRow}
-                    onClick={() => onSetAutoReviewModel(provider, rowKey)}
-                  >
-                    {isAutoReviewRow
-                      ? t('codex.model.alreadyAutoReview')
-                      : t('codex.model.autoReview')}
-                  </Button>
-                );
-              }
-            : undefined,
-          aboveList: codexAutoReviewModelOverride ? (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-              <Text type="secondary" style={{ fontSize: 10 }}>
-                {t('codex.model.autoReviewCurrent')}: {codexAutoReviewModelOverride}
-              </Text>
-              {onClearAutoReviewModel && (
-                <Button
-                  type="link"
-                  size="small"
-                  style={{ height: 'auto', padding: 0, fontSize: 10 }}
-                  onClick={() => onClearAutoReviewModel(provider)}
-                >
-                  {t('codex.model.clearAutoReview')}
-                </Button>
-              )}
-            </div>
-          ) : undefined,
-        }
-      : undefined,
+    modelSection: modelSectionProps,
   };
+
+  /**
+   * The detail sidebar's content, in the order a reader asks about a provider:
+   * where it points, which model runs, what else it can serve (the catalog), who
+   * is logged in (official accounts), and the note the user left.
+   *
+   * Built here rather than inside the panel because the panel is shared with
+   * Claude — it knows how to lay a section out, not which facts Codex states.
+   */
+  const detailSections: ProviderDetailSection[] = [{
+    key: 'connection',
+    title: t('common.provider.connectionTitle'),
+    fields: [
+      {
+        key: 'baseUrl',
+        label: t('codex.provider.baseUrl'),
+        value: baseUrl ?? '',
+        emptyText: t('common.provider.notConfigured'),
+        copyable: true,
+      },
+      // No `emptyText`: an official subscription has no protocol of its own, so
+      // the row drops instead of rendering a placeholder.
+      { key: 'apiFormat', label: t('codex.provider.apiFormat'), value: apiFormatLabel ?? undefined },
+      {
+        key: 'apiKey',
+        label: t('codex.provider.apiKey'),
+        value: apiKey ?? '',
+        emptyText: t('common.provider.notConfigured'),
+        copyable: true,
+        elideMiddle: true,
+      },
+    ],
+  }, {
+    key: 'models',
+    // Not `common.model.title`: that reads 模型列表, which is what the catalog
+    // section *below* this one is headed — two identical headings in one
+    // sidebar, one of them a single binding. Claude's panel calls its
+    // equivalent 模型映射 for the same reason.
+    title: t('codex.model.mappingTitle'),
+    fields: [
+      {
+        key: 'primaryModel',
+        label: t('codex.model.primaryLabel'),
+        value: displayModelName ?? '',
+        emptyText: t('common.provider.notConfigured'),
+      },
+      // Only when one is set: an unset auto-review model is the default, not a
+      // missing value worth a row.
+      {
+        key: 'autoReviewModel',
+        label: t('codex.provider.autoReviewModel'),
+        value: codexAutoReviewModelOverride || undefined,
+      },
+    ],
+  }];
+
+  // The catalog brings its own header, toolbar and empty state, so this section
+  // carries no title of its own. It is conditional because the official and
+  // `__local__` rows have none (`showModelList`), and an empty section would
+  // still cost its share of the gap between the sections around it.
+  if (modelSectionProps) {
+    detailSections.push({
+      key: 'catalog',
+      content: <ProviderModelSection providerId={provider.id} modelSection={modelSectionProps} />,
+    });
+  }
+
+  const officialAccountsSection = renderOfficialAccounts();
+  if (officialAccountsSection) {
+    detailSections.push({ key: 'officialAccounts', content: officialAccountsSection });
+  }
+
+  if (provider.notes) {
+    detailSections.push({
+      key: 'notes',
+      title: t('common.provider.notes'),
+      content: <Text type="secondary" style={{ fontSize: 12 }}>{provider.notes}</Text>,
+    });
+  }
+
+  if (viewMode === 'card') {
+    return (
+      <>
+        <ProviderCompactCard
+          provider={{
+            id: provider.id,
+            // The official card is named for what it holds, not for the row's
+            // own label — the same heading the list card draws.
+            name: props.provider.name,
+            baseUrl: baseUrl ?? undefined,
+          }}
+          // 🔗 官方账号 (n): the count travels in `nameTags` (built above, and
+          // shared with the list card), the glyph in front of the name here.
+          namePrefix={namePrefix}
+          // One model, not the whole catalog: the cell answers "which model does
+          // this provider run", and the catalog is a manager, not a label.
+          subtitle={displayModelName
+            ? [{ label: t('codex.model.primaryLabel'), value: displayModelName }]
+            : undefined}
+          providerState={props.providerState}
+          actions={props.actions}
+          nameTags={nameTags}
+          // The list card renders 连通性测试 inline on its meta line; the grid
+          // cell has room for the two primary actions only, so the diagnostic
+          // moves into the menu rather than disappearing.
+          extraMenuItems={[{
+            key: 'connectivity',
+            label: t('opencode.connectivity.button'),
+            icon: <ApiOutlined />,
+            disabled: !canRunConnectivityTest,
+            onClick: () => onTest(provider),
+          }]}
+          onOpenDetail={() => setDetailOpen(true)}
+        />
+        <Drawer
+          placement="right"
+          // Wider than Claude's: this sidebar carries the whole model catalog,
+          // whose toolbar has four labelled actions.
+          size={560}
+          open={detailOpen}
+          onClose={() => setDetailOpen(false)}
+          destroyOnHidden
+          closable={false}
+          styles={{ body: { padding: 0, display: 'flex', flexDirection: 'column' } }}
+        >
+          <ProviderDetailPanel
+            title={<ProviderNameLink name={props.provider.name} baseUrl={baseUrl} />}
+            statusTags={nameTags}
+            sections={detailSections}
+            onClose={() => setDetailOpen(false)}
+            // The panel renders the same computed actions the grid cell does,
+            // through the same renderers — so "the sidebar offers what the card
+            // offers" is a fact about the code, not a thing to re-check.
+            primaryActions={(
+              <>
+                {gatewayActions}
+                {renderProviderPrimaryAction(props.actions?.primaryAction)}
+              </>
+            )}
+            secondaryActions={(
+              <Space size={4} wrap>
+                <Button
+                  size="small"
+                  type="text"
+                  icon={<ApiOutlined />}
+                  onClick={() => onTest(provider)}
+                  disabled={!canRunConnectivityTest}
+                  title={isOfficialProvider ? t('codex.provider.officialConnectivityHint') : undefined}
+                >
+                  {t('opencode.connectivity.button')}
+                </Button>
+                <Button size="small" type="text" icon={<EditOutlined />} onClick={() => onEdit(provider)}>
+                  {t('common.edit')}
+                </Button>
+                <Button size="small" type="text" icon={<CopyOutlined />} onClick={() => onCopy(provider)}>
+                  {t('common.copy')}
+                </Button>
+                <Button size="small" type="text" icon={<Share2 size={14} aria-hidden="true" />} onClick={() => onShare(provider)}>
+                  {t('common.share')}
+                </Button>
+                {!isLocalProvider && (
+                  <Button size="small" type="text" danger icon={<DeleteOutlined />} onClick={() => onDelete(provider)}>
+                    {t('common.delete')}
+                  </Button>
+                )}
+              </Space>
+            )}
+          />
+        </Drawer>
+      </>
+    );
+  }
 
   return <CodexStyleCard {...props} />;
 };

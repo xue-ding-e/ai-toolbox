@@ -4,7 +4,7 @@
 
 - 把「CLI 供应商卡片长什么样」这件事**固定成三种样式**，各 CLI 按自己的 provider 模型形状选用其一，不再各写各的布局。
 
-> **「卡片视图」不是这里的第四种样式。** `shared/providerCardView/` 是同一批数据的另一种**呈现密度**（紧凑卡片网格），由用户的布局偏好切换，与 provider 模型形状无关。本模块的三种样式按语义选型；把显示偏好混进来会让「该用哪种样式」这个问题失去意义。两者的共用面是 `cardChrome.ts`（accent）、`providerCardMenu.tsx`（「更多」菜单）与 `providerCardActions.tsx`（底部两个主按钮），改通用行为改这三处。
+> **「卡片视图」不是这里的第四种样式。** `shared/providerCardView/` 是同一批数据的另一种**呈现密度**（紧凑卡片网格），由用户的布局偏好切换，与 provider 模型形状无关。本模块的三种样式按语义选型；把显示偏好混进来会让「该用哪种样式」这个问题失去意义。两者的共用面是 `cardChrome.ts`（accent）、`providerCardMenu.tsx`（「更多」菜单）、`providerCardActions.tsx`（底部两个主按钮）与 `ProviderModelSection.tsx`（`modelSection.*` → `ModelListSection` 的映射），改通用行为改这四处。
 
 ## Source of Truth
 
@@ -51,6 +51,7 @@
 ## 跨模块依赖
 
 - `features/coding/shared/ModelListSection`：模型折叠区的**唯一实现**。Codex 式和 OpenCode 式都用它，不要另写一份。它不支持 official models，需要展示只读目录的 CLI 走 `footer` 插槽。
+- `ProviderModelSection.tsx`（本模块）：`ProviderCardModels` → `ModelListSection` 的**唯一映射**，`transparentRows` 固定开启。两个风格卡片与 `providerCardView` 的详情侧栏都渲染它——同一份目录因此带着**同一组工具**出现在卡片内和侧栏里（批量删除 / 模型测试 / 获取模型 / 添加模型）。这份映射曾在 `CodexStyleCard` 与 `OpenCodeStyleCard` 里各写一遍，漂移出一条（`onToggleModelDisabled` 只有 OpenCode 转发）。
 - `features/coding/shared/management`（`ManagementCheckbox`）：批量选择的复选框。
 - `features/coding/shared/providerConnectivity/ProviderConnectivityStatus`：连通性状态点。
 - `components/common/ProviderNameLink`、`components/common/SdkTag`：名称链接与 SDK 标签。
@@ -95,7 +96,7 @@ Claude / Codex 式的菜单**固定为**：启用（含副标题）→ 编辑 �
 
 **原实现里契约之外的菜单项，按语义找插槽，不要删也不要破例。** 例：Kimi 把「连通性测试」放在菜单里（全仓唯一），而它本质是「对模型目录的探测」——迁到模型区工具栏（`modelSection.onTestModels`）与卡片第二行（`inlineActions`），与同样有模型目录的 Codex 卡一致。位置变了就是行为变了：**写进提交说明**，否则用户按肌肉记忆去菜单里找会找不到（同 #103）。
 
-> **每个可选 prop 都必须在某个样式里有渲染点**。声明了却没渲染 = 调用方传了等于没传，且类型检查完全通过（历史坑 #70、#97）。2026-10-07 删掉了三个零消费方 prop：`metaEntries` 的 `kind: 'id'` / `'sdk'` 与 `ProviderCardModels.modelSourceTag`。
+> **每个可选 prop 都必须在某个样式里有渲染点**。声明了却没渲染 = 调用方传了等于没传，且类型检查完全通过（历史坑 #70、#97）。守卫脚本的「渲染点」文件表除三个样式外还列了三个共享文件（`providerCardMenu.tsx` / `providerCardActions.tsx` / `ProviderModelSection.tsx`）——**把某个 prop 的渲染搬进共享文件时，那个文件必须同时在表里**，否则守卫会把活着的能力报成死的（2026-10-12 搬 `modelSection.*` 映射到 `ProviderModelSection` 时真实发生）。2026-10-07 删掉了三个零消费方 prop：`metaEntries` 的 `kind: 'id'` / `'sdk'` 与 `ProviderCardModels.modelSourceTag`。
 
 ## 最小验证
 

@@ -443,8 +443,13 @@ window.providerCardViewFixture = {
   },
   /** The sidebar's rendered API-key line, as the user sees it. */
   detailKeyLine() {
+    return window.providerCardViewFixture.detailFieldText('apiKey');
+  },
+  /** A field row's value, as rendered. */
+  detailFieldText(field) {
     const panel = window.providerCardViewFixture.detailPanel();
-    return panel?.querySelector('[data-provider-detail-key]')?.textContent?.trim() ?? null;
+    const cell = panel?.querySelector(`[data-provider-detail-field="${field}"]`);
+    return cell?.textContent?.trim() ?? null;
   },
   closeDetail() {
     const panel = window.providerCardViewFixture.detailPanel();

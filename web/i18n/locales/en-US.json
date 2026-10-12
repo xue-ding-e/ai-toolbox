@@ -1680,7 +1680,9 @@
         "switchToList": "Switch to list layout",
         "card": "Cards",
         "list": "List"
-      }
+      },
+      "connectionTitle": "Connection",
+      "notConfigured": "Not configured"
     },
     "viewDocs": "Official Docs",
     "configPath": "Config Path",
@@ -2953,8 +2955,6 @@
       "currentConfigTitle": "Current Config Preview"
     },
     "detail": {
-      "connectionTitle": "Connection",
-      "notConfigured": "Not configured",
       "noModels": "No models configured"
     }
   },
@@ -3201,7 +3201,9 @@
       "setAutoReviewSuccess": "{{name}} is now the auto-review model",
       "clearAutoReview": "Clear auto-review model",
       "clearAutoReviewSuccess": "Auto-review model cleared",
-      "editModelHint": "The model catalog only writes model_catalog_json; it never changes the config.toml model name."
+      "editModelHint": "The model catalog only writes model_catalog_json; it never changes the config.toml model name.",
+      "primaryLabel": "Primary model",
+      "mappingTitle": "Model config"
     },
     "apply": {
       "success": "Configuration applied successfully"
