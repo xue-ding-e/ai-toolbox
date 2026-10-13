@@ -42,6 +42,10 @@ export async function verifyCodexOfficialAccountAlignment({ send, evaluate, base
   // Wait for the *toggle*, not merely the card box: the card element exists
   // before React has drawn the section inside it, and clicking a button that
   // is not there yet throws.
+  //
+  // The list card keeps its fold (the detail sidebar's copy of this block is the
+  // one that is always open), so the rows have to be clicked into view before
+  // they can be measured.
   const toggleQuery =
     `${officialCard} .ant-card button:has(.anticon-right), `
     + `${officialCard} .ant-card button:has(.anticon-down)`;
@@ -50,13 +54,21 @@ export async function verifyCodexOfficialAccountAlignment({ send, evaluate, base
     'the account section\'s collapse toggle',
   );
 
-  // Expanded through a DOM click rather than a synthetic pointer sequence: the
-  // block's default state is collapsed, and a real pointer event here leaves
-  // the browser unresponsive to the next command. The toggle is the card's only
-  // button carrying the section's collapse caret; the model list below is a
-  // sibling of the card, not a child, so this cannot pick that one up.
+  // Expanded through a DOM click rather than a synthetic pointer sequence: a
+  // real pointer event here leaves the browser unresponsive to the next command.
+  // The toggle is the card's only button carrying the section's collapse caret;
+  // the model list below is a sibling of the card, not a child, so this cannot
+  // pick that one up.
   await evaluate(`document.querySelector('${toggleQuery}').click(), true`);
   await delay(500);
+
+  // And then wait for the *rows*, which is the evidence that the block arrived:
+  // the geometry read below would otherwise measure nothing and report the
+  // alignment as fine. The old fixed delay was a guess at how long React needs.
+  await waitFor(
+    `Boolean(document.querySelector('${officialCard} .ant-card')?.textContent.includes('@example.invalid'))`,
+    'the account rows to render',
+  );
 
   const geometry = await evaluate(`(() => {
     const card = document.querySelector('${officialCard} .ant-card');

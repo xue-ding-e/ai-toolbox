@@ -218,6 +218,12 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
 }) => {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  /**
+   * The account block's fold, for the list card. The detail sidebar renders the
+   * same block open, so nothing reads this on that path — and one piece of state
+   * is enough because the two hosts are never on screen together (the card view
+   * draws compact cards, which have no footer to hang the block on).
+   */
   const [accountsCollapsed, setAccountsCollapsed] = React.useState(true);
   /** The card view's detail sidebar. */
   const [detailOpen, setDetailOpen] = React.useState(false);
@@ -574,7 +580,8 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
         ? { accountId: savingOfficialAccountId, action: 'save' }
         : null;
 
-  const renderOfficialAccounts = () => {
+  /** `fold` is what the list card has and the detail sidebar does not. */
+  const renderOfficialAccounts = ({ fold }: { fold: boolean }) => {
     if (!shouldShowCodexOfficialAccounts(provider, officialAccounts.length)) {
       return null;
     }
@@ -590,8 +597,17 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
         // the title line, beside the list it is about.
         emptyText={t('codex.provider.officialAccountsEmpty')}
         accounts={officialAccountRows}
-        collapsed={accountsCollapsed}
-        onToggleCollapsed={() => setAccountsCollapsed((current) => !current)}
+        // `collapsed` / `onToggleCollapsed` are what the shared section reads to
+        // decide whether to draw a caret, so withholding them is how the detail
+        // sidebar gets the block open (user-directed, 2026-10-12). The list card
+        // keeps its fold: the card has neighbours to line up with, and the rows
+        // are one click away.
+        {...(fold
+          ? {
+              collapsed: accountsCollapsed,
+              onToggleCollapsed: () => setAccountsCollapsed((current) => !current),
+            }
+          : {})}
         pending={officialAccountPending}
         loginAction={
           isOfficialProvider ? (
@@ -876,9 +892,13 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
     ? {
         models: modelRows.map((row) => row.display),
         rowKeyOf: (model) => rowKeyByDisplay.get(model) ?? model.id,
-        // Indent only: the transparent Collapse layers come from
-        // `transparentRows`, which ModelListSection applies itself.
-        bodyStyle: { paddingLeft: 18, background: 'transparent' },
+        // Nothing but the transparency, which the section's own layers take
+        // care of (`transparentRows`). The indent that used to be here belongs
+        // to the fold rather than to this data: the list card's rows clear its
+        // caret, the detail sidebar's draw no caret and so are not indented.
+        // The two hosts render this same object, so the difference cannot live
+        // in it (user-directed, 2026-10-13).
+        bodyStyle: { background: 'transparent' },
         modelsDraggable: !modelSelectionMode,
         onReorderModels: onReorderModels
           ? (orderedRowKeys) => onReorderModels(provider, orderedRowKeys)
@@ -1024,7 +1044,7 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
         />
       </>
     ),
-    footer: renderOfficialAccounts() ?? undefined,
+    footer: renderOfficialAccounts({ fold: true }) ?? undefined,
     modelSection: modelSectionProps,
   };
 
@@ -1090,11 +1110,17 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
   if (modelSectionProps) {
     detailSections.push({
       key: 'catalog',
-      content: <ProviderModelSection providerId={provider.id} modelSection={modelSectionProps} />,
+      content: (
+        <ProviderModelSection
+          providerId={provider.id}
+          modelSection={modelSectionProps}
+          appearance="detail"
+        />
+      ),
     });
   }
 
-  const officialAccountsSection = renderOfficialAccounts();
+  const officialAccountsSection = renderOfficialAccounts({ fold: false });
   if (officialAccountsSection) {
     detailSections.push({ key: 'officialAccounts', content: officialAccountsSection });
   }
@@ -1126,6 +1152,10 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
           subtitle={displayModelName
             ? [{ label: t('codex.model.primaryLabel'), value: displayModelName }]
             : undefined}
+          // The cell states one model and one action, so the action rides the
+          // model line instead of a footer bar under it — a whole bar for a
+          // single button read as mostly empty (user-directed, 2026-10-12).
+          actionPlacement="subtitle"
           providerState={props.providerState}
           actions={props.actions}
           nameTags={nameTags}
@@ -1143,9 +1173,10 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
         />
         <Drawer
           placement="right"
-          // Wider than Claude's: this sidebar carries the whole model catalog,
-          // whose toolbar has four labelled actions.
-          size={560}
+          // The Skills and MCP detail drawers' own sizing, so every provider
+          // sidebar in the app is one surface. It also gives the model catalog's
+          // four labelled actions room without a horizontal squeeze.
+          size="min(60vw, 760px)"
           open={detailOpen}
           onClose={() => setDetailOpen(false)}
           destroyOnHidden

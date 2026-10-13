@@ -110,6 +110,22 @@ interface ProviderCompactCardProps {
   /** Footer's left side. */
   launchAction?: ProviderCompactCardLaunchAction;
   /**
+   * Where the card's own action row goes.
+   *
+   * - `'footer'` (default): its own bar below a hairline divider, the Skills
+   *   card's shape. Suits a card that also carries a second line — Claude's
+   *   role bindings, say — where the divider is what separates "what this
+   *   provider is" from "what you can do to it".
+   * - `'subtitle'`: on the second line, right-aligned. Suits a card that states
+   *   a single model, where the footer bar was mostly empty space under one
+   *   short line (user-directed, 2026-10-12).
+   *
+   * The actions themselves are the same nodes either way — the mapping layer
+   * hands in one `actions` object, so the two placements cannot disagree about
+   * what the card offers.
+   */
+  actionPlacement?: 'footer' | 'subtitle';
+  /**
    * Extra entries for the "more" menu, inserted after 分享 and before the
    * divider. The card view folds the list card's inline 连通性测试 here.
    */
@@ -134,6 +150,7 @@ const ProviderCompactCard: React.FC<ProviderCompactCardProps> = ({
   namePrefix,
   nameTags,
   launchAction,
+  actionPlacement = 'footer',
   extraMenuItems,
   onOpenDetail,
 }) => {
@@ -173,6 +190,18 @@ const ProviderCompactCard: React.FC<ProviderCompactCardProps> = ({
 
   const showHandle = draggable && !selectable;
   const primary = actions?.primaryAction;
+  // Built once and placed by `actionPlacement`: the same nodes move between the
+  // second line and the footer bar, so the two placements cannot end up offering
+  // different actions.
+  const actionRow = (
+    <>
+      {renderProviderLaunchAction(launchAction)}
+      <span className={styles.footerActions}>
+        {actions?.gatewayActions}
+        {renderProviderPrimaryAction(primary)}
+      </span>
+    </>
+  );
   const menuItems = buildProviderCardMenuItems({
     t,
     actions,
@@ -260,39 +289,49 @@ const ProviderCompactCard: React.FC<ProviderCompactCardProps> = ({
           )}
         </div>
 
+        {/* The second line and, with `actionPlacement="subtitle"`, the action
+            row on it. Both placements are `data-provider-card-footer`, because
+            that is the anchor for "this card's own actions" rather than for the
+            bar they sit in — a check should not have to know which placement the
+            CLI chose. */}
         <div className={styles.body}>
-          {subtitle && subtitle.length > 0 && (
-            // One line of `Label: value` pairs, the values monospaced — the
-            // same shape the list card's binding line uses, so a role is
-            // readable at a glance instead of being an unexplained model name.
-            //
-            // The pairs are inline spans, not flex items: a flex row would clip
-            // at the last whole item and show no ellipsis, while inline content
-            // lets the browser place one at the truncation point. The `title`
-            // carries the full line, which is the only way to read what the
-            // ellipsis hid.
-            <div
-              className={styles.subtitle}
-              data-provider-subtitle
-              title={subtitle.map((entry) => `${entry.label}: ${entry.value}`).join('  ')}
-            >
-              {subtitle.map((entry) => (
-                <span key={entry.label} className={styles.subtitleEntry}>
-                  <span className={styles.subtitleLabel}>{entry.label}:</span>
-                  <span className={styles.subtitleValue}>{entry.value}</span>
-                </span>
-              ))}
-            </div>
-          )}
+          <div className={styles.subtitleRow}>
+            {subtitle && subtitle.length > 0 && (
+              // One line of `Label: value` pairs, the values monospaced — the
+              // same shape the list card's binding line uses, so a role is
+              // readable at a glance instead of being an unexplained model name.
+              //
+              // The pairs are inline spans, not flex items: a flex row would clip
+              // at the last whole item and show no ellipsis, while inline content
+              // lets the browser place one at the truncation point. The `title`
+              // carries the full line, which is the only way to read what the
+              // ellipsis hid.
+              <div
+                className={styles.subtitle}
+                data-provider-subtitle
+                title={subtitle.map((entry) => `${entry.label}: ${entry.value}`).join('  ')}
+              >
+                {subtitle.map((entry) => (
+                  <span key={entry.label} className={styles.subtitleEntry}>
+                    <span className={styles.subtitleLabel}>{entry.label}:</span>
+                    <span className={styles.subtitleValue}>{entry.value}</span>
+                  </span>
+                ))}
+              </div>
+            )}
+            {actionPlacement === 'subtitle' && (
+              <div className={styles.subtitleActions} data-provider-card-footer>
+                {actionRow}
+              </div>
+            )}
+          </div>
         </div>
 
-        <div className={styles.footerRow} data-provider-card-footer>
-          {renderProviderLaunchAction(launchAction)}
-          <span className={styles.footerActions}>
-            {actions?.gatewayActions}
-            {renderProviderPrimaryAction(primary)}
-          </span>
-        </div>
+        {actionPlacement === 'footer' && (
+          <div className={styles.footerRow} data-provider-card-footer>
+            {actionRow}
+          </div>
+        )}
       </div>
     </div>
   );

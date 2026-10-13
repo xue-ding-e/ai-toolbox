@@ -216,12 +216,13 @@ const OfficialAccountsSection: React.FC<OfficialAccountsSectionProps> = ({
             display: 'flex',
             flexDirection: 'column',
             gap: embedded ? 8 : 0,
-            // Every host indents the rows past the title's arrow, so they line
-            // up with the text of `账号列表` rather than with its caret. Only
-            // `embedded` used to: the standalone card had no caret to clear, and
-            // its rows sat flush with the card edge while everything above them
-            // was indented — the misalignment the user circled.
-            paddingLeft: 18,
+            // The indent exists to clear the caret: it is what puts the rows
+            // under the *text* of `账号列表` rather than under its arrow. A host
+            // that draws no caret (the card view's account block, which is not
+            // collapsible) has nothing to clear, so its rows run to the card's
+            // content edge and line up with the title directly
+            // (user-directed, 2026-10-12).
+            paddingLeft: collapsible ? 18 : 0,
           }}
         >
           {accounts.length === 0 ? (

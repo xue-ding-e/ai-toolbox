@@ -204,6 +204,35 @@
 // last whole item and show no ellipsis, whereas inline content lets the browser
 // place one at the truncation point. The card's height must also stay uniform
 // across the grid, so the line never wraps — the `title` carries the full text.
+// The model line, and — with `actionPlacement="subtitle"` — the card's action
+// row on the same line. The actions are `flex-shrink: 0` so the model line is
+// the part that gives way, the same rule the header row follows.
+.subtitleRow {
+  display: flex;
+  // Top-aligned: with `actionPlacement="subtitle"` the action row can wrap
+  // under the model line on a narrow column, and centring would then float the
+  // model line against the middle of the two rows.
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.subtitleActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+  flex-shrink: 0;
+  // Centred within its own line — one line beside the model, or one line of
+  // its own under it.
+  align-self: center;
+  white-space: nowrap;
+
+  :global(.ant-btn) {
+    font-size: 11px;
+  }
+}
+
 .subtitle {
   display: block;
   min-width: 0;

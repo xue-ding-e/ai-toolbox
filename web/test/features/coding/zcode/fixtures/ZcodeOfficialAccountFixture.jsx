@@ -50,27 +50,42 @@ const OFFICIAL_ACCOUNT_CARD_ID = 'zcode-official-account';
 const OFFICIAL_CARD_HEADING = '官方账号';
 const ACCOUNT_LIST_TITLE = '账号列表';
 
+/**
+ * One provider record.
+ *
+ * Everything ZCode knows lives inside `settingsConfig`, in ZCode's own shape:
+ * the protocol and the endpoint under `config.api`, the key under
+ * `config.access`, and the catalog as a `models` array whose default row is
+ * flagged `isDefault`. `providerId` is part of the record rather than derived —
+ * the parser rejects a config without one, and a rejected config renders an
+ * empty card (which is what this fixture used to produce).
+ */
 const createProvider = (id, name, createdAt) => ({
   id,
   name,
   category: 'custom',
   settingsConfig: JSON.stringify({
-    auth: { API_KEY: `fixture-key-${id}` },
-    defaultModelKey: `${id}-model-a`,
-    providerConfigs: { fixture: { type: 'openai', base_url: `https://${id}.example.test/v1` } },
-    modelCatalog: {
-      models: [
-        {
-          key: `${id}-model-a`,
-          model: 'zai-model',
-          provider: 'fixture',
-          displayName: 'Model A',
-          maxContextSize: 128000,
-        },
-      ],
+    providerId: id,
+    config: {
+      api: { type: 'anthropic-messages', baseUrl: `https://${id}.example.test/anthropic` },
+      access: { type: 'api-key', apiKey: `fixture-key-${id}` },
     },
+    models: [
+      {
+        modelId: `${id}-model-a`,
+        displayName: 'Model A',
+        isDefault: true,
+        properties: { contextWindow: 128000 },
+        enabled: true,
+      },
+      { modelId: `${id}-model-b`, displayName: 'Model B', enabled: true },
+    ],
   }),
-  isApplied: false,
+  notes: `${name} note`,
+  // One applied provider: the 默认 tag is a fact of this card style, and a
+  // fixture where no provider is applied could not tell a card that states it
+  // from one that had stopped stating it.
+  isApplied: id === 'provider-a',
   isDisabled: false,
   createdAt,
   updatedAt: createdAt,
@@ -98,6 +113,8 @@ const state = {
   runId: parameters.get('runId'),
   requests: [],
   sortMode: parameters.get('sortMode') || 'custom',
+  /** Initial layout, so a check can start in either one without clicking first. */
+  viewMode: parameters.get('viewMode') || 'list',
   officialAccountIndex: Number(parameters.get('index') ?? 1),
   providers: [
     createProvider('provider-a', 'Provider A', '2026-01-03T00:00:00.000Z'),
@@ -170,9 +187,17 @@ window.__TAURI_INTERNALS__ = {
 
       // --- provider list UI state -----------------------------------------
       case 'get_provider_list_state':
-        return { sort_modes: { zcode: state.sortMode }, last_used: {} };
+        return {
+          sort_modes: { zcode: state.sortMode },
+          last_used: {},
+          view_modes: { zcode: state.viewMode },
+        };
       case 'save_provider_sort_mode': {
         state.sortMode = args.mode;
+        return null;
+      }
+      case 'save_provider_view_mode': {
+        state.viewMode = args.mode;
         return null;
       }
       case 'record_provider_last_used': return null;
@@ -240,7 +265,9 @@ window.zcodeOfficialAccountFixture = {
     return cardsInProviderSection().map(card => card.dataset.providerId);
   },
   hasHandle(id) {
-    return Boolean(cardFor(id)?.querySelector('.anticon-holder'));
+    // By the card's own marker, not the first holder icon: a card's model
+    // rows carry grips of their own and the list is open by default.
+    return Boolean(cardFor(id)?.querySelector('[data-provider-card-handle]'));
   },
   /** Does the heading line carry the account block's 🔗? */
   hasHeadingGlyph(id) {
@@ -248,6 +275,18 @@ window.zcodeOfficialAccountFixture = {
   },
   cardText(id) {
     return cardFor(id)?.textContent ?? null;
+  },
+  cardCenter(id) {
+    const card = cardFor(id);
+    if (!card) throw new Error('No card rendered for: ' + id);
+    const rect = card.getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  },
+  handleCenter(id) {
+    const handle = cardFor(id)?.querySelector('[data-provider-card-handle]');
+    if (!handle) throw new Error('No drag handle rendered for: ' + id);
+    const rect = handle.getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
   },
   /** Labels of every button drawn inside a card, in DOM order. */
   cardButtonLabels(id) {
@@ -320,6 +359,104 @@ window.zcodeOfficialAccountFixture = {
   lastReorder() {
     const call = [...state.requests].reverse().find(entry => entry.command === 'reorder_zcode_providers');
     return call ? call.args.ids : null;
+  },
+
+  // --- the card layout ---------------------------------------------------
+  /** The layout toggle's centre, found by its data attribute rather than by
+   *  its label: the label is copy, and copy is free to change. */
+  layoutToggleCenter() {
+    const button = document.querySelector('[data-provider-view-toggle]');
+    if (!button) return null;
+    const rect = button.getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  },
+  layoutToggleMode() {
+    return document.querySelector('[data-provider-view-toggle]')
+      ?.getAttribute('data-provider-view-toggle') ?? null;
+  },
+  gridColumnCount() {
+    const grid = document.querySelector('[data-provider-grid]');
+    if (!grid) return 0;
+    return getComputedStyle(grid).gridTemplateColumns.split(' ').filter(Boolean).length;
+  },
+  /**
+   * The cell's second line, or null when it renders none.
+   *
+   * Every gap on that line is a CSS margin rather than a text node, so
+   * `textContent` would read `默认模型:Model A`. Rebuilding it reports what the
+   * user actually sees.
+   */
+  subtitleText(key) {
+    const subtitle = cardFor(key)?.querySelector('[data-provider-subtitle]');
+    if (!subtitle) return null;
+    return [...subtitle.children]
+      .map(entry => [...entry.children].map(part => part.textContent.trim()).join(' '))
+      .join('  ');
+  },
+  /** The state tags a card states beside its title, in order. */
+  cardTagLabels(key) {
+    const row = cardFor(key)?.querySelector('[data-provider-card-tags]');
+    if (!row) return null;
+    return [...row.querySelectorAll('.ant-tag')].map(tag => tag.textContent.trim());
+  },
+  /** The open detail sidebar, or null when none is open. */
+  detailPanel() {
+    return document.querySelector('[data-provider-detail-panel]');
+  },
+  detailTextIncludes(text) {
+    const panel = window.zcodeOfficialAccountFixture.detailPanel();
+    return panel ? panel.textContent.includes(text) : false;
+  },
+  detailSectionTitles() {
+    const panel = window.zcodeOfficialAccountFixture.detailPanel();
+    if (!panel) return null;
+    return [...panel.querySelectorAll('[data-provider-detail-section-title]')]
+      .map(title => title.textContent.trim());
+  },
+  /** Waits for the sidebar's model catalog — the sidebar's copy is open, so
+   *  there is nothing to click; the wait is for the Drawer's own mount. */
+  async openDetailCatalog() {
+    for (let attempt = 0; attempt < 100; attempt++) {
+      if (document.querySelector('[data-model-list-section]')) return true;
+      await wait(50);
+    }
+    return false;
+  },
+  closeDetail() {
+    window.zcodeOfficialAccountFixture.detailPanel()
+      ?.querySelector('[data-provider-detail-close]')?.click();
+  },
+  lastViewModeSave() {
+    const call = [...state.requests].reverse()
+      .find(entry => entry.command === 'save_provider_view_mode');
+    return call ? call.args : null;
+  },
+  /**
+   * The measured x-range of every grid child.
+   *
+   * The account card is a member of the grid rather than a banner over it, and
+   * its content is a manager — so it has to span the whole row while the
+   * provider cells sit in columns. Widths are the evidence: a cell that happens
+   * to be wide because it is the only one in its row would pass a
+   * "spans the row" claim made of CSS alone.
+   */
+  gridItemBoxes() {
+    const grid = document.querySelector('[data-provider-grid]');
+    if (!grid) return null;
+    return [...grid.children].map((item) => {
+      const rect = item.getBoundingClientRect();
+      // A provider cell *is* the element carrying the anchor; the account card
+      // sits inside a wrapper that spans the row, so the anchor is below it in
+      // that one case. Both spellings, or half the grid reads as unidentified.
+      const anchor = item.matches('[data-provider-id]')
+        ? item
+        : item.querySelector('[data-provider-id]');
+      return {
+        id: anchor?.getAttribute('data-provider-id') ?? null,
+        left: Math.round(rect.left),
+        right: Math.round(rect.right),
+      };
+    });
   },
 };
 

@@ -5,8 +5,15 @@ import {
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
-import { ApiOutlined, CheckOutlined } from '@ant-design/icons';
-import { Button, Tag, Tooltip, Typography } from 'antd';
+import {
+  ApiOutlined,
+  CheckOutlined,
+  CopyOutlined,
+  DeleteOutlined,
+  EditOutlined,
+  ShareAltOutlined,
+} from '@ant-design/icons';
+import { Button, Drawer, Space, Tag, Tooltip, Typography } from 'antd';
 import { KimiProvider, KIMI_LOCAL_PROVIDER_ID } from '@/types/kimi';
 import type { KimiCatalogModel, KimiOfficialAccount } from '@/types/kimi';
 import {
@@ -24,6 +31,7 @@ import {
 import { kimiCatalogRowKey } from '../utils/kimiCatalogModels';
 import AppliedTag from '@/components/common/AppliedTag';
 import ProxyTag from '@/components/common/ProxyTag';
+import ProviderNameLink from '@/components/common/ProviderNameLink';
 import type { ProviderConnectivityStatusItem } from '@/components/common/ProviderCard/types';
 import type { ModelDisplayData } from '@/components/common/ProviderCard/types';
 import {
@@ -42,8 +50,17 @@ import {
   CodexStyleCard,
   InlineConnectivityButton,
   type ProviderCardMetaEntry,
+  type ProviderCardModels,
   type ProviderCardVariantProps,
 } from '@/features/coding/shared/providerCardVariants';
+import ProviderModelSection from '@/features/coding/shared/providerCardVariants/ProviderModelSection';
+import { renderProviderPrimaryAction } from '@/features/coding/shared/providerCardVariants/providerCardActions';
+import {
+  ProviderCompactCard,
+  ProviderDetailPanel,
+  type ProviderDetailSection,
+} from '@/features/coding/shared/providerCardView';
+import type { ProviderViewMode } from '@/features/coding/shared/providerList';
 import {
   OfficialAccountCount,
   OfficialAccountHeadingIcon,
@@ -123,6 +140,8 @@ interface KimiProviderCardProps {
   loginPending?: boolean;
   applyingOfficialAccountId?: string | null;
   savingOfficialAccountId?: string | null;
+  /** `'card'` renders the compact grid cell plus the detail sidebar. */
+  viewMode?: ProviderViewMode;
 }
 
 /**
@@ -176,9 +195,12 @@ const KimiProviderCard: React.FC<KimiProviderCardProps> = ({
   loginPending = false,
   applyingOfficialAccountId = null,
   savingOfficialAccountId = null,
+  viewMode = 'list',
 }) => {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  /** The card view's detail sidebar, owned here — see the branch below. */
+  const [detailOpen, setDetailOpen] = React.useState(false);
   const [engagingGatewayProxy, setEngagingGatewayProxy] = React.useState(false);
   const [restoringDirect, setRestoringDirect] = React.useState(false);
   const [modelsSelectionMode, setModelsSelectionMode] = React.useState(false);
@@ -196,6 +218,18 @@ const KimiProviderCard: React.FC<KimiProviderCardProps> = ({
   );
   const modelName = React.useMemo(
     () => extractKimiDefaultModel(provider.settingsConfig),
+    [provider.settingsConfig],
+  );
+  /**
+   * The stored key, verbatim.
+   *
+   * The list card never prints it; the detail sidebar does, and it prints the
+   * whole value — a truncated credential is one you cannot check against the
+   * console it came from. It is elided in the middle on screen and copyable, the
+   * same contract the Codex sidebar's key row has.
+   */
+  const parsedApiKey = React.useMemo(
+    () => parseKimiSettingsConfig(provider.settingsConfig).apiKey,
     [provider.settingsConfig],
   );
 
@@ -614,7 +648,7 @@ const KimiProviderCard: React.FC<KimiProviderCardProps> = ({
    */
   const [accountsCollapsed, setAccountsCollapsed] = React.useState(false);
 
-  const officialAccountSection =
+  const renderOfficialAccounts = ({ fold }: { fold: boolean }) =>
     isOfficialProvider && onOfficialAccountLogin ? (
       <OfficialAccountsSection
         variant="embedded"
@@ -637,8 +671,16 @@ const KimiProviderCard: React.FC<KimiProviderCardProps> = ({
         applyHint={t('kimi.officialAccount.applyHint')}
         emptyText={t('kimi.officialAccount.empty')}
         accounts={officialAccountRows}
-        collapsed={accountsCollapsed}
-        onToggleCollapsed={() => setAccountsCollapsed((current) => !current)}
+        // `collapsed` / `onToggleCollapsed` are what the shared section reads to
+        // decide whether to draw a caret, so withholding them is how the detail
+        // sidebar gets the block open. The list card keeps its fold (default
+        // open for Kimi — its accounts have always been on screen there).
+        {...(fold
+          ? {
+              collapsed: accountsCollapsed,
+              onToggleCollapsed: () => setAccountsCollapsed((current) => !current),
+            }
+          : {})}
         pending={officialAccountPending}
         actionsDisabled={loginPending}
         onSaveLocal={(row) => {
@@ -661,6 +703,72 @@ const KimiProviderCard: React.FC<KimiProviderCardProps> = ({
         }}
       />
     ) : undefined;
+
+  /**
+   * The catalog, as data.
+   *
+   * Hoisted out of the props literal because the card view renders it in a
+   * *different place* — the detail sidebar — not because it states something
+   * different. Building it once is what keeps the two layouts offering the same
+   * catalog with the same actions.
+   */
+  const modelSection: ProviderCardModels | undefined = showModelList
+    ? {
+        models: modelRows,
+        // Identity-based on purpose: rebuilding the key from `display.id` or
+        // `display.name` cannot recover the catalog alias, and the alias is
+        // what every callback (`edit` / `copy` / `delete` / `set primary`)
+        // resolves the model by.
+        rowKeyOf: (model) => rowKeyByDisplay.get(model) ?? model.id,
+        modelsDraggable: false,
+        modelSelectionMode: modelsSelectionMode,
+        selectedModelIds: selectedModelKeys,
+        onToggleModelSelection: handleToggleModelSelected,
+        onToggleBatchDeleteMode: onDeleteModels ? handleToggleModelsSelectionMode : undefined,
+        onBatchDeleteModels: onDeleteModels ? handleBatchDeleteModels : undefined,
+        onTestModels: onTest ? () => onTest(provider) : undefined,
+        testModelsDisabled: isOfficialProvider || provider.isDisabled,
+        testModelsDisabledTooltip: isOfficialProvider
+          ? t('kimi.provider.officialConnectivityHint')
+          : t('common.modelMissing'),
+        onFetchModels: onFetchModels ? () => onFetchModels(provider) : undefined,
+        fetchDisabled: !canFetchModels,
+        fetchDisabledTooltip: t('opencode.provider.completeUrlAndKey'),
+        onAddModel: onEditModel ? () => onEditModel(provider) : undefined,
+        onEditModel: onEditModel
+          ? (rowKey) => {
+              const model = catalogModels.find((item) => kimiCatalogRowKey(item) === rowKey);
+              if (model) {
+                onEditModel(provider, model);
+              }
+            }
+          : undefined,
+        onCopyModel: onCopyModel
+          ? (rowKey) => {
+              const model = catalogModels.find((item) => kimiCatalogRowKey(item) === rowKey);
+              if (model) {
+                onCopyModel(provider, model);
+              }
+            }
+          : undefined,
+        onSetPrimaryModel: onSetPrimaryModel
+          ? (rowKey) => {
+              const model = catalogModels.find((item) => kimiCatalogRowKey(item) === rowKey);
+              if (model) {
+                onSetPrimaryModel(provider, model);
+              }
+            }
+          : undefined,
+        onDeleteModel: onDeleteModel
+          ? (rowKey) => {
+              const model = catalogModels.find((item) => kimiCatalogRowKey(item) === rowKey);
+              if (model) {
+                onDeleteModel(provider, model);
+              }
+            }
+          : undefined,
+      }
+    : undefined;
 
   const props: ProviderCardVariantProps = {
     provider: {
@@ -714,7 +822,7 @@ const KimiProviderCard: React.FC<KimiProviderCardProps> = ({
     // The account list belongs to the official channel, so it rides inside the
     // official card rather than in a card of its own. The slot spans the card's
     // full width, which is what keeps its rows aligned with the model section.
-    footer: officialAccountSection,
+    footer: renderOfficialAccounts({ fold: true }),
     // The connectivity probe moved out of the "more" menu: the shared menu is a
     // fixed contract (enable → edit → copy → share → ─── → delete) with no room
     // for a tool-specific item, so it lands on the meta line — where the Codex
@@ -734,66 +842,170 @@ const KimiProviderCard: React.FC<KimiProviderCardProps> = ({
         />
       </>
     ),
-    modelSection: showModelList
-      ? {
-          models: modelRows,
-          // Identity-based on purpose: rebuilding the key from `display.id` or
-          // `display.name` cannot recover the catalog alias, and the alias is
-          // what every callback (`edit` / `copy` / `delete` / `set primary`)
-          // resolves the model by.
-          rowKeyOf: (model) => rowKeyByDisplay.get(model) ?? model.id,
-          modelsDraggable: false,
-          modelSelectionMode: modelsSelectionMode,
-          selectedModelIds: selectedModelKeys,
-          onToggleModelSelection: handleToggleModelSelected,
-          onToggleBatchDeleteMode: onDeleteModels ? handleToggleModelsSelectionMode : undefined,
-          onBatchDeleteModels: onDeleteModels ? handleBatchDeleteModels : undefined,
-          onTestModels: onTest ? () => onTest(provider) : undefined,
-          testModelsDisabled: isOfficialProvider || provider.isDisabled,
-          testModelsDisabledTooltip: isOfficialProvider
-            ? t('kimi.provider.officialConnectivityHint')
-            : t('common.modelMissing'),
-          onFetchModels: onFetchModels ? () => onFetchModels(provider) : undefined,
-          fetchDisabled: !canFetchModels,
-          fetchDisabledTooltip: t('opencode.provider.completeUrlAndKey'),
-          onAddModel: onEditModel ? () => onEditModel(provider) : undefined,
-          onEditModel: onEditModel
-            ? (rowKey) => {
-                const model = catalogModels.find((item) => kimiCatalogRowKey(item) === rowKey);
-                if (model) {
-                  onEditModel(provider, model);
-                }
-              }
-            : undefined,
-          onCopyModel: onCopyModel
-            ? (rowKey) => {
-                const model = catalogModels.find((item) => kimiCatalogRowKey(item) === rowKey);
-                if (model) {
-                  onCopyModel(provider, model);
-                }
-              }
-            : undefined,
-          onSetPrimaryModel: onSetPrimaryModel
-            ? (rowKey) => {
-                const model = catalogModels.find((item) => kimiCatalogRowKey(item) === rowKey);
-                if (model) {
-                  onSetPrimaryModel(provider, model);
-                }
-              }
-            : undefined,
-          onDeleteModel: onDeleteModel
-            ? (rowKey) => {
-                const model = catalogModels.find((item) => kimiCatalogRowKey(item) === rowKey);
-                if (model) {
-                  onDeleteModel(provider, model);
-                }
-              }
-            : undefined,
-        }
-      : undefined,
+    modelSection,
   };
 
-  return <CodexStyleCard {...props} />;
+  /**
+   * The detail sidebar's content, in the order a reader asks about a provider:
+   * where it points, what else it can serve (the catalog), and — for the
+   * official channel — the accounts it authenticates with.
+   *
+   * The default model is not repeated as a field: the catalog below marks its
+   * row 当前主模型, and a second statement of one fact is how the two drift.
+   */
+  const detailSections: ProviderDetailSection[] = [{
+    key: 'connection',
+    title: t('common.provider.connectionTitle'),
+    fields: [
+      {
+        key: 'baseUrl',
+        label: t('kimi.providerForm.baseUrl'),
+        value: baseUrl ?? '',
+        emptyText: t('common.provider.notConfigured'),
+        copyable: true,
+      },
+      // No `emptyText`: the official channel has no static key of its own (it
+      // authenticates through the CLI's OAuth login), so the row drops rather
+      // than rendering a placeholder for something it never had.
+      ...(isOfficialProvider ? [] : [{
+        key: 'apiKey',
+        label: t('kimi.providerForm.apiKey'),
+        value: parsedApiKey,
+        emptyText: t('common.provider.notConfigured'),
+        copyable: true,
+        elideMiddle: true,
+      }]),
+    ],
+  }];
+
+  // The catalog brings its own header, toolbar and empty state, so this section
+  // carries no title of its own. It is conditional because the official and
+  // `__local__` rows have none (`showModelList`), and an empty section would
+  // still cost its share of the gap between the sections around it.
+  if (modelSection) {
+    detailSections.push({
+      key: 'catalog',
+      content: (
+        <ProviderModelSection
+          providerId={provider.id}
+          modelSection={modelSection}
+          appearance="detail"
+        />
+      ),
+    });
+  }
+
+  const officialAccountsSection = renderOfficialAccounts({ fold: false });
+  if (officialAccountsSection) {
+    detailSections.push({ key: 'officialAccounts', content: officialAccountsSection });
+  }
+
+  if (provider.notes) {
+    detailSections.push({
+      key: 'notes',
+      title: t('common.provider.notes'),
+      content: <Text type="secondary" style={{ fontSize: 12 }}>{provider.notes}</Text>,
+    });
+  }
+
+  if (viewMode !== 'card') {
+    return <CodexStyleCard {...props} />;
+  }
+
+  return (
+    <>
+      <ProviderCompactCard
+        provider={{ id: provider.id, name: props.provider.name, baseUrl }}
+        // 🔗 官方账号 (n): the count travels in `nameTags` (shared with the list
+        // card), the glyph in front of the name here.
+        namePrefix={namePrefix}
+        // The one model the cell states — the catalog's default. The list card
+        // states it too (as a tag on its second line); the cell has no meta line
+        // to put it on, so it carries a label instead. Official and `__local__`
+        // rows have no model of their own, so they get no line.
+        subtitle={!isOfficialProvider && !isLocalProvider && modelName
+          ? [{ label: t('kimi.providerForm.defaultModelKey'), value: modelName }]
+          : undefined}
+        // One model and one action (应用 / 网关), so the action rides the model
+        // line rather than a footer bar under it — the same call the Codex cell
+        // makes.
+        actionPlacement="subtitle"
+        providerState={props.providerState}
+        actions={props.actions}
+        nameTags={nameTags}
+        // The list card runs the connectivity probe inline on its meta line; the
+        // cell has no meta line, so the diagnostic moves into the menu rather
+        // than disappearing. The official channel has no probe anywhere (it
+        // authenticates through OAuth, not a static key), so it gets no item.
+        extraMenuItems={!isOfficialProvider && onTest ? [{
+          key: 'connectivity',
+          label: t('opencode.connectivity.button'),
+          icon: <ApiOutlined />,
+          disabled: provider.isDisabled,
+          onClick: () => onTest(provider),
+        }] : undefined}
+        onOpenDetail={() => setDetailOpen(true)}
+      />
+      <Drawer
+        placement="right"
+        // The Skills / MCP / other provider sidebars' own sizing — one surface
+        // for the whole app, and enough room for the catalog's four labelled
+        // actions.
+        size="min(60vw, 760px)"
+        open={detailOpen}
+        onClose={() => setDetailOpen(false)}
+        destroyOnHidden
+        closable={false}
+        styles={{ body: { padding: 0, display: 'flex', flexDirection: 'column' } }}
+      >
+        <ProviderDetailPanel
+          title={<ProviderNameLink name={props.provider.name} baseUrl={baseUrl} />}
+          statusTags={nameTags}
+          sections={detailSections}
+          onClose={() => setDetailOpen(false)}
+          primaryActions={(
+            <>
+              {gatewayActions}
+              {renderProviderPrimaryAction(props.actions?.primaryAction)}
+            </>
+          )}
+          secondaryActions={(
+            <Space size={4} wrap>
+              {onTest && !isOfficialProvider && (
+                <Button
+                  size="small"
+                  type="text"
+                  icon={<ApiOutlined />}
+                  onClick={() => onTest(provider)}
+                  disabled={provider.isDisabled}
+                >
+                  {t('opencode.connectivity.button')}
+                </Button>
+              )}
+              <Button size="small" type="text" icon={<EditOutlined />} onClick={() => onEdit(provider)}>
+                {t('common.edit')}
+              </Button>
+              {onCopy && (
+                <Button size="small" type="text" icon={<CopyOutlined />} onClick={() => onCopy(provider)}>
+                  {t('common.copy')}
+                </Button>
+              )}
+              {onShare && (
+                <Button size="small" type="text" icon={<ShareAltOutlined />} onClick={() => onShare(provider)}>
+                  {t('common.share')}
+                </Button>
+              )}
+              {!isLocalProvider && (
+                <Button size="small" type="text" danger icon={<DeleteOutlined />} onClick={() => onDelete(provider)}>
+                  {t('common.delete')}
+                </Button>
+              )}
+            </Space>
+          )}
+        />
+      </Drawer>
+    </>
+  );
 };
 
 export default KimiProviderCard;

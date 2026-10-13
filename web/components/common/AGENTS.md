@@ -18,7 +18,7 @@
 - TOML 双引号字符串的“未闭合”规则中，转义分支 `\\.` 与普通字符分支必须互斥。普通字符分支必须排除反斜杠，使用 `[^"\\]`，不能退回会同时匹配反斜杠的 `[^\"]`。
 - 不要只用普通短配置验证 tokenizer。Codex `notify` 等配置会把 JSON 嵌入 TOML 字符串，形成包含大量反斜杠和转义引号的超长单行。
 - `FetchModelsModal` 的展示顺序统一按 `sort.ts` 的 owner 分组排序（locale 钉死 `en` 保证确定性）；`priorityOwnedBy` 是可选 prop，消费方（如 Codex 置顶 openai）自选，**不得**把具体厂商偏好写进默认行为。`onSuccess` 的 `orderedModelIds` 是完整列表的显示顺序（含未勾选项），供消费方对齐自身列表/映射顺序；`selectedModels` 必须从**完整列表**的排序结果里过滤（现在 `handleConfirm` 的做法），不能从搜索过滤后的视图取——否则搜索状态下确认会静默丢弃被过滤隐藏的已勾选模型。
-- `ModelItem` 的 `extraActions` 是给消费方追加行级操作的插槽，必须和内置的「设为主模型」一样按 hover 显示（复用 `styles.primaryAction`），并且在选择模式下隐藏；不要在每一行常驻渲染文字按钮，高密度模型列表会被撑爆。
+- `ModelItem` 的 `extraActions` 是给消费方追加行级操作的插槽，必须和内置的「设为主模型」一样按 hover 显示（复用 `styles.hoverAction`，两种 `appearance` 各自决定是「占位淡入」还是「让出宽度」——见 `shared/AGENTS.md`），并且在选择模式下隐藏；不要在每一行常驻渲染文字按钮，高密度模型列表会被撑爆。
 - `FetchModelsModal` 搜索只改变视图，跨搜索的选择必须保留；Ant Design Table 需要 `preserveSelectedRowKeys: true`，否则第二次勾选时就会丢掉隐藏行，确认阶段遍历完整列表也无法恢复。关闭、重新获取或切换连接后应重置选择，旧连接/旧弹窗的异步结果不能覆盖新结果。
 - 模型导入弹窗可能一直挂载，不能只在首次 `useState` 初始化 SDK 对应的 API 类型；每次打开或切换 SDK 都要重置为正确的原生/兼容模式。Google Native 的可编辑 URL 必须与后端发现路径一致：无版本时仅在探测 URL 补 `/v1beta`，保留显式版本和用户手改 URL，不改写供应商保存的 Base URL。
 

@@ -1,16 +1,30 @@
 import React from 'react';
-import { Tag } from 'antd';
+import { Button, Drawer, Space, Tag, Typography } from 'antd';
+import { CopyOutlined, DeleteOutlined, EditOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import AppliedTag from '@/components/common/AppliedTag';
+import ProviderNameLink from '@/components/common/ProviderNameLink';
 import OpenCodeStyleCard from '@/features/coding/shared/providerCardVariants/OpenCodeStyleCard';
-import type { ProviderCardVariantProps } from '@/features/coding/shared/providerCardVariants/types';
+import ProviderModelSection from '@/features/coding/shared/providerCardVariants/ProviderModelSection';
+import type {
+  ProviderCardModels,
+  ProviderCardVariantProps,
+} from '@/features/coding/shared/providerCardVariants/types';
+import {
+  ProviderCompactCard,
+  ProviderDetailPanel,
+  type ProviderDetailSection,
+} from '@/features/coding/shared/providerCardView';
+import type { ProviderViewMode } from '@/features/coding/shared/providerList';
 import type {
   ModelDisplayData,
   ProviderConnectivityStatusItem,
 } from '@/components/common/ProviderCard/types';
-import type { ZcodeProvider } from '@/types/zcode';
+import { ZCODE_API_TYPES, type ZcodeProvider } from '@/types/zcode';
 import { parseZcodeProviderSettings } from '../utils/zcodeSettingsConfig';
 import { zcodeSdkName } from '../utils/zcodeFavoriteProvider';
+
+const { Text } = Typography;
 
 interface ZcodeProviderCardProps {
   provider: ZcodeProvider;
@@ -18,6 +32,8 @@ interface ZcodeProviderCardProps {
   /** 复制成一条新 provider（预填来源值、新 id）。 */
   onCopy?: () => void;
   onDelete: () => void;
+  /** `'card'` renders the compact grid cell plus the detail sidebar. */
+  viewMode?: ProviderViewMode;
   /** Renders a checkbox instead of the drag handle while batch selection is on. */
   selectable?: boolean;
   selected?: boolean;
@@ -94,11 +110,15 @@ const ZcodeProviderCard: React.FC<ZcodeProviderCardProps> = ({
   onToggleModelSelection,
   onToggleBatchDeleteMode,
   onBatchDeleteModels,
+  viewMode = 'list',
 }) => {
   const { t } = useTranslation();
+  /** The card view's detail sidebar. Owned here — see the note in the branch. */
+  const [detailOpen, setDetailOpen] = React.useState(false);
   const settings = parseZcodeProviderSettings(provider.settingsConfig);
   const apiType = settings?.config?.api?.type;
   const baseUrl = settings?.config?.api?.baseUrl ?? '';
+  const apiKey = settings?.config?.access?.apiKey ?? '';
   const models = settings?.models ?? [];
   const defaultModelId = models.find((model) => model.isDefault)?.modelId;
 
@@ -132,6 +152,92 @@ const ZcodeProviderCard: React.FC<ZcodeProviderCardProps> = ({
     </>
   );
 
+  /** The default model's display name, which is what both the cell and the form show. */
+  const defaultModelLabel = (() => {
+    const model = models.find((item) => item.modelId === defaultModelId);
+    return model ? model.displayName?.trim() || model.modelId : undefined;
+  })();
+
+  const apiFormatLabel =
+    ZCODE_API_TYPES.find((item) => item.value === apiType)?.label ?? apiType ?? undefined;
+
+  /**
+   * The catalog, as data.
+   *
+   * Hoisted out of the props literal because the card view renders it in a
+   * *different place* — the detail sidebar — not because it states something
+   * different. Building it once is what keeps the two layouts offering the same
+   * catalog with the same actions.
+   */
+  const modelSection: ProviderCardModels = {
+    models: modelRows,
+    modelsDraggable: !modelSelectionMode && Boolean(onReorderModels),
+    onReorderModels,
+    modelSelectionMode,
+    selectedModelIds,
+    onToggleModelSelection,
+    onToggleBatchDeleteMode,
+    onBatchDeleteModels,
+    onTestModels,
+    testModelsDisabled,
+    testModelsDisabledTooltip,
+    onFetchModels,
+    fetchDisabled: !baseUrl,
+    fetchDisabledTooltip: t('opencode.provider.completeUrlAndKey'),
+    onAddModel,
+    onEditModel,
+    onCopyModel,
+    onDeleteModel,
+    onSetPrimaryModel,
+    onToggleModelDisabled,
+  };
+
+  /**
+   * The detail sidebar's content: where the provider points, and what it can
+   * serve. The default model is not repeated here — the catalog below marks its
+   * row 当前主模型, and a second statement of one fact is how the two drift.
+   */
+  const detailSections: ProviderDetailSection[] = [{
+    key: 'connection',
+    title: t('common.provider.connectionTitle'),
+    fields: [
+      {
+        key: 'baseUrl',
+        label: t('zcode.provider.baseUrl'),
+        value: baseUrl,
+        emptyText: t('common.provider.notConfigured'),
+        copyable: true,
+      },
+      // No `emptyText`: a provider the CLI never configured has no protocol of
+      // its own, so the row drops rather than rendering a placeholder.
+      { key: 'apiFormat', label: t('zcode.provider.apiFormat'), value: apiFormatLabel },
+      {
+        key: 'apiKey',
+        label: 'API Key',
+        value: apiKey,
+        emptyText: t('common.provider.notConfigured'),
+        copyable: true,
+        elideMiddle: true,
+      },
+    ],
+  }];
+
+  // The catalog brings its own header, toolbar and empty state, so this section
+  // carries no title of its own. A provider with no models still gets it: an
+  // empty list with 添加模型 is the only way to start one.
+  detailSections.push({
+    key: 'catalog',
+    content: <ProviderModelSection providerId={provider.id} modelSection={modelSection} appearance="detail" />,
+  });
+
+  if (provider.notes) {
+    detailSections.push({
+      key: 'notes',
+      title: t('common.provider.notes'),
+      content: <Text type="secondary" style={{ fontSize: 12 }}>{provider.notes}</Text>,
+    });
+  }
+
   const props: ProviderCardVariantProps = {
     provider: {
       id: provider.id,
@@ -158,31 +264,72 @@ const ZcodeProviderCard: React.FC<ZcodeProviderCardProps> = ({
       deleteConfirm: false,
     },
     nameTags,
-    modelSection: {
-      models: modelRows,
-      modelsDraggable: !modelSelectionMode && Boolean(onReorderModels),
-      onReorderModels,
-      modelSelectionMode,
-      selectedModelIds,
-      onToggleModelSelection,
-      onToggleBatchDeleteMode,
-      onBatchDeleteModels,
-      onTestModels,
-      testModelsDisabled,
-      testModelsDisabledTooltip,
-      onFetchModels,
-      fetchDisabled: !baseUrl,
-      fetchDisabledTooltip: t('opencode.provider.completeUrlAndKey'),
-      onAddModel,
-      onEditModel,
-      onCopyModel,
-      onDeleteModel,
-      onSetPrimaryModel,
-      onToggleModelDisabled,
-    },
+    modelSection,
   };
 
-  return <OpenCodeStyleCard {...props} />;
+  if (viewMode !== 'card') {
+    return <OpenCodeStyleCard {...props} />;
+  }
+
+  return (
+    <>
+      <ProviderCompactCard
+        provider={{ id: provider.id, name: provider.name, baseUrl }}
+        // The one model the cell states: the one ZCode starts new sessions
+        // with. The list card states the SDK and the endpoint instead — this is
+        // the fact a reader of the grid has to have, and it is the same
+        // `isDefault` flag the catalog below marks with 当前主模型.
+        subtitle={defaultModelLabel
+          ? [{ label: t('zcode.model.defaultLabel'), value: defaultModelLabel }]
+          : undefined}
+        // One fact and no action of its own (a ZCode provider is never applied —
+        // `设为默认` lives on a model row), so there is nothing to put in a
+        // footer bar.
+        actionPlacement="subtitle"
+        providerState={props.providerState}
+        actions={props.actions}
+        nameTags={nameTags}
+        // The cell has no second line of diagnostics; the SDK and the endpoint
+        // moved into the sidebar's 连接信息, which is where the rest of the
+        // provider's facts live.
+        onOpenDetail={() => setDetailOpen(true)}
+      />
+      <Drawer
+        placement="right"
+        // The Skills / MCP / other provider sidebars' own sizing — one surface
+        // for the whole app, and enough room for the catalog's four labelled
+        // actions.
+        size="min(60vw, 760px)"
+        open={detailOpen}
+        onClose={() => setDetailOpen(false)}
+        destroyOnHidden
+        closable={false}
+        styles={{ body: { padding: 0, display: 'flex', flexDirection: 'column' } }}
+      >
+        <ProviderDetailPanel
+          title={<ProviderNameLink name={provider.name} baseUrl={baseUrl} />}
+          statusTags={nameTags}
+          sections={detailSections}
+          onClose={() => setDetailOpen(false)}
+          secondaryActions={(
+            <Space size={4} wrap>
+              <Button size="small" type="text" icon={<EditOutlined />} onClick={onEdit}>
+                {t('common.edit')}
+              </Button>
+              {onCopy && (
+                <Button size="small" type="text" icon={<CopyOutlined />} onClick={onCopy}>
+                  {t('common.copy')}
+                </Button>
+              )}
+              <Button size="small" type="text" danger icon={<DeleteOutlined />} onClick={onDelete}>
+                {t('common.delete')}
+              </Button>
+            </Space>
+          )}
+        />
+      </Drawer>
+    </>
+  );
 };
 
 export default ZcodeProviderCard;

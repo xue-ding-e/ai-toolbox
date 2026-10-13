@@ -152,15 +152,19 @@ window.__TAURI_INTERNALS__ = {
 const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 
 /** The page's own drag handle, addressed the way a user reaches it: the grip
- *  inside the card whose title matches. */
+ *  inside the card whose title matches.
+ *
+ *  Addressed by `[data-provider-card-handle]`, not by "the first holder icon in
+ *  the card": the card's model list is open by default and its rows carry their
+ *  own grips, so the icon-only locator matched a model row and reported that a
+ *  non-custom sort mode still looked draggable. */
 const cardFor = name => [...document.querySelectorAll('.ant-card')]
   .find(card => card.textContent.includes(name));
 
 const handleFor = name => {
   const card = cardFor(name);
   if (!card) throw new Error('No card rendered for: ' + name);
-  const handle = card.querySelector('.anticon-holder');
-  return handle ? handle.parentElement : null;
+  return card.querySelector('[data-provider-card-handle]');
 };
 
 const centerOf = element => {

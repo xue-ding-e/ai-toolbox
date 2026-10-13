@@ -35,9 +35,10 @@
 - **`useSortable` 每次渲染都必须执行。** 没有 id 时传占位符并置 `disabled`，不要条件调用 hook——违反 hooks 规则会在拖拽开关切换时崩。
 - **卡片自己留底部间距（`marginBottom: 12`），不靠父容器的 `gap`；间距挂在外层 `div` 上，不挂在 antd `Card` 上。** 这样重排后间距不会错位；靠父容器 gap 时，把官方账号卡片之类的异类插进列表会丢间距。间距必须在**外层**是因为外层才是「这张卡片的盒子」：它带 `data-provider-id`、也承载定位闪光环（`ProviderListSection` 的「定位」），写在 `Card` 上会让间距落在盒子**内部**（flex item 不会与子元素折叠外边距），环就画到卡片下方 12px 处去了。视觉上两种写法等价（间距值不变），差别只在盒子边界。
 - **每张卡片必须带 `data-provider-id={sortableId}`（外层 `div`）。** 这是「定位当前已应用供应商」在 DOM 里找到卡片的唯一锚点：`ProviderListSection` 的定位动作按这个属性查询、滚动并闪光。复用 `sortableId` 而不是新增 id prop，因为 dnd-kit 本来就要求它在列表内唯一——正是定位查询需要的那条保证。删掉或改名会让定位静默失效（点了没反应，或者只弹「找不到」）。回归：`pnpm run test:provider-list-locate`。
+- **卡片的拖拽把手带 `data-provider-card-handle`。** 卡片里的把手与它**模型行上的把手**（`ModelItem`）都是 `HolderOutlined`，所以「这张卡片里的那个把手图标」在模型列表展开后有两种答案：夹具按图标找会抓到模型行，报出「非自定义排序下也能拖」这种不存在的结论（2026-10-12 `ProviderListDragFixture` 实际发生过）。夹具要按这个属性定位，别按图标。
 - **「已应用 / 网关 P0」的高亮属于 `CardShell`，不属于映射层。** 四个 bespoke 卡片各自抄了一份「选中 > 网关 P0 > 已应用」的优先级；迁到共享组件时如果不把它一起搬进来，卡片会静默变成统一的灰边框——**没有任何报错，只是状态看不见了**。映射层只负责把 `providerState.accent` 算出来。
 - **标签与它的值必须在同一个 `metaEntries` 项里。** 拆成两个项（`{kind:'text', value:'Haiku:'}` + `{kind:'code', value:'…'}`）数据上等价，渲染上不等价：行的 `gap: 16px` 会插到标签和值之间，而 `alignItems` 让两者的盒子按顶边对齐——`<code>` 的 padding 一撑，标签就明显偏高。这是 Claude Code 卡片上真实出现过的错位。用 `entry.label`，组件把它渲染成同一个 flex 项。
-- **`transparentRows` 自带透明 Collapse**（`ModelListSection.module.less`）。该规则曾以 `.codex-model-list-collapse` / `.grok-model-list-collapse` 的形式在 CLI 侧各存一份，迁移时漏 import 就会在**有底色的卡片**上露出白色标题条——没有底色时完全看不出来，所以能潜伏很久。现在由共享组件统一施加，CLI 侧不要再复制。
+- **`transparentRows` 自带透明规则**（`ModelListSection.module.less`）。该规则曾以 `.codex-model-list-collapse` / `.grok-model-list-collapse` 的形式在 CLI 侧各存一份，迁移时漏 import 就会在**有底色的卡片**上露出白色标题条——没有底色时完全看不出来，所以能潜伏很久。现在由共享组件统一施加，CLI 侧不要再复制：卡片形态的 Collapse 每一层都由 `transparentCollapse` 清掉，行（`ModelItem`）默认画自己的底色，由 `transparentRows` 清掉。
 - **改通用行为（间距、按钮、拖拽、选中态）改在变体组件里。** 只在某个 CLI 的卡片里改，样式就会重新分叉——这正是本模块要消除的问题（见根 `AGENTS.md` Hard Rule 14）。
 - **有状态的回调必须**透传新值**，不要让调用方自己算。** `onToggleDisabled: (enabled: boolean) => void` 与 antd `Switch.onChange` 同契约；组件里写 `onChange={onToggleDisabled}`，**不要**写成 `onChange={() => onToggleDisabled()}`。后者迫使映射层从当前状态反推新值，推反了就得到一个「渲染正常、点了没反应」的开关——不报错、类型也通过。2026-10-07 在 Claude Code / Codex 卡片上真实发生过。
 - **props 的分组按语义层级，不按「当初谁在用」。** 卡片级的东西（拖拽、选中、禁用、高亮）进 `providerState`；模型列表级的（行、工具栏、批量删除）进 `modelSection`。判据是「**没有模型列表的样式还需不需要它**」——需要就放卡片级。`draggable` / `sortableId` 曾误放在 `modelSection` 下，于是 Claude 式卡片（无模型区）的拖拽把手静默消失。
@@ -50,8 +51,8 @@
 
 ## 跨模块依赖
 
-- `features/coding/shared/ModelListSection`：模型折叠区的**唯一实现**。Codex 式和 OpenCode 式都用它，不要另写一份。它不支持 official models，需要展示只读目录的 CLI 走 `footer` 插槽。
-- `ProviderModelSection.tsx`（本模块）：`ProviderCardModels` → `ModelListSection` 的**唯一映射**，`transparentRows` 固定开启。两个风格卡片与 `providerCardView` 的详情侧栏都渲染它——同一份目录因此带着**同一组工具**出现在卡片内和侧栏里（批量删除 / 模型测试 / 获取模型 / 添加模型）。这份映射曾在 `CodexStyleCard` 与 `OpenCodeStyleCard` 里各写一遍，漂移出一条（`onToggleModelDisabled` 只有 OpenCode 转发）。
+- `features/coding/shared/ModelListSection`：模型列表区的**唯一实现**（列表卡片里是可折叠的，`appearance` 见下）。Codex 式和 OpenCode 式都用它，不要另写一份。它不支持 official models，需要展示只读目录的 CLI 走 `footer` 插槽。
+- `ProviderModelSection.tsx`（本模块）：`ProviderCardModels` → `ModelListSection` 的**唯一映射**，`transparentRows` 固定开启。两个风格卡片与 `providerCardView` 的详情侧栏都渲染它——同一份目录因此带着**同一组工具**出现在卡片内和侧栏里（批量删除 / 模型测试 / 获取模型 / 添加模型）。**侧栏那处传 `appearance="detail"`，风格卡片不传**（默认 `'card'`）：这是两侧唯一的差别，折叠状态与行外观都由此决定，数据对象是同一个。这份映射曾在 `CodexStyleCard` 与 `OpenCodeStyleCard` 里各写一遍，漂移出一条（`onToggleModelDisabled` 只有 OpenCode 转发）。
 - `features/coding/shared/management`（`ManagementCheckbox`）：批量选择的复选框。
 - `features/coding/shared/providerConnectivity/ProviderConnectivityStatus`：连通性状态点。
 - `components/common/ProviderNameLink`、`components/common/SdkTag`：名称链接与 SDK 标签。

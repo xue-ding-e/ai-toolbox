@@ -6160,7 +6160,9 @@
     "provider": {
       "title": "Providers",
       "applied": "Default",
-      "disabled": "Disabled"
+      "disabled": "Disabled",
+      "baseUrl": "Base URL",
+      "apiFormat": "API format"
     },
     "officialAccount": {
       "empty": "No official account is signed in yet.",
@@ -6263,7 +6265,8 @@
         "reasoningLevelMapping": "A CEL expression that maps the current reasoning level, `reasoningLevel`, onto the model API's request field. The JSON object it returns is merged into the request body that is actually sent.",
         "contextWindow": "How much context the model can hold at once, in tokens. ZCode manages the context window with it.\nDo not exceed the model's real limit.",
         "maxOutputTokens": "The most tokens one request may generate.\nDo not exceed the model's real limit."
-      }
+      },
+      "defaultLabel": "Default model"
     },
     "test": {
       "missingBaseUrl": "{{name}}: no Base URL configured, cannot test",

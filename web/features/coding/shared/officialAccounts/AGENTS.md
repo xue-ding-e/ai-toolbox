@@ -27,7 +27,7 @@
 - **说明句子的样式也由组件给**（`OfficialAccountHint`）：两条渲染路径都必须用它，不许一边用 antd `<Text type="secondary">`、另一边手写 `--color-text-secondary`。这两个名字看着等价，实际差一档灰度（antd 的 secondary = `colorTextDescription` = alpha 0.45；应用 CSS 变量是 0.65），于是 ZCode 那句比另外两家深一点（用户 2026-10-10 发现）。**「同一句话」= 同一个组件，不是一个字符串加两处手抄样式。** 为此 `ProviderCardMetaEntry.value` 从 `string` 放宽成 `ReactNode`：值本身可以是个共享组件，style card 只管它**放哪**。
 - **折叠箭头只属于列表行**，永远不在标题行上。开合的是列表；标题行是这一块的身份证，两端的读法一致。
 - **措辞统一在 `common.officialAccount.*`。** `headingTitle`（官方账号）与 `listTitle`（账号列表）是**三端同一句话**，各 CLI 不再各写一份——用户明确要求「Kimi Official 标题都统一使用官方账号」；`官方订阅` 那个类别标记也随之从官方卡片上去掉（标题已经说明它是什么）。**每个 CLI 仍自己传已翻译串**（区块不认识任何 CLI），但传的是同一批 key。
-- **折叠能力三端都有**，默认状态可以不同：Codex 默认收起（它的卡片下面还有模型区），Kimi / ZCode 默认展开（它们的账号一直露在外面）。共享的是「能力」，不是「初始状态」。
+- **折叠能力按宿主给，默认状态也可以不同**：列表卡片上三端都有折叠（Codex 默认收起——它的卡片下面还有模型区；Kimi / ZCode 默认展开——它们的账号一直露在外面）；**明细侧栏那处不折叠**（2026-10-12 用户指定：侧栏打开来就是为了读这些行）。共享的是「能力」，不是「初始状态」，也不是「谁都得有」。开关就是 `collapsed` / `onToggleCollapsed` **两个都传才画 caret**。
 - **`loginAction` 是插槽，不是布尔开关。** Codex/Kimi 是一个按钮，ZCode 是「选 OAuth provider」的下拉菜单。做成 `showLogin` + `loginProviders` 之类的 prop，等于把下拉的形态知识塞进共享组件——它就不该知道一个 CLI 有几个官方 provider。
 - **行级动作按语义固定五个**（`onApply` / `onSaveLocal` / `onRefresh` / `onViewDetails` / `onDelete`），**谁传哪个就渲染哪个**。CLI 没有的动作不传即可，组件不做「这个 CLI 有没有这个能力」的判断。
 - **虚拟行（`isVirtual`）只给一个动作：保存。** 它镜像的是磁盘上已经生效的那份登录——切到它自己是无意义的，删掉它也不会让 CLI 登出。保存之后它变成普通行，切换/删除随之出现。
@@ -41,14 +41,14 @@
 - **卡片的壳（边框、拖拽把手、悬停反馈、内容列）一律来自 `CardShell`，不许手抄。** ZCode 的官方卡片曾经自己写 `<Card>` + `useSortable` + 把手：于是把手丢了悬停反馈、还被放进标题行内部，正文因此贴到卡片左边缘（用户圈出「为什么下面的内容左边距没了」）。把手术：外壳换 `CardShell`，把手自成一列，正文在内容列里——与所有供应商卡片同构。
 - **`actionsDisabled` 是「登录进行中，谁都别动」。** ZCode/Kimi 的登录会重写同一份凭据文件，中途点行级动作就是和它抢。
 - **新增 prop 必须在至少一个调用方真的用上**，否则按「零消费方 prop 不许存在」删掉（同 `providerCardVariants` 的纪律）。`leadingAction` 就是这样被删掉的：把手换成 `CardShell` 之后它没有消费方了。
-- **行的缩进是固定 18px，标题文本位置 = 折叠箭头宽度 + 6px 间距**，两者天然差 ~3px（箭头宽度来自图标字体）。ZCode 的浏览器检查因此用 ≤4px 容差——**别把它钉到像素级**，那是在钉字体而不是钉布局；真正要拦的是「整段贴到卡片边缘」那种 18px 级的偏差。
+- **行的缩进（18px）只在画 caret 时施加**（`paddingLeft: collapsible ? 18 : 0`）——缩进的作用就是让开箭头，没有箭头就无事可让，不折叠的宿主里行直接与标题文本左对齐。画 caret 时**标题文本位置 = 折叠箭头宽度 + 6px 间距**，两者天然差 ~3px（箭头宽度来自图标字体）。ZCode 的浏览器检查因此用 ≤4px 容差——**别把它钉到像素级**，那是在钉字体而不是钉布局；真正要拦的是「整段贴到卡片边缘」那种 18px 级的偏差。
 - **迁移一个 CLI 时不要顺手改措辞。** 但「区块标题 / 列表标题」这两句是**刻意统一**的共享 key；行内的「切换 / 保存当前登录 / 默认」仍是用户确认过的口径：账号之间叫**切换**，渠道之间才叫**应用**。
 
 ## 使用方
 
 | CLI | 宿主 | 标题行在哪 | 说明在哪 | 折叠 |
 |---|---|---|---|---|
-| codex | `embedded`（官方供应商卡片内） | 卡片名称行（`namePrefix` + `OfficialAccountCount`） | 卡片第二行（`metaEntries`） | 有，默认收起 |
+| codex | `embedded`（官方供应商卡片内；同一块内容还出现在卡片视图的详情侧栏，那一处**不折叠**） | 卡片名称行（`namePrefix` + `OfficialAccountCount`） | 卡片第二行（`metaEntries`） | 列表卡片有、默认收起 |
 | kimi | `embedded`（官方供应商卡片内） | 同上 | 同上 | 有，默认展开 |
 | zcode | `standalone`（自己的卡片，壳用 `CardShell`） | 区块自己画（`headingTitle`） | 区块画在标题行下方（`OfficialAccountHint`） | 有，默认展开 |
 | antigravity / geminicli / grok | **仍手写**（`PENDING_MIGRATION`，3 个） | — | — | — |

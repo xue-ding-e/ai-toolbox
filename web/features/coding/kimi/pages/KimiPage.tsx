@@ -9,10 +9,11 @@ import {
   useSensors,
   type DragEndEvent,
 } from '@dnd-kit/core';
-import { restrictToVerticalAxis } from '@dnd-kit/modifiers';
+import { restrictToVerticalAxis, restrictToWindowEdges } from '@dnd-kit/modifiers';
 import {
   SortableContext,
   arrayMove,
+  rectSortingStrategy,
   sortableKeyboardCoordinates,
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
@@ -114,8 +115,10 @@ import {
   filterProviderItems,
   sortProviderItems,
   useProviderBatchSelection,
+  useProviderListViewPrefs,
   useProviderListSort,
 } from '@/features/coding/shared/providerList';
+import { ProviderCardGrid } from '@/features/coding/shared/providerCardView';
 import KimiCommonConfigModal from '../components/KimiCommonConfigModal';
 import KimiDeviceAuthModal from '../components/KimiDeviceAuthModal';
 import KimiModelFormModal from '../components/KimiModelFormModal';
@@ -652,6 +655,7 @@ const KimiPage: React.FC = () => {
   };
 
   const { sortMode, setSortMode, lastUsedAt, noteProviderUsed } = useProviderListSort('kimi');
+  const { viewMode, setViewMode } = useProviderListViewPrefs('kimi');
   const [providerKeyword, setProviderKeyword] = React.useState('');
   // Search and non-custom sort modes bypass sort_index, so dragging would
   // write a stale custom order — dnd is only enabled in custom mode.
@@ -936,6 +940,51 @@ const KimiPage: React.FC = () => {
     }
   };
 
+  /**
+   * One provider's card props, for both layouts.
+   *
+   * The two layouts render the *same* object: the grid cell is a presentation
+   * of this provider, not a second reading of it, so the buttons it offers
+   * cannot drift from the list card's. The layout only adds `viewMode`.
+   */
+  const kimiProviderCardProps = (provider: KimiProvider) => ({
+    provider,
+    isApplied: provider.id === appliedProviderId,
+    gatewayTakeoverActive,
+    gatewayStatus: gatewayCliStatus,
+    onGatewayStatusChange: setGatewayCliStatus,
+    onEdit: handleEditProvider,
+    onDelete: (value: KimiProvider) => void handleDeleteProvider(value),
+    onApply: (value: KimiProvider) => void handleApplyProvider(value),
+    onToggleDisabled: handleToggleDisabled,
+    onTest: handleTestProvider,
+    onCopy: handleCopyProvider,
+    onShare: shareProvider,
+    connectivityStatus: connectivityStatuses[provider.id],
+    selectable: providerBatch.selectionMode && providerBatch.isSelectable(provider.id),
+    selected: providerBatch.selectedIds.has(provider.id),
+    onSelectChange: (checked: boolean) => providerBatch.toggleSelect(provider.id, checked),
+    onEditModel: handleEditModel,
+    onCopyModel: handleCopyModel,
+    onSetPrimaryModel: handleSetPrimaryModel,
+    onDeleteModel: handleDeleteModel,
+    onDeleteModels: handleDeleteModels,
+    onFetchModels: handleOpenFetchModels,
+    canFetchModels:
+      provider.category !== 'official'
+      && provider.id !== KIMI_LOCAL_PROVIDER_ID
+      && Boolean(extractKimiBaseUrl(provider.settingsConfig)),
+    dragDisabled: providerDragDisabled,
+    officialAccounts,
+    onOfficialAccountLogin: () => void handleStartOfficialAccountAuth(),
+    onOfficialAccountApply: (account: KimiOfficialAccount) => void handleApplyOfficialAccount(account),
+    onOfficialAccountDelete: handleDeleteOfficialAccount,
+    onOfficialAccountSaveLocal: (account: KimiOfficialAccount) => void handleSaveOfficialLocalAccount(account),
+    loginPending: deviceAuthSession !== null,
+    applyingOfficialAccountId,
+    savingOfficialAccountId,
+  });
+
   return (
     <SectionSidebarLayout
       sidebarTitle={t('kimi.title')}
@@ -1002,6 +1051,8 @@ const KimiPage: React.FC = () => {
         sortModes={PROVIDER_SORT_MODES}
         onSortModeChange={setSortMode}
         dragDisabledBySort={sortMode !== 'custom'}
+        viewMode={viewMode}
+        onViewModeChange={setViewMode}
         locateProviderId={appliedProviderId}
         onBatchTest={() => void handleBatchTestProviders()}
         batchTesting={batchTestingProviders}
@@ -1022,57 +1073,30 @@ const KimiPage: React.FC = () => {
           sensors={providerBatchDragDisabled ? [] : sensors}
           collisionDetection={closestCenter}
           onDragEnd={(event) => void handleDragEnd(event)}
-          modifiers={[restrictToVerticalAxis]}
+          modifiers={[viewMode === 'card' ? restrictToWindowEdges : restrictToVerticalAxis]}
         >
-          <SortableContext items={sortableItemIds} strategy={verticalListSortingStrategy}>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              {visibleProviders.map((provider) => (
-                <React.Fragment key={provider.id}>
-                  <KimiProviderCard
-                    provider={provider}
-                    isApplied={provider.id === appliedProviderId}
-                    gatewayTakeoverActive={gatewayTakeoverActive}
-                    gatewayStatus={gatewayCliStatus}
-                    onGatewayStatusChange={setGatewayCliStatus}
-                    onEdit={handleEditProvider}
-                    onDelete={(value) => void handleDeleteProvider(value)}
-                    onApply={(value) => void handleApplyProvider(value)}
-                    onToggleDisabled={handleToggleDisabled}
-                    onTest={handleTestProvider}
-                    onCopy={handleCopyProvider}
-                    onShare={shareProvider}
-                    connectivityStatus={connectivityStatuses[provider.id]}
-                    selectable={
-                      providerBatch.selectionMode && providerBatch.isSelectable(provider.id)
-                    }
-                    selected={providerBatch.selectedIds.has(provider.id)}
-                    onSelectChange={(checked) =>
-                      providerBatch.toggleSelect(provider.id, checked)
-                    }
-                    onEditModel={handleEditModel}
-                    onCopyModel={handleCopyModel}
-                    onSetPrimaryModel={handleSetPrimaryModel}
-                    onDeleteModel={handleDeleteModel}
-                    onDeleteModels={handleDeleteModels}
-                    onFetchModels={handleOpenFetchModels}
-                    canFetchModels={
-                      provider.category !== 'official'
-                      && provider.id !== KIMI_LOCAL_PROVIDER_ID
-                      && Boolean(extractKimiBaseUrl(provider.settingsConfig))
-                    }
-                    dragDisabled={providerDragDisabled}
-                    officialAccounts={officialAccounts}
-                    onOfficialAccountLogin={() => void handleStartOfficialAccountAuth()}
-                    onOfficialAccountApply={(account) => void handleApplyOfficialAccount(account)}
-                    onOfficialAccountDelete={handleDeleteOfficialAccount}
-                    onOfficialAccountSaveLocal={(account) => void handleSaveOfficialLocalAccount(account)}
-                    loginPending={deviceAuthSession !== null}
-                    applyingOfficialAccountId={applyingOfficialAccountId}
-                    savingOfficialAccountId={savingOfficialAccountId}
-                  />
-                </React.Fragment>
-              ))}
-            </div>
+          <SortableContext
+            items={sortableItemIds}
+            // One context serves both layouts; only the strategy and the drag
+            // axis change with the view (a second context would duplicate the
+            // sensors and let the two disagree about when dragging is off).
+            strategy={viewMode === 'card' ? rectSortingStrategy : verticalListSortingStrategy}
+          >
+            {viewMode === 'card' ? (
+              <ProviderCardGrid
+                items={visibleProviders}
+                getKey={(provider) => provider.id}
+                renderItem={(provider) => (
+                  <KimiProviderCard {...kimiProviderCardProps(provider)} viewMode="card" />
+                )}
+              />
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                {visibleProviders.map((provider) => (
+                  <KimiProviderCard key={provider.id} {...kimiProviderCardProps(provider)} />
+                ))}
+              </div>
+            )}
           </SortableContext>
         </DndContext>
       </ProviderListSection>

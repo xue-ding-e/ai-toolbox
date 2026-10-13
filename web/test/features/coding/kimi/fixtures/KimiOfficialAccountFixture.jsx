@@ -74,7 +74,10 @@ const createProvider = (id, name, createdAt, category = 'custom') => ({
       ],
     },
   }),
-  isApplied: false,
+  // One applied provider: the 已应用 tag is a fact of this card style, and a
+  // fixture where no provider is applied could not tell a card that states it
+  // from one that had stopped stating it.
+  isApplied: id === 'provider-a',
   isDisabled: false,
   createdAt,
   updatedAt: createdAt,
@@ -119,6 +122,8 @@ const state = {
   runId: parameters.get('runId'),
   requests: [],
   sortMode: parameters.get('sortMode') || 'custom',
+  /** Initial layout, so a check can start in either one without clicking first. */
+  viewMode: parameters.get('viewMode') || 'list',
   providers:
     providersMode === '0'
       ? []
@@ -189,9 +194,17 @@ window.__TAURI_INTERNALS__ = {
 
       // --- provider list UI state -----------------------------------------
       case 'get_provider_list_state':
-        return { sort_modes: { kimi: state.sortMode }, last_used: {} };
+        return {
+          sort_modes: { kimi: state.sortMode },
+          last_used: {},
+          view_modes: { kimi: state.viewMode },
+        };
       case 'save_provider_sort_mode': {
         state.sortMode = args.mode;
+        return null;
+      }
+      case 'save_provider_view_mode': {
+        state.viewMode = args.mode;
         return null;
       }
       case 'record_provider_last_used': return null;
@@ -428,6 +441,77 @@ window.kimiOfficialAccountFixture = {
   },
   storedOrder() {
     return state.providers.map(provider => provider.name);
+  },
+
+  // --- the card layout ---------------------------------------------------
+  /** The layout toggle's centre, found by its data attribute rather than by
+   *  its label: the label is copy, and copy is free to change. */
+  layoutToggleCenter() {
+    const button = document.querySelector('[data-provider-view-toggle]');
+    if (!button) return null;
+    const rect = button.getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  },
+  layoutToggleMode() {
+    return document.querySelector('[data-provider-view-toggle]')
+      ?.getAttribute('data-provider-view-toggle') ?? null;
+  },
+  gridColumnCount() {
+    const grid = document.querySelector('[data-provider-grid]');
+    if (!grid) return 0;
+    return getComputedStyle(grid).gridTemplateColumns.split(' ').filter(Boolean).length;
+  },
+  /**
+   * The cell's second line, or null when it renders none.
+   *
+   * Every gap on that line is a CSS margin rather than a text node, so
+   * `textContent` would read `默认模型:Model A`. Rebuilding it reports what the
+   * user actually sees.
+   */
+  subtitleText(key) {
+    const subtitle = cardFor(key)?.querySelector('[data-provider-subtitle]');
+    if (!subtitle) return null;
+    return [...subtitle.children]
+      .map(entry => [...entry.children].map(part => part.textContent.trim()).join(' '))
+      .join('  ');
+  },
+  /** The state tags a card states beside its title, in order. */
+  cardTagLabels(key) {
+    const row = cardFor(key)?.querySelector('[data-provider-card-tags]');
+    if (!row) return null;
+    return [...row.querySelectorAll('.ant-tag')].map(tag => tag.textContent.trim());
+  },
+  /** The open detail sidebar, or null when none is open. */
+  detailPanel() {
+    return document.querySelector('[data-provider-detail-panel]');
+  },
+  detailTextIncludes(text) {
+    const panel = window.kimiOfficialAccountFixture.detailPanel();
+    return panel ? panel.textContent.includes(text) : false;
+  },
+  detailSectionTitles() {
+    const panel = window.kimiOfficialAccountFixture.detailPanel();
+    if (!panel) return null;
+    return [...panel.querySelectorAll('[data-provider-detail-section-title]')]
+      .map(title => title.textContent.trim());
+  },
+  /** Waits for the sidebar's model catalog — the sidebar's copy is open, so
+   *  there is nothing to click; the wait is for the Drawer's own mount. */
+  async openDetailCatalog() {
+    for (let attempt = 0; attempt < 100; attempt++) {
+      if (document.querySelector('[data-model-list-section]')) return true;
+      await wait(50);
+    }
+    return false;
+  },
+  closeDetail() {
+    window.kimiOfficialAccountFixture.detailPanel()
+      ?.querySelector('[data-provider-detail-close]')?.click();
+  },
+  lastViewModeSave() {
+    const call = [...state.requests].reverse()
+      .find(entry => entry.command === 'save_provider_view_mode');
+    return call ? call.args : null;
   },
 };
 

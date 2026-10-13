@@ -846,10 +846,12 @@ const ClaudeProviderCard: React.FC<ClaudeProviderCardProps> = ({
         <Drawer
           placement="right"
           // `size`, not `width`: antd 6 deprecated `width`/`height` in favour of
-          // one `size` prop, and warns about it in dev. The other drawers in
-          // this repo still use `width`; this one is new, so it starts on the
-          // supported API.
-          size={420}
+          // one `size` prop, and warns about it in dev. `size` takes a CSS
+          // length, so the Skills and MCP detail drawers' own sizing —
+          // `min(60vw, 760px)` — carries over verbatim: the provider sidebar is
+          // the same kind of surface, and three of them at three widths read as
+          // three different products.
+          size="min(60vw, 760px)"
           open={detailOpen}
           onClose={() => setDetailOpen(false)}
           destroyOnHidden

@@ -46,11 +46,29 @@ export async function verifyKimiOfficialAccountCard({ send, evaluate, baseUrl, a
     await writeFile(path.join(artifactRoot, name + '.png'), Buffer.from(data, 'base64'));
   };
 
-  /** A real pointer drag: dnd-kit's PointerSensor only activates past its
-   *  `distance` constraint, so the move must overshoot it. */
+  /**
+   * A real pointer drag: dnd-kit's PointerSensor only activates past its
+   * `distance` constraint, so the move must overshoot it.
+   *
+   * The release point is the target's centre **as measured before the drag**,
+   * and it has to be. dnd-kit measures its droppables once, when the drag
+   * starts (`MeasuringStrategy.WhileDragging`), so its idea of where a card is
+   * comes from that instant; mid-drag the cards are displaced by transforms,
+   * and a pointer chased onto those live positions is at a point dnd-kit has no
+   * droppable for — the card lands a slot early, or nowhere. The pre-drag
+   * centre is also what a user aims at, so the check aims there too, and says
+   * so loudly if that point is off screen (a centre the pointer cannot reach
+   * would make the drag a silent no-op).
+   */
   const dragCard = async (fromName, toName) => {
     const from = await fixture(`handleCenter(${JSON.stringify(fromName)})`);
     const to = await fixture(`cardCenter(${JSON.stringify(toName)})`);
+    const onScreen = await evaluate(`(() => {
+      const point = ${JSON.stringify(to)};
+      return point.y > 0 && point.y < window.innerHeight && point.x > 0 && point.x < window.innerWidth;
+    })()`);
+    assert.ok(onScreen, `the drop point for ${toName} must be on screen: ${JSON.stringify(to)}`);
+
     await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: from.x, y: from.y, button: 'left', clickCount: 1 });
     const steps = 6;
     for (let step = 1; step <= steps; step++) {
@@ -136,9 +154,19 @@ export async function verifyKimiOfficialAccountCard({ send, evaluate, baseUrl, a
 
   const cardButtons = await fixture(`cardButtonLabels(${JSON.stringify(officialId)})`);
   check('the sign-in entry lives on the official card', cardButtons.includes('登录'));
+  // Paired: "the toolbar has no 官方账号 entry" is an assertion about *absence*,
+  // and absence is also what a selector that matches nothing returns. The
+  // positive half — the toolbar is there and does carry its own actions — is
+  // what gives the negative half its meaning.
+  const toolbarLabels = await fixture('toolbarLabels()');
+  check(
+    'the provider list toolbar is on screen with its own actions',
+    toolbarLabels.filter(label => label === '添加供应商').length,
+    1,
+  );
   check(
     'the list toolbar carries no official-account entry',
-    (await fixture('toolbarLabels()')).filter(label => label === headingLabel),
+    toolbarLabels.filter(label => label === headingLabel),
     [],
   );
   check(

@@ -7,10 +7,11 @@ import {
   MessageOutlined,
 } from '@ant-design/icons';
 import { DndContext, closestCenter, type DragEndEvent } from '@dnd-kit/core';
-import { restrictToVerticalAxis } from '@dnd-kit/modifiers';
+import { restrictToVerticalAxis, restrictToWindowEdges } from '@dnd-kit/modifiers';
 import {
   SortableContext,
   arrayMove,
+  rectSortingStrategy,
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
 import { useTranslation } from 'react-i18next';
@@ -32,8 +33,10 @@ import {
   filterProviderItems,
   sortProviderItems,
   useProviderBatchSelection,
+  useProviderListViewPrefs,
   useProviderListSort,
 } from '@/features/coding/shared/providerList';
+import { ProviderCardGrid } from '@/features/coding/shared/providerCardView';
 import {
   buildProviderConnectivityBatchTarget,
   runProviderConnectivityBatch,
@@ -200,6 +203,7 @@ const ZcodePage: React.FC = () => {
   const sidebarHidden = sidebarHiddenByPage.zcode ?? false;
 
   const { sortMode, setSortMode, lastUsedAt, noteProviderUsed } = useProviderListSort('zcode');
+  const { viewMode, setViewMode } = useProviderListViewPrefs('zcode');
 
   // Search and non-custom sort modes bypass sort_index, so dragging would write
   // a stale custom order — dnd is only enabled in custom mode.
@@ -1161,6 +1165,72 @@ const ZcodePage: React.FC = () => {
     [fetchModelsProvider, persistProviderModels],
   );
 
+  /**
+   * One provider's card props, for both layouts.
+   *
+   * The two layouts render the *same* object: the grid cell is a presentation
+   * of this provider, not a second reading of it, so the buttons it offers
+   * cannot drift from the list card's. The layout only adds `viewMode`.
+   */
+  const zcodeProviderCardProps = (provider: ZcodeProvider) => ({
+    provider,
+    onEdit: () => {
+      setEditingProvider(provider);
+      setIsCopyMode(false);
+      setFormModalOpen(true);
+    },
+    onCopy: () => {
+      setEditingProvider(provider);
+      setIsCopyMode(true);
+      setFormModalOpen(true);
+    },
+    onDelete: () => void handleDeleteProvider(provider),
+    onToggleDisabled: () => void handleToggleProviderDisabled(provider, !provider.isDisabled),
+    selectable: providerBatch.selectionMode && providerBatch.isSelectable(provider.id),
+    selected: providerBatch.selectedIds.has(provider.id),
+    onSelectChange: (selected: boolean) => providerBatch.toggleSelect(provider.id, selected),
+    connectivityStatus: connectivityStatuses[provider.id],
+    onAddModel: () => handleAddModel(provider),
+    onEditModel: (modelId: string) => handleEditModel(provider, modelId),
+    onCopyModel: (modelId: string) => handleCopyModel(provider, modelId),
+    onDeleteModel: (modelId: string) => void handleDeleteModel(provider, modelId),
+    onSetPrimaryModel: (modelId: string) => void handleSetPrimaryModel(provider, modelId),
+    onToggleModelDisabled: (modelId: string, isDisabled: boolean) =>
+      void handleToggleModelDisabled(provider, modelId, isDisabled),
+    onReorderModels: (orderedModelIds: string[]) =>
+      void handleReorderModels(provider, orderedModelIds),
+    modelSelectionMode: modelBatchDeleteProviderId === provider.id,
+    selectedModelIds: selectedModelIdsByProvider[provider.id] ?? [],
+    onToggleModelSelection: (modelId: string, selected: boolean) =>
+      handleToggleModelSelection(provider, modelId, selected),
+    onToggleBatchDeleteMode: () => handleToggleModelBatchDeleteMode(provider),
+    onBatchDeleteModels: () => handleBatchDeleteModels(provider),
+    onTestModels: () => handleTestProviderModels(provider),
+    testModelsDisabled:
+      !(parseZcodeProviderSettings(provider.settingsConfig)?.models ?? []).length,
+    testModelsDisabledTooltip: t('common.modelMissing'),
+    onFetchModels: () => {
+      setFetchModelsProviderId(provider.id);
+      setFetchModelsModalOpen(true);
+    },
+  });
+
+  /**
+   * The list's members, in order: the visible provider cards with the
+   * official-account card dropped into its slot.
+   *
+   * One expression feeds both layouts, so "where the account card sits" cannot
+   * mean two different things. It uses the *visible* slot (`officialAccountSlot`)
+   * rather than the persisted index, because a search hides providers the stored
+   * index still counts.
+   */
+  const listMembers: { key: string; provider?: ZcodeProvider }[] = visibleProviders.map(
+    (provider) => ({ key: provider.id, provider }),
+  );
+  listMembers.splice(Math.min(officialAccountSlot, listMembers.length), 0, {
+    key: OFFICIAL_ACCOUNT_CARD_ID,
+  });
+
   return (
     <SectionSidebarLayout
       sidebarTitle={t('zcode.title', { defaultValue: 'ZCode 配置管理' })}
@@ -1235,6 +1305,8 @@ const ZcodePage: React.FC = () => {
           sortMode={sortMode}
           sortModes={PROVIDER_SORT_MODES}
           onSortModeChange={setSortMode}
+          viewMode={viewMode}
+          onViewModeChange={setViewMode}
           locateProviderId={locateProviderId}
           onBatchTest={handleBatchTestProviders}
           batchTesting={batchTestingProviders}
@@ -1283,71 +1355,48 @@ const ZcodePage: React.FC = () => {
           <DndContext
             sensors={providerBatchDragDisabled ? [] : undefined}
             collisionDetection={closestCenter}
-            modifiers={[restrictToVerticalAxis]}
+            modifiers={[viewMode === 'card' ? restrictToWindowEdges : restrictToVerticalAxis]}
             onDragEnd={(event) => void handleDragEnd(event)}
           >
-            <SortableContext items={sortableItemIds} strategy={verticalListSortingStrategy}>
-              <div>
-                {visibleProviders.map((provider, providerIndex) => (
-                  <React.Fragment key={provider.id}>
-                    {/* The card shares this ordering with the provider cards, so
-                        it is rendered in place rather than pinned above them. */}
-                    {providerIndex === officialAccountSlot && officialAccountCard}
+            <SortableContext
+              items={sortableItemIds}
+              // One context serves both layouts; only the strategy and the drag
+              // axis change with the view (a second context would duplicate the
+              // sensors and let the two disagree about when dragging is off).
+              strategy={viewMode === 'card' ? rectSortingStrategy : verticalListSortingStrategy}
+            >
+              {viewMode === 'card' ? (
+                <ProviderCardGrid
+                  items={listMembers}
+                  getKey={(member) => member.key}
+                  renderItem={(member) => (member.provider ? (
                     <ZcodeProviderCard
-                    provider={provider}
-                    onEdit={() => {
-                      setEditingProvider(provider);
-                      setIsCopyMode(false);
-                      setFormModalOpen(true);
-                    }}
-                    onCopy={() => {
-                      setEditingProvider(provider);
-                      setIsCopyMode(true);
-                      setFormModalOpen(true);
-                    }}
-                    onDelete={() => void handleDeleteProvider(provider)}
-                    onToggleDisabled={() =>
-                      void handleToggleProviderDisabled(provider, !provider.isDisabled)
-                    }
-                    selectable={
-                      providerBatch.selectionMode && providerBatch.isSelectable(provider.id)
-                    }
-                    selected={providerBatch.selectedIds.has(provider.id)}
-                    onSelectChange={(selected) => providerBatch.toggleSelect(provider.id, selected)}
-                    connectivityStatus={connectivityStatuses[provider.id]}
-                    onAddModel={() => handleAddModel(provider)}
-                    onEditModel={(modelId) => handleEditModel(provider, modelId)}
-                    onCopyModel={(modelId) => handleCopyModel(provider, modelId)}
-                    onDeleteModel={(modelId) => void handleDeleteModel(provider, modelId)}
-                    onSetPrimaryModel={(modelId) => void handleSetPrimaryModel(provider, modelId)}
-                    onToggleModelDisabled={(modelId, isDisabled) =>
-                      void handleToggleModelDisabled(provider, modelId, isDisabled)
-                    }
-                    onReorderModels={(orderedModelIds) =>
-                      void handleReorderModels(provider, orderedModelIds)
-                    }
-                    modelSelectionMode={modelBatchDeleteProviderId === provider.id}
-                    selectedModelIds={selectedModelIdsByProvider[provider.id] ?? []}
-                    onToggleModelSelection={(modelId, selected) =>
-                      handleToggleModelSelection(provider, modelId, selected)
-                    }
-                    onToggleBatchDeleteMode={() => handleToggleModelBatchDeleteMode(provider)}
-                    onBatchDeleteModels={() => handleBatchDeleteModels(provider)}
-                    onTestModels={() => handleTestProviderModels(provider)}
-                    testModelsDisabled={
-                      !(parseZcodeProviderSettings(provider.settingsConfig)?.models ?? []).length
-                    }
-                    testModelsDisabledTooltip={t('common.modelMissing')}
-                    onFetchModels={() => {
-                      setFetchModelsProviderId(provider.id);
-                      setFetchModelsModalOpen(true);
-                    }}
+                      {...zcodeProviderCardProps(member.provider)}
+                      viewMode="card"
                     />
-                  </React.Fragment>
-                ))}
-                {/* Past the last provider, so the card can sit at the bottom. */}
-                {officialAccountSlot >= visibleProviders.length && officialAccountCard}
-              </div>
+                  ) : (
+                    // The account card is a member of this list, so it keeps the
+                    // slot it was dragged to rather than being pinned above the
+                    // grid. It spans the whole row: its content is a manager — a
+                    // list of accounts with their own actions — which a 350px
+                    // cell would squeeze into an unreadable column.
+                    <div style={{ gridColumn: '1 / -1' }}>{officialAccountCard}</div>
+                  ))}
+                />
+              ) : (
+                <div>
+                  {listMembers.map((member) => (
+                    member.provider ? (
+                      <ZcodeProviderCard
+                        key={member.key}
+                        {...zcodeProviderCardProps(member.provider)}
+                      />
+                    ) : (
+                      <React.Fragment key={member.key}>{officialAccountCard}</React.Fragment>
+                    )
+                  ))}
+                </div>
+              )}
             </SortableContext>
           </DndContext>
         </ProviderListSection>

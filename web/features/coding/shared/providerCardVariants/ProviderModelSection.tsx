@@ -6,6 +6,13 @@ interface ProviderModelSectionProps {
   /** Owner of the rows; the section's collapse state is keyed by it. */
   providerId: string;
   modelSection?: ProviderCardModels;
+  /**
+   * Which host is drawing the section — the list card (the default) or the
+   * detail sidebar. The same `modelSection` data is rendered by both, so this is
+   * the only thing that differs: the sidebar shows the rows open, the card keeps
+   * them behind their fold. See `ModelListSection.appearance`.
+   */
+  appearance?: 'card' | 'detail';
 }
 
 /**
@@ -26,6 +33,7 @@ interface ProviderModelSectionProps {
 const ProviderModelSection: React.FC<ProviderModelSectionProps> = ({
   providerId,
   modelSection,
+  appearance,
 }) => {
   if (!modelSection) {
     return null;
@@ -36,6 +44,7 @@ const ProviderModelSection: React.FC<ProviderModelSectionProps> = ({
       models={modelSection.models}
       rowKeyOf={modelSection.rowKeyOf}
       sectionKey={`provider-models-${providerId}`}
+      appearance={appearance}
       className={modelSection.className}
       bodyStyle={modelSection.bodyStyle}
       transparentRows

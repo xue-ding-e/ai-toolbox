@@ -1,13 +1,44 @@
-/* The model list lives inside a provider card, and that card may be tinted
-   (applied / gateway-primary accent). Every antd Collapse layer must stay
-   transparent so the tint shows through instead of the default white panel
-   background — otherwise the section header reads as a white bar punched into
-   the card.
+/* The model list has two forms, chosen by the host (`appearance`).
 
-   Applied whenever `transparentRows` is set. It used to live in each CLI's own
-   stylesheet (codex, grok), which meant a CLI that forgot to copy the file got
-   a white header on a tinted card — visible only once that CLI had an accent,
-   so it could sit unnoticed for a long time. */
+   On a provider list card it is an antd Collapse, and every one of that
+   component's layers paints its own background — on a tinted card that reads as
+   a white bar punched into the card, which is what `.transparentCollapse`
+   clears. In the detail sidebar it is a plain block (no Collapse, no layers),
+   so all it has to do is not paint a background of its own. */
+
+.section {
+  background: transparent;
+}
+
+/* Both forms put the title on the left and the manager actions on the right,
+   and it is the same node in both: the fold's header on a card, the list's title
+   line in the sidebar. `width: 100%` is what the Collapse header needs — it is a
+   flex row whose label would otherwise shrink to its content. */
+.toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  background: transparent;
+}
+
+.title {
+  font-size: 13px;
+}
+
+.body {
+  background: transparent;
+}
+
+/* Applied whenever `transparentRows` is set: the rows are `ModelItem`s, whose
+   fill is normally the container colour. Inside a tinted card that fill would
+   hide the tint, so the row surface is dropped instead. */
+.transparentRows {
+  :global([data-model-row]) {
+    background: transparent !important;
+  }
+}
+
 .transparentCollapse {
   background: transparent !important;
 }

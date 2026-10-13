@@ -420,19 +420,21 @@ window.codexCardViewFixture = {
       .filter(Boolean);
   },
   /**
-   * Opens the model catalog inside the sidebar.
+   * Waits for the sidebar's model catalog to be on screen.
    *
-   * The section is a collapsed Collapse, and antd does not render its body
-   * until it opens — so a check that looked for a model row without opening it
-   * first would report "the catalog is gone" about a catalog that is simply
-   * closed, which is what a user sees too.
+   * The section used to be a collapsed Collapse, so a check had to click it
+   * open first. The sidebar's copy is a plain always-open block now
+   * (user-directed, 2026-10-12) — the list card's copy still folds, which is
+   * why the attribute this waits on is only on the sidebar's one — so this only
+   * waits, and it still exists because the sidebar mounts behind a `Drawer`
+   * whose content arrives a frame or two later.
    */
-  openDetailCatalog() {
-    const panel = window.codexCardViewFixture.detailPanel();
-    const header = panel?.querySelector('.ant-collapse-header');
-    if (!header) return false;
-    header.click();
-    return true;
+  async openDetailCatalog() {
+    for (let attempt = 0; attempt < 100; attempt++) {
+      if (document.querySelector('[data-model-list-section]')) return true;
+      await wait(50);
+    }
+    return false;
   },
   /** Clicks a sidebar button by the label it prints. */
   clickDetailButton(label) {

@@ -101,6 +101,92 @@ export async function verifyCodexCardView({ send, evaluate, baseUrl, artifactRoo
   check('the list card states the endpoint', await fixture('cardText("provider-a")')
     .then(text => text.includes('provider-a.example.test')));
 
+  // --- only the sidebar's catalog is open ---------------------------------
+  //
+  // The two hosts draw the same section, and the detail sidebar is the one that
+  // shows its rows outright (a sidebar is opened *to* read them). The list card
+  // keeps the fold it has always had: cards are read side by side, and a card
+  // that unfolded its whole catalog would be a different height from its
+  // neighbours. Asserted as a pair — folded at rest, rows after the header is
+  // clicked — because "no rows" alone would also pass on a broken section.
+  const catalogOnListCard = `(() => {
+    const card = document.querySelector('[data-provider-id="provider-a"] .ant-card');
+    if (!card) return null;
+    const header = [...card.querySelectorAll('.ant-collapse-header')]
+      .find(node => node.textContent.includes('模型列表'));
+    return {
+      hasHeader: Boolean(header),
+      rowsRendered: card.querySelectorAll('[data-model-row]').length,
+    };
+  })()`;
+  const folded = await evaluate(catalogOnListCard);
+  assert.ok(folded, 'the list card must render');
+  check('the list card carries the catalog behind its own header', folded.hasHeader);
+  check('the list card does not unfold the catalog', folded.rowsRendered, 0);
+
+  await evaluate(`(() => {
+    const card = document.querySelector('[data-provider-id="provider-a"] .ant-card');
+    const header = [...card.querySelectorAll('.ant-collapse-header')]
+      .find(node => node.textContent.includes('模型列表'));
+    header.click();
+    return true;
+  })()`);
+  await waitFor(
+    `document.querySelectorAll('[data-provider-id="provider-a"] [data-model-row]').length > 0`,
+    'the list card\'s catalog rows',
+  );
+  check(
+    'opening the list card\'s catalog shows its rows',
+    await evaluate(`document.querySelectorAll('[data-provider-id="provider-a"] [data-model-row]').length`),
+    2,
+  );
+
+  // The rows inside a card are their own appearance, and it is the one the list
+  // layout has always had: the card is wide enough for a grip on every row and
+  // for the labelled actions to hold their width and fade in. That is the exact
+  // opposite of the sidebar's row on every count (`appearance`), so each of the
+  // three is worth a check — a single shared row that lost one of them would
+  // look fine in a screenshot and be unreadable in a half-width card.
+  const listRow = `(() => {
+    const row = document.querySelector('[data-provider-id="provider-a"] [data-model-row]');
+    const grip = row.querySelector('.anticon-holder');
+    const name = row.querySelector('span[title] > span');
+    return {
+      nameFontSize: getComputedStyle(name).fontSize,
+      gripWidth: grip ? Math.round(grip.parentElement.getBoundingClientRect().width) : 0,
+      gripColor: grip ? getComputedStyle(grip.parentElement).color : null,
+      labelledActionWidths: [...row.querySelectorAll('button')]
+        .filter(button => button.textContent.trim().length > 0)
+        .map(button => Math.round(button.getBoundingClientRect().width)),
+      labelledActionFontSizes: [...row.querySelectorAll('button')]
+        .filter(button => button.textContent.trim().length > 0)
+        .map(button => getComputedStyle(button).fontSize),
+    };
+  })()`;
+  const rowStyle = await evaluate(listRow);
+  assert.ok(rowStyle, 'the list card\'s catalog must render a row');
+  check('the list row keeps the card\'s type scale', rowStyle.nameFontSize, '13px');
+  check('the list row keeps its grip on screen', rowStyle.gripWidth > 0);
+  check('the list row\'s grip is the card grey, not the sidebar\'s', rowStyle.gripColor, 'rgb(187, 187, 187)');
+  check(
+    'the list row holds the width of its labelled actions',
+    rowStyle.labelledActionWidths.length > 0
+      && rowStyle.labelledActionWidths.every(width => width > 0),
+  );
+  check(
+    'the list row keeps the button default for those actions',
+    rowStyle.labelledActionFontSizes.length > 0
+      && rowStyle.labelledActionFontSizes.every(size => size === '14px'),
+  );
+  await evaluate(`(() => {
+    const card = document.querySelector('[data-provider-id="provider-a"] .ant-card');
+    const header = [...card.querySelectorAll('.ant-collapse-header')]
+      .find(node => node.textContent.includes('模型列表'));
+    header.click();
+    return true;
+  })()`);
+  await delay(300);
+
   await toggleLayout();
   await waitFor('Boolean(document.querySelector("[data-provider-grid]"))', 'the card grid');
   check('switching to cards renders a multi-column grid', await fixture('gridColumnCount()') > 1);
@@ -128,12 +214,14 @@ export async function verifyCodexCardView({ send, evaluate, baseUrl, artifactRoo
     false,
   );
   // The catalog is a manager, not a label: it must not spill onto the cell.
-  // Matched on its heading rather than on a model name, because the section
-  // starts collapsed — its rows are not in the DOM until someone opens it, so a
-  // model-name check would pass on a cell that *did* carry the whole section.
+  // Matched on its heading *and* on a model name — the sidebar's copy of the
+  // section is open, so a cell that carried the rows without the title would
+  // slip past a heading-only check.
   check(
     'the grid cell does not state the model catalog',
-    await fixture('cardText("provider-a")').then(text => text.includes('模型列表')),
+    await fixture('cardText("provider-a")').then(
+      text => text.includes('模型列表') || text.includes('GPT-5 mini'),
+    ),
     false,
   );
   check('the grid card keeps the Skills card type scale', await fixture('cardSummary("provider-a", "Provider Main")').then(
@@ -281,39 +369,109 @@ export async function verifyCodexCardView({ send, evaluate, baseUrl, artifactRoo
     'the sidebar catalog keeps the per-row auto-review action',
     await fixture('detailTextIncludes("已是自动审批模型")'),
   );
-  // The row's text is one line, and the row is wide enough for it. Both halves
-  // were broken: the hover-revealed actions hold their full width even while
-  // invisible (two labelled buttons are ~362px of this sidebar's 478px row), so
-  // the text was squeezed to 29px and wrapped mid-word — "DeepSee / k V4.1 /
-  // Flash (d / eepseek-…" (reported 2026-10-12). The text is now the part that
-  // gives way, with an ellipsis, and the actions wrap below it when they cannot
-  // share the line.
+  // The row at rest, which is what the list looks like when you are reading it
+  // rather than acting on it. Three things were wrong at once and each needs
+  // its own assertion, because each has a different cause:
+  //
+  //  - The text was squeezed (29px, wrapped mid-word: "DeepSee / k V4.1 / Flash
+  //    (d / eepseek-…"), because the hover-revealed actions held their full
+  //    width while invisible.
+  //  - The rows were indented past a grip that was only *drawn* under the
+  //    pointer, so a model name did not line up with the 模型列表 title above it.
+  //  - Hovering re-laid the row out, so the text jumped sideways as the pointer
+  //    crossed it.
+  //
+  // The fix is that the grip and the labelled actions are out of the flow until
+  // the pointer arrives, and that is asserted as a *pair*: at rest the row
+  // starts at the title's edge and the text has room; on hover the same row
+  // gives some back. A check that only looked at rest would pass on a row whose
+  // hover state was broken, and one that only looked at hover would pass on a
+  // row that always reserved the space.
+  const rowGeometry = `(() => {
+    const row = document.querySelector('[data-model-row]');
+    if (!row) return null;
+    const text = row.querySelector('span[title]');
+    const grip = row.querySelector('.anticon-holder');
+    const title = [...document.querySelectorAll('[data-model-list-section] *')]
+      .find((el) => el.children.length === 0 && el.textContent.trim().startsWith('模型列表'));
+    return {
+      rowLeft: Math.round(row.getBoundingClientRect().left),
+      titleLeft: title ? Math.round(title.getBoundingClientRect().left) : null,
+      textLeft: Math.round(text.getBoundingClientRect().left),
+      textWidth: Math.round(text.getBoundingClientRect().width),
+      truncated: text.scrollWidth > text.getBoundingClientRect().width + 1,
+      textHeight: Math.round(text.getBoundingClientRect().height),
+      gripWidth: grip ? Math.round(grip.parentElement.getBoundingClientRect().width) : 0,
+      labelledActionWidth: [...row.querySelectorAll('button')]
+        .filter((b) => b.textContent.trim().length > 0)
+        .reduce((total, b) => total + b.getBoundingClientRect().width, 0),
+      labelledActionFontSizes: [...row.querySelectorAll('button')]
+        .filter((b) => b.textContent.trim().length > 0)
+        .map((b) => getComputedStyle(b).fontSize),
+    };
+  })()`;
+
+  const hoverRow = async () => {
+    const point = await evaluate(`(() => {
+      const rect = document.querySelector('[data-model-row]').getBoundingClientRect();
+      return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
+    })()`);
+    await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y });
+    await delay(300);
+  };
+  const parkPointer = async () => {
+    await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 2, y: 2 });
+    await delay(300);
+  };
+
+  await parkPointer();
+  const rest = await evaluate(rowGeometry);
   check(
-    'a model row keeps its name, id and limits on one line',
-    await evaluate(`(() => {
-      const panel = codexCardViewFixture.detailPanel();
-      const row = [...panel.querySelectorAll('div')].find((d) => d.querySelector('.anticon-holder'));
-      const text = row.querySelector('span[title]');
-      return text.scrollWidth <= text.getBoundingClientRect().width + 1;
-    })()`),
+    'a model row lines up with the list title above it at rest',
+    rest.rowLeft,
+    rest.titleLeft,
   );
   check(
-    'the model text is given a readable share of the row, not the leftovers',
-    await evaluate(`(() => {
-      const panel = codexCardViewFixture.detailPanel();
-      const row = [...panel.querySelectorAll('div')].find((d) => d.querySelector('.anticon-holder'));
-      const text = row.querySelector('span[title]');
-      return Math.round(text.getBoundingClientRect().width) >= 200;
-    })()`),
+    'the grip takes no space until the row is hovered',
+    rest.gripWidth,
+    0,
+  );
+  check(
+    'the labelled actions take no space until the row is hovered',
+    rest.labelledActionWidth,
+    0,
+  );
+  check(
+    'a model row keeps its name, id and limits on one line',
+    rest.truncated,
+    false,
+  );
+  check(
+    'the model text is given the row, not the leftovers',
+    rest.textWidth >= 400,
   );
   check(
     'a model row is one text line tall, not a wrapped block',
-    await evaluate(`(() => {
-      const panel = codexCardViewFixture.detailPanel();
-      const row = [...panel.querySelectorAll('div')].find((d) => d.querySelector('.anticon-holder'));
-      return Math.round(row.querySelector('span[title]').getBoundingClientRect().height) < 30;
-    })()`),
+    rest.textHeight < 30,
   );
+
+  await hoverRow();
+  const hovered = await evaluate(rowGeometry);
+  check('hovering the row reveals the grip', hovered.gripWidth > 0);
+  check('hovering the row reveals the labelled actions', hovered.labelledActionWidth > 0);
+  // The pair of labels is the widest thing on this row, so its type is the
+  // row's rather than the button default: at 14px they read louder than the
+  // model name they act on (user-directed, 2026-10-13).
+  check(
+    'the labelled actions run at the row\'s type scale, not the button default',
+    hovered.labelledActionFontSizes.length > 0
+      && hovered.labelledActionFontSizes.every((size) => size === '12px'),
+  );
+  check(
+    'the text yields room to the actions rather than wrapping',
+    hovered.textWidth < rest.textWidth && hovered.truncated === false,
+  );
+  await parkPointer();
   // The catalog is a working manager, not a read-only list: its toolbar came
   // with it.
   check(
@@ -371,24 +529,22 @@ export async function verifyCodexCardView({ send, evaluate, baseUrl, artifactRoo
 
   // --- the official provider's accounts live in its sidebar --------------
   await openDetail('provider-c');
-  // The block is a collapsed Collapse, so the header is the evidence that it
-  // arrived at all; the rows below are the evidence that it came with its
-  // accounts. Both are scoped to the sidebar, whose host cell cannot carry them
-  // (the grid cell renders no footer).
+  // The block is always open, so its title and its rows are both on screen at
+  // once — and the rows are the evidence that it arrived *with* its accounts,
+  // which a title-only check would not see. Scoped to the sidebar, whose host
+  // cell cannot carry them (the grid cell renders no footer).
   check(
     'the official account block followed the card into the sidebar',
     await fixture('detailTextIncludes("账号列表")'),
   );
   check(
+    'it brought its saved accounts with it',
+    await fixture('detailTextIncludes("first@example.invalid")'),
+  );
+  check(
     'the official sidebar offers no catalog — that provider has none',
     await fixture('detailTextIncludes("模型列表")'),
     false,
-  );
-  await fixture('clickDetailButton("账号列表")');
-  await delay(300);
-  check(
-    'opening it lists the saved accounts',
-    await fixture('detailTextIncludes("first@example.invalid")'),
   );
   // The one sidebar a check cannot fully describe: it is the case where the
   // catalog is absent and the account block is present, and the assertions

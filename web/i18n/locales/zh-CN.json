@@ -6157,7 +6157,9 @@
     "provider": {
       "title": "供应商",
       "applied": "默认",
-      "disabled": "已禁用"
+      "disabled": "已禁用",
+      "baseUrl": "Base URL",
+      "apiFormat": "API 格式"
     },
     "officialAccount": {
       "empty": "尚未登录任何官方账号。",
@@ -6260,7 +6262,8 @@
         "reasoningLevelMapping": "使用 CEL 表达式，将当前推理等级 `reasoningLevel` 映射为模型接口的请求字段。表达式返回的 JSON 对象会合并到实际发送的请求体中。",
         "contextWindow": "模型一次可处理的上下文容量，单位为 Token。ZCode 会据此管理上下文。\n请勿超过模型的实际上限。",
         "maxOutputTokens": "单次模型请求允许生成的最大 Token 数。\n请勿超过模型的实际上限。"
-      }
+      },
+      "defaultLabel": "默认模型"
     },
     "test": {
       "missingBaseUrl": "{{name}}：未填写 Base URL，无法测试",

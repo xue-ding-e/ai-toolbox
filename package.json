@@ -23,7 +23,7 @@
     "test:provider-card-layout": "node ./scripts/verify-provider-card-layout.mjs",
     "test:provider-card-view": "node ./scripts/verify-provider-card-view.mjs",
     "test:ime-autocomplete": "node ./scripts/verify-ime-safe-autocomplete.mjs",
-    "test": "pnpm run test:web && pnpm run test:form-modal-layout && pnpm run test:provider-card-layout && pnpm run test:provider-card-view && pnpm run test:codex-card-view && pnpm run test:provider-list-drag && pnpm run test:provider-list-locate && pnpm run test:official-account-card && pnpm run test:zcode-official-account && pnpm run test:codex-official-accounts && pnpm run test:provider-card-spacing && pnpm run test:official-accounts-shared && pnpm run test:connectivity-modal-layout",
+    "test": "pnpm run test:web && pnpm run test:form-modal-layout && pnpm run test:provider-card-layout && pnpm run test:provider-card-view && pnpm run test:codex-card-view && pnpm run test:zcode-card-view && pnpm run test:kimi-card-view && pnpm run test:provider-list-drag && pnpm run test:provider-list-locate && pnpm run test:official-account-card && pnpm run test:zcode-official-account && pnpm run test:codex-official-accounts && pnpm run test:provider-card-spacing && pnpm run test:official-accounts-shared && pnpm run test:connectivity-modal-layout",
     "sync:version": "node scripts/sync-tauri-version.mjs",
     "tauri": "tauri",
     "prepare": "husky",
@@ -35,7 +35,9 @@
     "test:official-accounts-shared": "node ./scripts/verify-official-accounts-shared.mjs",
     "test:connectivity-modal-layout": "node ./scripts/verify-connectivity-modal-layout.mjs",
     "test:zcode-official-account": "node ./scripts/verify-zcode-official-account-card.mjs",
-    "test:codex-card-view": "node ./scripts/verify-codex-card-view.mjs"
+    "test:codex-card-view": "node ./scripts/verify-codex-card-view.mjs",
+    "test:zcode-card-view": "node ./scripts/verify-zcode-card-view.mjs",
+    "test:kimi-card-view": "node ./scripts/verify-kimi-card-view.mjs"
   },
   "dependencies": {
     "@ant-design/icons": "6.2.5",

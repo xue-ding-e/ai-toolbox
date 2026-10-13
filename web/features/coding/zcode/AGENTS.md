@@ -94,6 +94,10 @@
 
 只写前者 → 卡片显示「当前默认」但 ZCode 从不使用那个模型（见 SOP 教训 #55 / 模式十五）。判断「谁是默认」时以 `defaultModelSelection` 为准。
 
+**卡片布局（2026-10-13）**：`ZcodeProviderCard` 收 `viewMode`，`'card'` 分支渲染共享 `ProviderCompactCard` + 自持的详情 `Drawer`（`ProviderDetailPanel`）；`ZcodePage` 用 `useProviderListViewPrefs('zcode')` 读写偏好，列表容器换 `ProviderCardGrid`，`SortableContext` 用 `rectSortingStrategy` + `restrictToWindowEdges`。**格子只陈述默认模型**（`默认模型: <displayName>`，取自 `models[].isDefault`）；「连接信息」（Base URL / API 格式 / API Key）与模型目录进侧栏，目录是**常开**形态（`appearance="detail"`）——列表卡片那份照旧折叠。格子那一侧没有任何底部动作可放（ZCode 没有 provider 级「应用」，「设为默认」在模型行上），所以第二行只承载事实，`actionPlacement="subtitle"`。
+
+**官方账号卡片也是列表成员，网格里必须留它的位置**：它不是 provider，没有格子的形状，但它和 provider 卡片共享同一套排序。所以它在网格里**跨整行**（外层 `div` 上 `gridColumn: '1 / -1'`）、并保持 `officialAccountIndex` 上的槽位——`listMembers` 这一个表达式同时喂两种布局，避免「账号卡片放在哪」出现两个答案（列表布局过去用 `providerIndex === officialAccountSlot` 单独实现了一遍）。排序载荷仍只含 provider id：卡片 id 只是渲染顺序里的占位。回归：`pnpm run test:zcode-card-view`。
+
 **通用配置没有 UI 入口**：那个编辑器写的内容从未被合并进 `provider_config.json`，且上游 schema 是 `.strict()` 的（只认 `providerConfigRules` / `modelConfigRules` / `providerOrder` / `defaultModelSelection`）。`saveZcodeCommonConfig` 命令保留——根目录弹窗仍通过它读写同一条记录的 `rootDir` 字段。
 
 ## 易错点与历史坑（Gotchas）
@@ -123,6 +127,7 @@
 - **系统字段保留**：手工在 `provider_config.json` 给某个模型加 `supportsToolCall: true` 与 `optionSpecs.maxOutputTokens.map`，从本应用打开该模型再保存 → 这两个键仍在，且表单里没有它们的控件（`zcodeModelFields.test.ts` 有对应断言）。
 - 点模型行的「设为默认」后：卡片该行显示「当前默认」，且 `v2/provider_config.json` 的 `defaultModelSelection` 指向 `{providerId, modelId}`——两处都要核对，只看卡片会漏掉脱节。
 - 「更多」菜单里的启用/禁用开关能翻转 `isDisabled`，卡片随之变灰/恢复。
+- 卡片布局：`pnpm run test:zcode-card-view`（32 项真浏览器断言：切换生效并落库、格子只陈述默认模型且不重复地址、官方账号卡片跨整行并保留槽位、点主体开侧栏且侧栏含连接信息/模型目录（常开）/备注、网格内真拖拽后回写、切回列表恢复折叠、暗色主题）。
 - 网关 tab 明细页筛选 `zcode` 能改变结果（下拉选中即生效）。
 
 ## 何时更新本文件

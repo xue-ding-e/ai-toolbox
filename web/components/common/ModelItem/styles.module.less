@@ -3,13 +3,11 @@
 // actions' baseline off centre and grows the row for no added information.
 .summary {
   flex: 1 1 220px;
-  // The text keeps a readable share of the row and the actions wrap to their
-  // own line when they cannot share it. They are hover-revealed with
-  // `visibility`, so they hold their width whether or not the pointer is over
-  // the row — in the 478px detail sidebar two labelled buttons are 362px, which
-  // left the text 60px and truncated a model id to three characters. Wrapping
-  // is decided by the space they always occupy, so hovering never re-lays-out
-  // the row.
+  // A floor, not a fixed width. On the detail appearance the labelled actions
+  // are out of the flow at rest (`.hoverAction`), so the text has the whole row;
+  // while the pointer is over the row they come back — two labelled buttons are
+  // 362px of a 478px sidebar row — and below this the text would be squeezed to
+  // a few characters, so the actions wrap to their own line instead.
   min-width: 220px;
 }
 
@@ -20,8 +18,14 @@
   white-space: nowrap;
 }
 
-// antd's `Text` is inline, so the two spans keep their own spacing; the gap
-// belongs to the element between them rather than to a text node.
+/* ---- the row as a provider list card draws it (the default) ------------
+
+   This is the row the cards have always had, and the list layout is not the
+   surface being redesigned: here the grip is always on screen and the labelled
+   actions hold their width and fade in. Both are affordable because a card is
+   wide — the detail sidebar, at half this width, is where they cost the model
+   name its characters. */
+
 .modelName {
   font-size: 13px;
 }
@@ -31,15 +35,86 @@
   font-size: 12px;
 }
 
-.container:hover .primaryAction {
+/* Always drawn, tinted apart from the name it sits beside. `display`/`color`
+   live here rather than inline so the detail appearance can take them away. */
+.grip {
+  display: flex;
+  align-items: center;
+  color: #bbb;
+}
+
+.container:hover .hoverAction {
   opacity: 1;
   pointer-events: auto;
   visibility: visible;
 }
 
-.primaryAction {
+.hoverAction {
   opacity: 0;
   pointer-events: none;
   visibility: hidden;
   transition: opacity 0.15s ease;
+}
+
+/* ---- the detail sidebar's row (`appearance="detail"`) ------------------
+
+   One step below the card's title, and the same 12px the sidebar's field values
+   run at: a model row is a list item, not a heading. */
+
+.detailRow .modelName {
+  font-size: 12px;
+}
+
+.detailRow .modelMeta {
+  margin-left: 6px;
+  font-size: 11px;
+}
+
+/* The grip is out of the flow until the pointer is on the row: the rows are
+   what the list is for, and a grip on every row indented the model names past
+   the `模型列表` title above them (user-directed, 2026-10-12). `display` rather
+   than `visibility`/`opacity` — those keep the box and the indent with it. */
+.detailRow .grip {
+  display: none;
+  color: var(--color-text-tertiary);
+}
+
+.detailRow:hover .grip,
+.detailRow:focus-within .grip {
+  display: flex;
+}
+
+.detailRow .actions {
+  flex-shrink: 0;
+}
+
+/* The two labelled actions (`设为主模型` / `设为自动审批模型`), revealed under the
+   pointer and taking **no** width while hidden — that width is the difference
+   between a whole model id and one truncated to three characters. The card
+   rule's `visibility`/`opacity` are reset here rather than left to the hover
+   rule: `display: none` already hides the button at rest, but on keyboard focus
+   (`.detailRow:focus-within`, which is not a hover) nothing else would undo
+   them, and the button would come back as an invisible box. */
+.detailRow .hoverAction {
+  display: none;
+  opacity: 1;
+  pointer-events: auto;
+  visibility: visible;
+}
+
+.detailRow:hover .hoverAction,
+.detailRow:focus-within .hoverAction {
+  display: inline-flex;
+}
+
+/* Their type is the row's, not antd's button default (14px): on a 478px row
+   these two labels are the widest thing on screen, and at the button default
+   they read louder than the model name they act on (user-directed, 2026-10-13).
+   Scoped to `detailRow` — a list card keeps the button default, the same way it
+   keeps the widths. Both spellings are needed: one for the button that carries
+   the class itself (`设为主模型`), one for the buttons a host passes in through
+   the `extraActions` slot, which are wrapped rather than classed. */
+.detailRow .hoverAction,
+.detailRow .hoverAction :global(.ant-btn) {
+  font-size: 12px;
 }

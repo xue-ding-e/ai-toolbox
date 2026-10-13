@@ -152,6 +152,13 @@ const CardShell: React.FC<CardShellProps> = ({
             <div
               {...attributes}
               {...listeners}
+              // The card's own grip, as opposed to the model rows' grips
+              // (`ModelItem`) that live inside this card. Both are
+              // `HolderOutlined`, so "the grip in this card" is ambiguous the
+              // moment a card shows its model list — and the model list is open
+              // by default now, which is exactly how the drag suite's
+              // non-custom-mode check found itself grabbing a model row.
+              data-provider-card-handle
               style={{
                 ...dragHandleStyle,
                 cursor: isDragging ? 'grabbing' : 'grab',

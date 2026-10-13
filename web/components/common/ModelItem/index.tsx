@@ -45,6 +45,20 @@ interface ModelItemProps {
    */
   isDisabled?: boolean;
   onToggleDisabled?: () => void;
+
+  /**
+   * Which host drew the row.
+   *
+   * `'card'` — the provider list card, which is the row as it has always been
+   * drawn: the grip is always on screen and the two labelled actions hold their
+   * width and fade in under the pointer. The card has the room for both.
+   *
+   * `'detail'` — the detail sidebar, where the row is one line that has to end
+   * at the section title above it. There everything optional (the grip, the
+   * labelled actions) is out of the flow until the pointer arrives, and the type
+   * runs a step smaller. See `.detailRow` in the stylesheet.
+   */
+  appearance?: 'card' | 'detail';
 }
 
 /**
@@ -65,6 +79,7 @@ const ModelItem: React.FC<ModelItemProps> = ({
   transparentBackground = false,
   isDisabled = false,
   onToggleDisabled,
+  appearance = 'card',
 }) => {
   const { t } = useTranslation();
 
@@ -77,7 +92,14 @@ const ModelItem: React.FC<ModelItemProps> = ({
     isDragging,
   } = useSortable({
     id: sortableId || model.id,
-    disabled: !draggable,
+    // Both halves, never the boolean form: dnd-kit reads `disabled: true` as
+    // "not draggable, but still droppable" (its backwards-compatibility rule).
+    // A row that cannot be reordered is then still a drop target of whatever
+    // `DndContext` happens to sit above it — and these rows live inside the
+    // provider cards, so dragging a *card* resolved `over` to a model row id,
+    // which the card list's `indexOf` does not know and silently drops. The
+    // list stopped reordering whenever the pointer passed over a model list.
+    disabled: { draggable: !draggable, droppable: !draggable },
   });
 
   const style: React.CSSProperties = {
@@ -107,19 +129,23 @@ const ModelItem: React.FC<ModelItemProps> = ({
     <div
       ref={setNodeRef}
       style={style}
-      className={styles.container}
+      className={[styles.container, appearance === 'detail' ? styles.detailRow : undefined]
+        .filter(Boolean)
+        .join(' ')}
+      // The row's own identity, for the host that has to restyle it: a model
+      // list inside a tinted card drops the row fill (`transparentRows`), and
+      // that rule lives in `ModelListSection` rather than in an inline style
+      // here — a CSS-module class name is hashed and cannot be targeted.
+      data-model-row
     >
       {draggable && (
         <div
           {...attributes}
           {...listeners}
-          style={{
-            cursor: 'grab',
-            display: 'flex',
-            alignItems: 'center',
-          }}
+          className={styles.grip}
+          style={{ cursor: 'grab' }}
         >
-          <HolderOutlined style={{ fontSize: 14, color: '#bbb' }} />
+          <HolderOutlined style={{ fontSize: 14 }} />
         </div>
       )}
 
@@ -136,10 +162,10 @@ const ModelItem: React.FC<ModelItemProps> = ({
           the parentheses keeps the row scannable and drops a line that repeated
           the same information for every model in the list.
 
-          One line by construction, not by luck: the actions beside this block
-          are hover-revealed with `visibility`, so they hold their width at all
-          times. See `.summary` in the stylesheet for what that costs on a
-          narrow host. */}
+          On the detail appearance this is the whole row at rest: the grip and
+          the labelled actions are out of the flow until the pointer arrives, and
+          the icon trio beside them fits in what is left. On a card the grip and
+          those actions are always in the flow — see `appearance`. */}
       <div className={styles.summary}>
         <span className={styles.summaryLine} title={`${model.name} (${model.id}${contextLimit ? ` | ${contextLimit}` : ''})`}>
           <Text strong className={styles.modelName}>
@@ -156,15 +182,18 @@ const ModelItem: React.FC<ModelItemProps> = ({
         </span>
       </div>
 
-      <Space>
+      {/* The labelled actions are the ones that need room, so their treatment
+          is what the host decides: on the detail appearance they are revealed
+          under the pointer and take no width while hidden, on a card they hold
+          their width and fade in. The icon trio and the switch beside them stay
+          either way. See `.hoverAction`. */}
+      <Space className={styles.actions}>
         {!selectionMode && extraActions && (
-          // Same hover-reveal as the primary action: the row stays quiet until
-          // the pointer is over it.
-          <span className={styles.primaryAction}>{extraActions}</span>
+          <span className={styles.hoverAction}>{extraActions}</span>
         )}
         {showPrimaryAction && (
           <Button
-            className={styles.primaryAction}
+            className={styles.hoverAction}
             size="small"
             type="text"
             icon={<CheckCircleOutlined />}
