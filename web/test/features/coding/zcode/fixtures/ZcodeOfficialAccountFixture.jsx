@@ -422,6 +422,26 @@ window.zcodeOfficialAccountFixture = {
     }
     return false;
   },
+  /** How many account rows the open sidebar draws (the card's own marker). */
+  detailAccountRowCount() {
+    const panel = window.zcodeOfficialAccountFixture.detailPanel();
+    return panel ? accountRowsIn(panel).length : 0;
+  },
+  /**
+   * Is the sidebar's account list behind a caret?
+   *
+   * The foldable form wraps the list title in a button and puts the arrow inside
+   * it; the open form draws the title as plain text. Structural on purpose — a
+   * check for `.anticon-down` would pass on any icon in the block.
+   */
+  detailAccountListHasCaret() {
+    const panel = window.zcodeOfficialAccountFixture.detailPanel();
+    if (!panel) return null;
+    const listTitle = [...panel.querySelectorAll('*')]
+      .find(node => node.children.length === 0 && node.textContent.trim() === ACCOUNT_LIST_TITLE)
+      ?? null;
+    return Boolean(listTitle?.closest('button'));
+  },
   closeDetail() {
     window.zcodeOfficialAccountFixture.detailPanel()
       ?.querySelector('[data-provider-detail-close]')?.click();
@@ -434,11 +454,10 @@ window.zcodeOfficialAccountFixture = {
   /**
    * The measured x-range of every grid child.
    *
-   * The account card is a member of the grid rather than a banner over it, and
-   * its content is a manager — so it has to span the whole row while the
-   * provider cells sit in columns. Widths are the evidence: a cell that happens
-   * to be wide because it is the only one in its row would pass a
-   * "spans the row" claim made of CSS alone.
+   * The account card is a member of the grid rather than a banner over it, so
+   * its box has to be a cell's box — the same width as the provider cells in its
+   * row. Widths are the evidence: a claim about the shape made of CSS alone
+   * cannot tell "one cell wide" from "the only thing in its row".
    */
   gridItemBoxes() {
     const grid = document.querySelector('[data-provider-grid]');

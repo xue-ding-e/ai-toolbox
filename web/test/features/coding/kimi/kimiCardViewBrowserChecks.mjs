@@ -130,8 +130,15 @@ export async function verifyKimiCardView({ send, evaluate, baseUrl, artifactRoot
   );
   check(
     'the official channel states no model of its own',
+    await fixture(`subtitleText(${JSON.stringify(OFFICIAL_ID)})`).then(text => Boolean(text?.includes('默认模型'))),
+    false,
+  );
+  // It states the login instead: the accounts are what this row is about, and
+  // the value is the label the account's own row carries in the block below.
+  check(
+    'the official channel states the login it is running on',
     await fixture(`subtitleText(${JSON.stringify(OFFICIAL_ID)})`),
-    null,
+    '当前登录: moonwalker',
   );
 
   // --- the body click opens the sidebar, and the catalog is inside it ------

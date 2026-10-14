@@ -1,7 +1,6 @@
 import React from 'react';
 import {
   Button,
-  Drawer,
   Space,
   Tag,
   Typography,
@@ -71,7 +70,6 @@ import ProviderModelSection from '@/features/coding/shared/providerCardVariants/
 // (`shared/providerList`, `shared/officialAccounts`).
 import {
   ProviderCompactCard,
-  ProviderDetailPanel,
   type ProviderDetailSection,
 } from '@/features/coding/shared/providerCardView';
 import type { ProviderViewMode } from '@/features/coding/shared/providerList';
@@ -225,8 +223,6 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
    * draws compact cards, which have no footer to hang the block on).
    */
   const [accountsCollapsed, setAccountsCollapsed] = React.useState(true);
-  /** The card view's detail sidebar. */
-  const [detailOpen, setDetailOpen] = React.useState(false);
   const [engagingGatewayProxy, setEngagingGatewayProxy] = React.useState(false);
   const [restoringDirect, setRestoringDirect] = React.useState(false);
   const [switchingGatewayProvider, setSwitchingGatewayProvider] = React.useState(false);
@@ -559,6 +555,18 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
       };
     });
   }, [officialAccounts, isOfficialProvider, showOfficialRuntimeState, t]);
+
+  /**
+   * The login the official channel is running on — what its cell states instead
+   * of a primary model.
+   *
+   * Read off the mapped rows rather than off the raw records, so the value is
+   * the very label the account's own row carries: the cell speaks for that row,
+   * and one account cannot be named two ways. While the gateway owns the runtime
+   * the rows carry no applied account (see `isApplied` above), and the cell drops
+   * the line with them — the same state the block states by dropping its 默认 mark.
+   */
+  const appliedAccountRow = officialAccountRows.find((row) => row.isApplied);
 
   const officialAccountById = (id: string) =>
     officialAccounts.find((account) => account.id === id);
@@ -1135,100 +1143,94 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
 
   if (viewMode === 'card') {
     return (
-      <>
-        <ProviderCompactCard
-          provider={{
-            id: provider.id,
-            // The official card is named for what it holds, not for the row's
-            // own label — the same heading the list card draws.
-            name: props.provider.name,
-            baseUrl: baseUrl ?? undefined,
-          }}
-          // 🔗 官方账号 (n): the count travels in `nameTags` (built above, and
-          // shared with the list card), the glyph in front of the name here.
-          namePrefix={namePrefix}
-          // One model, not the whole catalog: the cell answers "which model does
-          // this provider run", and the catalog is a manager, not a label.
-          subtitle={displayModelName
-            ? [{ label: t('codex.model.primaryLabel'), value: displayModelName }]
-            : undefined}
-          // The cell states one model and one action, so the action rides the
-          // model line instead of a footer bar under it — a whole bar for a
-          // single button read as mostly empty (user-directed, 2026-10-12).
-          actionPlacement="subtitle"
-          providerState={props.providerState}
-          actions={props.actions}
-          nameTags={nameTags}
-          // The list card renders 连通性测试 inline on its meta line; the grid
-          // cell has room for the two primary actions only, so the diagnostic
-          // moves into the menu rather than disappearing.
-          extraMenuItems={[{
-            key: 'connectivity',
-            label: t('opencode.connectivity.button'),
-            icon: <ApiOutlined />,
-            disabled: !canRunConnectivityTest,
-            onClick: () => onTest(provider),
-          }]}
-          onOpenDetail={() => setDetailOpen(true)}
-        />
-        <Drawer
-          placement="right"
-          // The Skills and MCP detail drawers' own sizing, so every provider
-          // sidebar in the app is one surface. It also gives the model catalog's
-          // four labelled actions room without a horizontal squeeze.
-          size="min(60vw, 760px)"
-          open={detailOpen}
-          onClose={() => setDetailOpen(false)}
-          destroyOnHidden
-          closable={false}
-          styles={{ body: { padding: 0, display: 'flex', flexDirection: 'column' } }}
-        >
-          <ProviderDetailPanel
-            title={<ProviderNameLink name={props.provider.name} baseUrl={baseUrl} />}
-            statusTags={nameTags}
-            sections={detailSections}
-            onClose={() => setDetailOpen(false)}
-            // The panel renders the same computed actions the grid cell does,
-            // through the same renderers — so "the sidebar offers what the card
-            // offers" is a fact about the code, not a thing to re-check.
-            primaryActions={(
-              <>
-                {gatewayActions}
-                {renderProviderPrimaryAction(props.actions?.primaryAction)}
-              </>
+      <ProviderCompactCard
+        provider={{
+          id: provider.id,
+          // The official card is named for what it holds, not for the row's
+          // own label — the same heading the list card draws.
+          name: props.provider.name,
+          baseUrl: baseUrl ?? undefined,
+        }}
+        // 🔗 官方账号 (n): the count travels in `nameTags` (built above, and
+        // shared with the list card), the glyph in front of the name here.
+        namePrefix={namePrefix}
+        // One model, not the whole catalog: the cell answers "which model does
+        // this provider run", and the catalog is a manager, not a label.
+        //
+        // The official channel answers a different question — which login it
+        // is running on — because that is what the row is about; the accounts
+        // are what its card opens.
+        subtitle={isOfficialProvider
+          ? (appliedAccountRow
+              ? [{
+                  label: t('common.officialAccount.currentLogin'),
+                  value: appliedAccountRow.label,
+                }]
+              : undefined)
+          : (displayModelName
+              ? [{ label: t('codex.model.primaryLabel'), value: displayModelName }]
+              : undefined)}
+        // The cell states one fact and one action, so the action rides that
+        // line instead of a footer bar under it — a whole bar for a single
+        // button read as mostly empty (user-directed, 2026-10-12).
+        actionPlacement="subtitle"
+        providerState={props.providerState}
+        actions={props.actions}
+        nameTags={nameTags}
+        // The list card renders 连通性测试 inline on its meta line; the grid
+        // cell has room for the two primary actions only, so the diagnostic
+        // moves into the menu rather than disappearing.
+        extraMenuItems={[{
+          key: 'connectivity',
+          label: t('opencode.connectivity.button'),
+          icon: <ApiOutlined />,
+          disabled: !canRunConnectivityTest,
+          onClick: () => onTest(provider),
+        }]}
+        detail={{
+        title: <ProviderNameLink name={props.provider.name} baseUrl={baseUrl} />,
+        statusTags: nameTags,
+        sections: detailSections,
+        // The panel renders the same computed actions the grid cell does,
+        // through the same renderers — so "the sidebar offers what the card
+        // offers" is a fact about the code, not a thing to re-check.
+        primaryActions: (
+          <>
+            {gatewayActions}
+            {renderProviderPrimaryAction(props.actions?.primaryAction)}
+          </>
+        ),
+        secondaryActions: (
+          <Space size={4} wrap>
+            <Button
+              size="small"
+              type="text"
+              icon={<ApiOutlined />}
+              onClick={() => onTest(provider)}
+              disabled={!canRunConnectivityTest}
+              title={isOfficialProvider ? t('codex.provider.officialConnectivityHint') : undefined}
+            >
+              {t('opencode.connectivity.button')}
+            </Button>
+            <Button size="small" type="text" icon={<EditOutlined />} onClick={() => onEdit(provider)}>
+              {t('common.edit')}
+            </Button>
+            <Button size="small" type="text" icon={<CopyOutlined />} onClick={() => onCopy(provider)}>
+              {t('common.copy')}
+            </Button>
+            <Button size="small" type="text" icon={<Share2 size={14} aria-hidden="true" />} onClick={() => onShare(provider)}>
+              {t('common.share')}
+            </Button>
+            {!isLocalProvider && (
+              <Button size="small" type="text" danger icon={<DeleteOutlined />} onClick={() => onDelete(provider)}>
+                {t('common.delete')}
+              </Button>
             )}
-            secondaryActions={(
-              <Space size={4} wrap>
-                <Button
-                  size="small"
-                  type="text"
-                  icon={<ApiOutlined />}
-                  onClick={() => onTest(provider)}
-                  disabled={!canRunConnectivityTest}
-                  title={isOfficialProvider ? t('codex.provider.officialConnectivityHint') : undefined}
-                >
-                  {t('opencode.connectivity.button')}
-                </Button>
-                <Button size="small" type="text" icon={<EditOutlined />} onClick={() => onEdit(provider)}>
-                  {t('common.edit')}
-                </Button>
-                <Button size="small" type="text" icon={<CopyOutlined />} onClick={() => onCopy(provider)}>
-                  {t('common.copy')}
-                </Button>
-                <Button size="small" type="text" icon={<Share2 size={14} aria-hidden="true" />} onClick={() => onShare(provider)}>
-                  {t('common.share')}
-                </Button>
-                {!isLocalProvider && (
-                  <Button size="small" type="text" danger icon={<DeleteOutlined />} onClick={() => onDelete(provider)}>
-                    {t('common.delete')}
-                  </Button>
-                )}
-              </Space>
-            )}
-          />
-        </Drawer>
-      </>
-    );
+          </Space>
+        ),
+      }}
+    />
+  );
   }
 
   return <CodexStyleCard {...props} />;

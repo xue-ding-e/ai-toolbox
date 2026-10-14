@@ -982,6 +982,7 @@ const ZcodePage: React.FC = () => {
       loginProviders={ZCODE_LOGIN_PROVIDERS}
       sortableId={OFFICIAL_ACCOUNT_CARD_ID}
       dragDisabled={providerBatchDragDisabled}
+      viewMode={viewMode}
       onLogin={(providerId) => void handleStartOfficialLogin(providerId)}
       onApply={(account) => void handleApplyOfficialAccount(account)}
       onDelete={(account) => void handleDeleteOfficialAccount(account)}
@@ -1374,14 +1375,7 @@ const ZcodePage: React.FC = () => {
                       {...zcodeProviderCardProps(member.provider)}
                       viewMode="card"
                     />
-                  ) : (
-                    // The account card is a member of this list, so it keeps the
-                    // slot it was dragged to rather than being pinned above the
-                    // grid. It spans the whole row: its content is a manager — a
-                    // list of accounts with their own actions — which a 350px
-                    // cell would squeeze into an unreadable column.
-                    <div style={{ gridColumn: '1 / -1' }}>{officialAccountCard}</div>
-                  ))}
+                  ) : officialAccountCard)}
                 />
               ) : (
                 <div>

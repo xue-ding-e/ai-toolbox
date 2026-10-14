@@ -1,5 +1,5 @@
 import React from 'react';
-import { Dropdown } from 'antd';
+import { Drawer, Dropdown } from 'antd';
 import { HolderOutlined, MoreOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { useSortable } from '@dnd-kit/sortable';
@@ -24,7 +24,29 @@ import type {
   ProviderCardModel,
   ProviderCardState,
 } from '@/features/coding/shared/providerCardVariants/types';
+import ProviderDetailPanel from './ProviderDetailPanel';
+import type { ProviderDetailSection } from './ProviderDetailPanel';
 import styles from './ProviderCompactCard.module.less';
+
+/**
+ * What a cell opens: the detail sidebar's own props, minus the way out.
+ *
+ * The shape of the sidebar — the drawer, its width, the panel — is *this*
+ * component's job, so a caller hands in content and nothing else. That is why
+ * `sections` is the only required part: what a provider has to say is the
+ * CLI's business, that there is somewhere to say it is the grid's.
+ */
+export interface ProviderCellDetail {
+  /** The panel's title — a `ProviderNameLink` for a provider, a heading for a member. */
+  title: React.ReactNode;
+  /** State tags on the title's line (applied / official / the account count). */
+  statusTags?: React.ReactNode;
+  /** The card's own action row, on the title's state line. */
+  primaryActions?: React.ReactNode;
+  /** The quieter row beneath it (test / edit / copy / share / delete). */
+  secondaryActions?: React.ReactNode;
+  sections: ProviderDetailSection[];
+}
 
 /**
  * The compact provider card used by the card-grid layout.
@@ -36,9 +58,10 @@ import styles from './ProviderCompactCard.module.less';
  *    CLI 启动                              网关代理  应用
  * ```
  *
- * Clicking the body — anywhere that is not itself a control — opens the
- * detail sidebar the caller renders; the grid cell states one model and the two
- * primary actions, and everything else about the provider lives in there.
+ * Clicking the body — anywhere that is not itself a control — opens the detail
+ * sidebar, which this component draws (`detail`); the grid cell states one model
+ * and the two primary actions, and everything else about the provider lives in
+ * there.
  *
  * ## Why this is not a fourth `providerCardVariants` style
  *
@@ -131,15 +154,22 @@ interface ProviderCompactCardProps {
    */
   extraMenuItems?: Parameters<typeof buildProviderCardMenuItems>[0]['extraItems'];
   /**
-   * Opens the detail sidebar for this provider.
+   * The cell's detail sidebar: what clicking the body opens, and what the cell
+   * itself is too small to state.
    *
-   * The grid cell states one model and carries the two primary actions; every
-   * other fact about the provider (endpoint, all role bindings, notes, the
-   * remaining actions) lives in that sidebar. Clicking anywhere on the card
-   * that is not itself a control opens it — the same "the card is the way in"
-   * convention the Skills and MCP cards use.
+   * The cell states one model and carries the two primary actions; every other
+   * fact about the provider (endpoint, all role bindings, notes, the remaining
+   * actions) belongs in that sidebar. Passing this is therefore also what makes
+   * the body clickable — the same "the card is the way in" convention the
+   * Skills and MCP cards use.
+   *
+   * The caller supplies content only. The drawer, its width, the panel and the
+   * open/close state are drawn here, because they were byte-identical in every
+   * mapping layer that used to render them: four copies of one surface is how
+   * four sidebars start drifting apart, and the width is the one thing a user
+   * notices first (`min(60vw, 760px)` — the Skills and MCP drawers' own).
    */
-  onOpenDetail?: () => void;
+  detail?: ProviderCellDetail;
 }
 
 const ProviderCompactCard: React.FC<ProviderCompactCardProps> = ({
@@ -152,7 +182,7 @@ const ProviderCompactCard: React.FC<ProviderCompactCardProps> = ({
   launchAction,
   actionPlacement = 'footer',
   extraMenuItems,
-  onOpenDetail,
+  detail,
 }) => {
   const { t } = useTranslation();
   const {
@@ -170,6 +200,10 @@ const ProviderCompactCard: React.FC<ProviderCompactCardProps> = ({
 
   // `useSortable` must run on every render, so a card without an id still
   // registers — under a placeholder, disabled. Same rule as `CardShell`.
+  //
+  // `sortableId` doubles as the locate anchor below, which is why it is required
+  // in practice: a cell registered under the placeholder would answer to an id
+  // no list contains, and `handleDragEnd` drops what it cannot find.
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: sortableId ?? 'provider-compact-card',
     disabled: !draggable,
@@ -210,6 +244,9 @@ const ProviderCompactCard: React.FC<ProviderCompactCardProps> = ({
     extraItems: extraMenuItems,
   });
 
+  const [detailOpen, setDetailOpen] = React.useState(false);
+  const canOpenDetail = Boolean(detail) && !selectable;
+
   /**
    * The card body opens the detail sidebar; anything that is itself a control
    * handles its own click. Without this guard, dragging the grip, ticking the
@@ -221,14 +258,16 @@ const ProviderCompactCard: React.FC<ProviderCompactCardProps> = ({
    * run of cards impossible.
    */
   const handleCardClick: React.MouseEventHandler<HTMLDivElement> = (event) => {
-    if (!onOpenDetail || selectable) {
+    if (!canOpenDetail) {
       return;
     }
     const target = event.target as HTMLElement;
-    if (target.closest('button, a, input, [role="menuitem"], [role="checkbox"]')) {
+    // The drag handle is a control too, though it is a `<span>`: pressing it and
+    // moving the card must not also open the sidebar it is sitting on.
+    if (target.closest('button, a, input, [role="menuitem"], [role="checkbox"], [data-provider-card-handle]')) {
       return;
     }
-    onOpenDetail();
+    setDetailOpen(true);
   };
 
   return (
@@ -239,8 +278,8 @@ const ProviderCompactCard: React.FC<ProviderCompactCardProps> = ({
       <div
         className={styles.card}
         style={{ borderColor, background }}
-        data-provider-card-clickable={onOpenDetail && !selectable ? '' : undefined}
-        onClick={onOpenDetail && !selectable ? handleCardClick : undefined}
+        data-provider-card-clickable={canOpenDetail ? '' : undefined}
+        onClick={canOpenDetail ? handleCardClick : undefined}
       >
         <div className={styles.headerRow}>
           {selectable ? (
@@ -294,7 +333,12 @@ const ProviderCompactCard: React.FC<ProviderCompactCardProps> = ({
             that is the anchor for "this card's own actions" rather than for the
             bar they sit in — a check should not have to know which placement the
             CLI chose. */}
-        <div className={styles.body}>
+        <div
+          className={[
+            styles.body,
+            actionPlacement === 'subtitle' ? styles.bodyWithAction : undefined,
+          ].filter(Boolean).join(' ')}
+        >
           <div className={styles.subtitleRow}>
             {subtitle && subtitle.length > 0 && (
               // One line of `Label: value` pairs, the values monospaced — the
@@ -333,6 +377,32 @@ const ProviderCompactCard: React.FC<ProviderCompactCardProps> = ({
           </div>
         )}
       </div>
+
+      {/* The cell's own sidebar, drawn here rather than by each caller.
+          `destroyOnHidden` unmounts it on close, which is what the fixtures'
+          "wait for it to be gone" steps rely on; `closable={false}` because the
+          panel carries its own close button on the title line. */}
+      {detail && (
+        <Drawer
+          placement="right"
+          // `size`, not the deprecated `width`/`height`: antd 6 replaced them
+          // with one CSS length, and the Skills and MCP detail drawers' own
+          // `min(60vw, 760px)` carries over verbatim — the provider sidebar is
+          // the same kind of surface, and three of them at three widths read as
+          // three different products.
+          size="min(60vw, 760px)"
+          open={detailOpen}
+          onClose={() => setDetailOpen(false)}
+          destroyOnHidden
+          closable={false}
+          styles={{ body: { padding: 0, display: 'flex', flexDirection: 'column' } }}
+        >
+          <ProviderDetailPanel
+            {...detail}
+            onClose={() => setDetailOpen(false)}
+          />
+        </Drawer>
+      )}
     </div>
   );
 };

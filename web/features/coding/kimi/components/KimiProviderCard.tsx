@@ -13,7 +13,7 @@ import {
   EditOutlined,
   ShareAltOutlined,
 } from '@ant-design/icons';
-import { Button, Drawer, Space, Tag, Tooltip, Typography } from 'antd';
+import { Button, Space, Tag, Tooltip, Typography } from 'antd';
 import { KimiProvider, KIMI_LOCAL_PROVIDER_ID } from '@/types/kimi';
 import type { KimiCatalogModel, KimiOfficialAccount } from '@/types/kimi';
 import {
@@ -57,7 +57,6 @@ import ProviderModelSection from '@/features/coding/shared/providerCardVariants/
 import { renderProviderPrimaryAction } from '@/features/coding/shared/providerCardVariants/providerCardActions';
 import {
   ProviderCompactCard,
-  ProviderDetailPanel,
   type ProviderDetailSection,
 } from '@/features/coding/shared/providerCardView';
 import type { ProviderViewMode } from '@/features/coding/shared/providerList';
@@ -199,8 +198,6 @@ const KimiProviderCard: React.FC<KimiProviderCardProps> = ({
 }) => {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  /** The card view's detail sidebar, owned here — see the branch below. */
-  const [detailOpen, setDetailOpen] = React.useState(false);
   const [engagingGatewayProxy, setEngagingGatewayProxy] = React.useState(false);
   const [restoringDirect, setRestoringDirect] = React.useState(false);
   const [modelsSelectionMode, setModelsSelectionMode] = React.useState(false);
@@ -628,6 +625,15 @@ const KimiProviderCard: React.FC<KimiProviderCardProps> = ({
     [officialAccounts, t],
   );
 
+  /**
+   * The login the official channel is running on.
+   *
+   * Read off the mapped rows rather than off the raw records, so the value the
+   * cell states is the very label the account's own row carries — the grid cell
+   * speaks for that row, and one account cannot be named two ways.
+   */
+  const appliedAccountRow = officialAccountRows.find((row) => row.isApplied);
+
   const officialAccountById = (id: string) =>
     officialAccounts.find((account) => account.id === id);
 
@@ -913,98 +919,92 @@ const KimiProviderCard: React.FC<KimiProviderCardProps> = ({
   }
 
   return (
-    <>
-      <ProviderCompactCard
-        provider={{ id: provider.id, name: props.provider.name, baseUrl }}
-        // 🔗 官方账号 (n): the count travels in `nameTags` (shared with the list
-        // card), the glyph in front of the name here.
-        namePrefix={namePrefix}
-        // The one model the cell states — the catalog's default. The list card
-        // states it too (as a tag on its second line); the cell has no meta line
-        // to put it on, so it carries a label instead. Official and `__local__`
-        // rows have no model of their own, so they get no line.
-        subtitle={!isOfficialProvider && !isLocalProvider && modelName
+    <ProviderCompactCard
+      provider={{ id: provider.id, name: props.provider.name, baseUrl }}
+      // 🔗 官方账号 (n): the count travels in `nameTags` (shared with the list
+      // card), the glyph in front of the name here.
+      namePrefix={namePrefix}
+      // The one model the cell states — the catalog's default. The list card
+      // states it too (as a tag on its second line); the cell has no meta line
+      // to put it on, so it carries a label instead. `__local__` rows have no
+      // model of their own, so they get no line.
+      //
+      // The official channel states the login it is running on instead: the
+      // accounts are what that row is about, and the value is the same label its
+      // own row carries inside the block (one account, one way of naming it).
+      subtitle={isOfficialProvider
+        ? (appliedAccountRow
+            ? [{
+                label: t('common.officialAccount.currentLogin'),
+                value: appliedAccountRow.label,
+              }]
+            : undefined)
+        : (!isLocalProvider && modelName
           ? [{ label: t('kimi.providerForm.defaultModelKey'), value: modelName }]
-          : undefined}
-        // One model and one action (应用 / 网关), so the action rides the model
-        // line rather than a footer bar under it — the same call the Codex cell
-        // makes.
-        actionPlacement="subtitle"
-        providerState={props.providerState}
-        actions={props.actions}
-        nameTags={nameTags}
-        // The list card runs the connectivity probe inline on its meta line; the
-        // cell has no meta line, so the diagnostic moves into the menu rather
-        // than disappearing. The official channel has no probe anywhere (it
-        // authenticates through OAuth, not a static key), so it gets no item.
-        extraMenuItems={!isOfficialProvider && onTest ? [{
-          key: 'connectivity',
-          label: t('opencode.connectivity.button'),
-          icon: <ApiOutlined />,
-          disabled: provider.isDisabled,
-          onClick: () => onTest(provider),
-        }] : undefined}
-        onOpenDetail={() => setDetailOpen(true)}
-      />
-      <Drawer
-        placement="right"
-        // The Skills / MCP / other provider sidebars' own sizing — one surface
-        // for the whole app, and enough room for the catalog's four labelled
-        // actions.
-        size="min(60vw, 760px)"
-        open={detailOpen}
-        onClose={() => setDetailOpen(false)}
-        destroyOnHidden
-        closable={false}
-        styles={{ body: { padding: 0, display: 'flex', flexDirection: 'column' } }}
-      >
-        <ProviderDetailPanel
-          title={<ProviderNameLink name={props.provider.name} baseUrl={baseUrl} />}
-          statusTags={nameTags}
-          sections={detailSections}
-          onClose={() => setDetailOpen(false)}
-          primaryActions={(
-            <>
-              {gatewayActions}
-              {renderProviderPrimaryAction(props.actions?.primaryAction)}
-            </>
-          )}
-          secondaryActions={(
-            <Space size={4} wrap>
-              {onTest && !isOfficialProvider && (
-                <Button
-                  size="small"
-                  type="text"
-                  icon={<ApiOutlined />}
-                  onClick={() => onTest(provider)}
-                  disabled={provider.isDisabled}
-                >
-                  {t('opencode.connectivity.button')}
-                </Button>
-              )}
-              <Button size="small" type="text" icon={<EditOutlined />} onClick={() => onEdit(provider)}>
-                {t('common.edit')}
+          : undefined)}
+      // One model and one action (应用 / 网关), so the action rides the model
+      // line rather than a footer bar under it — the same call the Codex cell
+      // makes.
+      actionPlacement="subtitle"
+      providerState={props.providerState}
+      actions={props.actions}
+      nameTags={nameTags}
+      // The list card runs the connectivity probe inline on its meta line; the
+      // cell has no meta line, so the diagnostic moves into the menu rather
+      // than disappearing. The official channel has no probe anywhere (it
+      // authenticates through OAuth, not a static key), so it gets no item.
+      extraMenuItems={!isOfficialProvider && onTest ? [{
+        key: 'connectivity',
+        label: t('opencode.connectivity.button'),
+        icon: <ApiOutlined />,
+        disabled: provider.isDisabled,
+        onClick: () => onTest(provider),
+      }] : undefined}
+      detail={{
+        title: <ProviderNameLink name={props.provider.name} baseUrl={baseUrl} />,
+        statusTags: nameTags,
+        sections: detailSections,
+        primaryActions: (
+          <>
+            {gatewayActions}
+            {renderProviderPrimaryAction(props.actions?.primaryAction)}
+          </>
+        ),
+        secondaryActions: (
+          <Space size={4} wrap>
+            {onTest && !isOfficialProvider && (
+              <Button
+                size="small"
+                type="text"
+                icon={<ApiOutlined />}
+                onClick={() => onTest(provider)}
+                disabled={provider.isDisabled}
+              >
+                {t('opencode.connectivity.button')}
               </Button>
-              {onCopy && (
-                <Button size="small" type="text" icon={<CopyOutlined />} onClick={() => onCopy(provider)}>
-                  {t('common.copy')}
-                </Button>
-              )}
-              {onShare && (
-                <Button size="small" type="text" icon={<ShareAltOutlined />} onClick={() => onShare(provider)}>
-                  {t('common.share')}
-                </Button>
-              )}
-              {!isLocalProvider && (
-                <Button size="small" type="text" danger icon={<DeleteOutlined />} onClick={() => onDelete(provider)}>
-                  {t('common.delete')}
-                </Button>
-              )}
-            </Space>
-          )}
-        />
-      </Drawer>
-    </>
+            )}
+            <Button size="small" type="text" icon={<EditOutlined />} onClick={() => onEdit(provider)}>
+              {t('common.edit')}
+            </Button>
+            {onCopy && (
+              <Button size="small" type="text" icon={<CopyOutlined />} onClick={() => onCopy(provider)}>
+                {t('common.copy')}
+              </Button>
+            )}
+            {onShare && (
+              <Button size="small" type="text" icon={<ShareAltOutlined />} onClick={() => onShare(provider)}>
+                {t('common.share')}
+              </Button>
+            )}
+            {!isLocalProvider && (
+              <Button size="small" type="text" danger icon={<DeleteOutlined />} onClick={() => onDelete(provider)}>
+                {t('common.delete')}
+              </Button>
+            )}
+          </Space>
+        ),
+      }}
+    />
   );
 };
 

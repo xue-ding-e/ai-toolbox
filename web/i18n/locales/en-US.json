@@ -1845,6 +1845,7 @@
     "officialAccount": {
       "headingTitle": "Official Account",
       "listTitle": "Account List",
+      "currentLogin": "Current login",
       "refresh": "Refresh",
       "details": "Details",
       "switch": "Switch",

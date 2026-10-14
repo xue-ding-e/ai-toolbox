@@ -281,6 +281,15 @@ export async function verifyCodexCardView({ send, evaluate, baseUrl, artifactRoo
     'the official heading still carries its account count',
     await fixture('cardText("provider-c")').then(text => text.includes('(2)')),
   );
+  // Its second line answers the question this row is about. The model line
+  // ("which model does this run") belongs to a provider; the official row is
+  // about the login, and the value is the label that login's own row in the
+  // block carries — one account, one way of naming it.
+  check(
+    'the official channel states the login it is running on, not a model',
+    await fixture('subtitleText("provider-c")'),
+    '当前登录: first@example.invalid',
+  );
 
   // --- the footer matches the list card's rules ---------------------------
   // Codex has no "launch CLI" action, so the cell's footer is the apply /

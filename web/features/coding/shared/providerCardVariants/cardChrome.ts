@@ -46,10 +46,15 @@ export function resolveProviderAccentChrome(
 }
 
 /**
- * The card's own hover surface, shared for the same reason as the accent.
+ * The card's own surface and its hover depth, shared for the same reason as the
+ * accent: at rest both shells wear the same shadow, and under the pointer both
+ * deepen it to the same one.
  *
- * Returned as a pair so the two shells cannot drift into "one lifts on hover
- * and the other does not".
+ * What is *not* shared is the rest of the hover language: the compact card also
+ * lifts a pixel and brightens, because it is a grid cell and that is what its
+ * own source (`SkillCard`) does, while the list card is a full-width row and
+ * keeps the shadow alone (the list layout is not being redesigned). See
+ * `providerCardView/AGENTS.md`.
  */
 export const PROVIDER_CARD_SHADOW = 'var(--shadow-card-sm)';
 export const PROVIDER_CARD_SHADOW_HOVER = 'var(--shadow-card-sm-hover)';

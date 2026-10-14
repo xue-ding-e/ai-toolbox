@@ -1,5 +1,5 @@
 import React from 'react';
-import { Button, Drawer, Space, Tag, Typography } from 'antd';
+import { Button, Space, Tag, Typography } from 'antd';
 import { CopyOutlined, DeleteOutlined, EditOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import AppliedTag from '@/components/common/AppliedTag';
@@ -12,7 +12,6 @@ import type {
 } from '@/features/coding/shared/providerCardVariants/types';
 import {
   ProviderCompactCard,
-  ProviderDetailPanel,
   type ProviderDetailSection,
 } from '@/features/coding/shared/providerCardView';
 import type { ProviderViewMode } from '@/features/coding/shared/providerList';
@@ -113,8 +112,6 @@ const ZcodeProviderCard: React.FC<ZcodeProviderCardProps> = ({
   viewMode = 'list',
 }) => {
   const { t } = useTranslation();
-  /** The card view's detail sidebar. Owned here — see the note in the branch. */
-  const [detailOpen, setDetailOpen] = React.useState(false);
   const settings = parseZcodeProviderSettings(provider.settingsConfig);
   const apiType = settings?.config?.api?.type;
   const baseUrl = settings?.config?.api?.baseUrl ?? '';
@@ -272,63 +269,47 @@ const ZcodeProviderCard: React.FC<ZcodeProviderCardProps> = ({
   }
 
   return (
-    <>
-      <ProviderCompactCard
-        provider={{ id: provider.id, name: provider.name, baseUrl }}
-        // The one model the cell states: the one ZCode starts new sessions
-        // with. The list card states the SDK and the endpoint instead — this is
-        // the fact a reader of the grid has to have, and it is the same
-        // `isDefault` flag the catalog below marks with 当前主模型.
-        subtitle={defaultModelLabel
-          ? [{ label: t('zcode.model.defaultLabel'), value: defaultModelLabel }]
-          : undefined}
-        // One fact and no action of its own (a ZCode provider is never applied —
-        // `设为默认` lives on a model row), so there is nothing to put in a
-        // footer bar.
-        actionPlacement="subtitle"
-        providerState={props.providerState}
-        actions={props.actions}
-        nameTags={nameTags}
-        // The cell has no second line of diagnostics; the SDK and the endpoint
-        // moved into the sidebar's 连接信息, which is where the rest of the
-        // provider's facts live.
-        onOpenDetail={() => setDetailOpen(true)}
-      />
-      <Drawer
-        placement="right"
-        // The Skills / MCP / other provider sidebars' own sizing — one surface
-        // for the whole app, and enough room for the catalog's four labelled
-        // actions.
-        size="min(60vw, 760px)"
-        open={detailOpen}
-        onClose={() => setDetailOpen(false)}
-        destroyOnHidden
-        closable={false}
-        styles={{ body: { padding: 0, display: 'flex', flexDirection: 'column' } }}
-      >
-        <ProviderDetailPanel
-          title={<ProviderNameLink name={provider.name} baseUrl={baseUrl} />}
-          statusTags={nameTags}
-          sections={detailSections}
-          onClose={() => setDetailOpen(false)}
-          secondaryActions={(
-            <Space size={4} wrap>
-              <Button size="small" type="text" icon={<EditOutlined />} onClick={onEdit}>
-                {t('common.edit')}
+    <ProviderCompactCard
+      provider={{ id: provider.id, name: provider.name, baseUrl }}
+      // The one model the cell states: the one ZCode starts new sessions
+      // with. The list card states the SDK and the endpoint instead — this is
+      // the fact a reader of the grid has to have, and it is the same
+      // `isDefault` flag the catalog below marks with 当前主模型.
+      subtitle={defaultModelLabel
+        ? [{ label: t('zcode.model.defaultLabel'), value: defaultModelLabel }]
+        : undefined}
+      // One fact and no action of its own (a ZCode provider is never applied —
+      // `设为默认` lives on a model row), so there is nothing to put in a
+      // footer bar.
+      actionPlacement="subtitle"
+      providerState={props.providerState}
+      actions={props.actions}
+      nameTags={nameTags}
+      // The cell has no second line of diagnostics; the SDK and the endpoint
+      // moved into the sidebar's 连接信息, which is where the rest of the
+      // provider's facts live. The drawer itself is the card's (shared) — this
+      // layer only says what goes in it.
+      detail={{
+        title: <ProviderNameLink name={provider.name} baseUrl={baseUrl} />,
+        statusTags: nameTags,
+        sections: detailSections,
+        secondaryActions: (
+          <Space size={4} wrap>
+            <Button size="small" type="text" icon={<EditOutlined />} onClick={onEdit}>
+              {t('common.edit')}
+            </Button>
+            {onCopy && (
+              <Button size="small" type="text" icon={<CopyOutlined />} onClick={onCopy}>
+                {t('common.copy')}
               </Button>
-              {onCopy && (
-                <Button size="small" type="text" icon={<CopyOutlined />} onClick={onCopy}>
-                  {t('common.copy')}
-                </Button>
-              )}
-              <Button size="small" type="text" danger icon={<DeleteOutlined />} onClick={onDelete}>
-                {t('common.delete')}
-              </Button>
-            </Space>
-          )}
-        />
-      </Drawer>
-    </>
+            )}
+            <Button size="small" type="text" danger icon={<DeleteOutlined />} onClick={onDelete}>
+              {t('common.delete')}
+            </Button>
+          </Space>
+        ),
+      }}
+    />
   );
 };
 

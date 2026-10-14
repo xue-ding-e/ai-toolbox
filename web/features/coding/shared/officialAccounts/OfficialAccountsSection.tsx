@@ -126,7 +126,7 @@ const OfficialAccountsSection: React.FC<OfficialAccountsSectionProps> = ({
    * provider card's name row) and builds it from the same exports, so the three
    * headings cannot drift apart.
    */
-  const headingLine = (
+  const headingLine = headingTitle ? (
     <Space size={6}>
       <OfficialAccountHeadingIcon />
       <Text strong style={{ fontSize: 13 }}>
@@ -134,7 +134,7 @@ const OfficialAccountsSection: React.FC<OfficialAccountsSectionProps> = ({
       </Text>
       <OfficialAccountCount count={accounts.length} />
     </Space>
-  );
+  ) : null;
 
   /**
    * The list's own title — `▾ 账号列表 (n)` — which every host carries.
@@ -163,6 +163,11 @@ const OfficialAccountsSection: React.FC<OfficialAccountsSectionProps> = ({
     >
       {!embedded && (
         <>
+          {/* Absent when the host draws the heading itself. The card layout's
+              account cell draws it on its own title row, and the sidebar it
+              opens draws it as the panel's title — both from the same two
+              exports, so 🔗 and the count cannot drift. An empty `Space` here
+              would still cost its gap. */}
           {headingLine}
 
           {/* The explanation is the heading's subtitle, so it sits directly

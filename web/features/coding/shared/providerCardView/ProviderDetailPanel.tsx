@@ -167,6 +167,17 @@ const ProviderDetailPanel: React.FC<ProviderDetailPanelProps> = ({
 }) => {
   const { t } = useTranslation();
 
+  /**
+   * The fields of a section that will actually render.
+   *
+   * `FieldRow` drops a row with neither a value nor an `emptyText` (that is how
+   * a conditional field disappears), so the card has to ask the same question:
+   * a section whose only field is conditional would otherwise be a bordered box
+   * with 12px of padding around nothing.
+   */
+  const renderableFields = (fields?: ProviderDetailField[]) =>
+    (fields ?? []).filter((field) => field.value?.trim() || field.emptyText);
+
   return (
     <div className={styles.panel} data-provider-detail-panel>
       <header className={styles.header}>
@@ -189,17 +200,25 @@ const ProviderDetailPanel: React.FC<ProviderDetailPanelProps> = ({
       </header>
 
       <div className={styles.body}>
-        {sections.map((section) => (
-          <section key={section.key} className={styles.section} data-provider-detail-section>
-            {section.title && (
-              <div className={styles.sectionTitle} data-provider-detail-section-title>
-                {section.title}
-              </div>
-            )}
-            {section.fields?.map((field) => <FieldRow key={field.key} field={field} />)}
-            {section.content}
-          </section>
-        ))}
+        {sections.map((section) => {
+          const fields = renderableFields(section.fields);
+
+          return (
+            <section key={section.key} className={styles.section} data-provider-detail-section>
+              {section.title && (
+                <div className={styles.sectionTitle} data-provider-detail-section-title>
+                  {section.title}
+                </div>
+              )}
+              {fields.length > 0 && (
+                <div className={styles.fieldCard}>
+                  {fields.map((field) => <FieldRow key={field.key} field={field} />)}
+                </div>
+              )}
+              {section.content}
+            </section>
+          );
+        })}
       </div>
 
       <footer className={styles.footer} data-provider-detail-footer>

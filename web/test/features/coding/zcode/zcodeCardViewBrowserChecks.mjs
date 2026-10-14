@@ -110,29 +110,25 @@ export async function verifyZcodeCardView({ send, evaluate, baseUrl, artifactRoo
     ['默认'],
   );
 
-  // --- the official-account card is still a member of the list -------------
+  // --- the official-account card is a cell like any other ------------------
   //
-  // It is not a provider, so there is no cell shape for it — but it is a list
-  // member, and the grid has to keep it in the slot the user dragged it to.
-  // Measured rather than asserted in the abstract: a card that merely *looks*
-  // full-width because it is alone in its row would pass a CSS-only claim.
+  // It is not a provider, but it *is* a member of this list, and in a grid of
+  // cards the only shape a member has is a cell. It was a full-width bordered
+  // card of its own first (2026-10-13, reported twice: it kept the list layout's
+  // frame, then lost the frame and sat bare among the cells), so what is pinned
+  // here is that its box is a cell's box — same width as its neighbours — and
+  // that its manager is not crammed into it: the cell states the live login, and
+  // the account rows open in the cell's own sidebar, the way Codex's and Kimi's
+  // account blocks open in theirs.
   const boxes = await fixture('gridItemBoxes()');
-  const gridBox = await evaluate(`(() => {
-    const grid = document.querySelector('[data-provider-grid]');
-    const rect = grid.getBoundingClientRect();
-    return { left: Math.round(rect.left), right: Math.round(rect.right) };
-  })()`);
   assert.ok(boxes, 'the grid must render');
   const accountBox = boxes.find((box) => box.id === officialCardId);
   const cellBoxes = boxes.filter((box) => box.id && box.id !== officialCardId);
   check('the account card is rendered inside the grid', Boolean(accountBox));
   check(
-    'it spans the whole row rather than sitting in one column',
-    accountBox.left === gridBox.left && accountBox.right === gridBox.right,
-  );
-  check(
-    'the provider cells are narrower than that row',
-    cellBoxes.length > 0 && cellBoxes.every((box) => box.right - box.left < accountBox.right - accountBox.left),
+    'it is one cell wide, like every other member',
+    cellBoxes.length > 0
+      && cellBoxes.every((box) => Math.abs((box.right - box.left) - (accountBox.right - accountBox.left)) <= 1),
   );
   check(
     'it keeps its slot in the order',
@@ -140,14 +136,89 @@ export async function verifyZcodeCardView({ send, evaluate, baseUrl, artifactRoo
     ['provider-a', officialCardId, 'provider-b', 'provider-c'],
   );
   check(
-    'the account block came with it',
+    'the cell states the live login',
+    await fixture(`subtitleText(${JSON.stringify(officialCardId)})`),
+    '当前登录: user@example.invalid',
+  );
+  // The manager is a row per account with its own actions, which is the shape
+  // the sidebar is for: it is not squeezed into the cell behind the subtitle.
+  check(
+    'the manager is not crammed into the cell',
     await fixture(`accountRowCount(${JSON.stringify(officialCardId)})`),
+    0,
+  );
+  // The cell frame is the shared one, so the account cell cannot drift into a
+  // look of its own: same shell element as its neighbours, the same heading
+  // contract (🔗 + 官方账号 + count) — plus the contracts that make it a list
+  // member: the drag handle and the locate anchor.
+  check(
+    'the account cell is drawn in the shared cell frame',
+    await evaluate(`(() => {
+      const anchor = document.querySelector('[data-provider-id="${officialCardId}"]');
+      const surface = anchor.firstElementChild;
+      return {
+        // The shared shell, by its own contract rather than by a class name:
+        // the locate ring's radius is published only by the compact card, so a
+        // cell that carries it is a cell drawn by the shared component.
+        sharedShell: getComputedStyle(anchor).getPropertyValue('--locate-flash-radius').trim(),
+        rounded: getComputedStyle(surface).borderTopLeftRadius,
+        hasHandle: Boolean(anchor.querySelector('[data-provider-card-handle]')),
+        hasHeading: anchor.textContent.includes('官方账号') && anchor.textContent.includes('(2)'),
+        hasListRow: anchor.textContent.includes('账号列表'),
+      };
+    })()`),
+    { sharedShell: '10px', rounded: '10px', hasHandle: true, hasHeading: true, hasListRow: false },
+  );
+
+  // --- the cell opens the account manager in its own sidebar ---------------
+  //
+  // The same call Codex's and Kimi's card views make with the same block: the
+  // cell is too small for a manager, so the manager opens beside it. The drawer
+  // itself is the shared card's (one surface for every provider sidebar in the
+  // app), which is why nothing here knows its width or its panel.
+  await clickAt(await fixture(`cardCenter(${JSON.stringify(officialCardId)})`));
+  await waitFor('zcodeOfficialAccountFixture.detailTextIncludes("账号列表")', 'the account sidebar');
+  // The panel's DOM exists the moment the drawer mounts; the drawer itself is
+  // still sliding in. Without this the screenshot below is of an empty page with
+  // a sliver of drawer at the right edge — the checks would all pass on a
+  // sidebar nobody could see.
+  await delay(300);
+  check(
+    'a body click opens the account manager in the cell\'s own sidebar',
+    await fixture('detailAccountRowCount()'),
     2,
   );
+  check(
+    'the sidebar states the account block\'s explanation',
+    await fixture('detailTextIncludes("切换会覆盖")'),
+  );
+  check(
+    'the sidebar carries the login entry the cell folded away',
+    await evaluate('(() => {'
+      + ' const panel = zcodeOfficialAccountFixture.detailPanel();'
+      + ' return [...panel.querySelectorAll("button")].some(b => b.textContent.includes("登录"));'
+      + '})()'),
+  );
+  // Open, like the catalog beside it and like the same block on Codex and Kimi:
+  // a caret in front of the rows the sidebar exists to show is a click for
+  // nothing.
+  check(
+    'the sidebar shows the accounts open, with no caret to open them',
+    await fixture('detailAccountListHasCaret()'),
+    false,
+  );
+  await screenshot('zcode-card-view-account-detail');
+  await fixture('closeDetail()');
+  // The drawer animates out and unmounts late (lesson: waiting for "a panel
+  // exists" is satisfied by the one that is still closing).
+  await waitFor('!zcodeOfficialAccountFixture.detailPanel()', 'the account sidebar to close');
 
   // --- the body click opens the sidebar, and the catalog is inside it ------
   await clickAt(await fixture('cardCenter("provider-a")'));
-  await waitFor('Boolean(zcodeOfficialAccountFixture.detailPanel())', 'the detail sidebar');
+  // Waited on the sidebar's *content*, not on "a panel exists": the account
+  // drawer just closed and is still on screen while it animates out, so the
+  // weaker condition would be satisfied by the panel that is going away.
+  await waitFor('zcodeOfficialAccountFixture.detailTextIncludes("连接信息")', 'the provider sidebar');
   await delay(200);
   check(
     'a body click opens the sidebar',
@@ -250,6 +321,50 @@ export async function verifyZcodeCardView({ send, evaluate, baseUrl, artifactRoo
     'zcodeOfficialAccountFixture.state.providers.map(p => p.id).join("|")',
   ) !== 'provider-a|provider-b|provider-c');
   await screenshot('zcode-card-view-dragged');
+
+  // --- and so does the member that is not a provider -----------------------
+  //
+  // Dragging the account row is the capability the grid had to take over when
+  // the row stopped being a card: a cell registers itself through its own shell
+  // (`ProviderCompactCard`), and this member has none. Asserted as a *pair* —
+  // the row moved, and the stored slot moved with it — because a row that
+  // reorders on screen while the backend keeps the old index would look right
+  // until the next reload.
+  const dragged = async (fromId, point) => {
+    const from = await fixture(`handleCenter(${JSON.stringify(fromId)})`);
+    await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: from.x, y: from.y, button: 'left', clickCount: 1 });
+    const steps = 8;
+    for (let step = 1; step <= steps; step++) {
+      await send('Input.dispatchMouseEvent', {
+        type: 'mouseMoved',
+        x: from.x + ((point.x - from.x) * step) / steps,
+        y: from.y + ((point.y - from.y) * step) / steps,
+        button: 'left',
+      });
+      await delay(60);
+    }
+    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', clickCount: 1 });
+    await delay(500);
+  };
+
+  const slotBefore = await fixture('renderedMemberIds()');
+  const targetCell = await fixture('cardCenter("provider-c")');
+  await dragged(officialCardId, targetCell);
+  check(
+    'the account row participates in grid dragging like any other member',
+    await fixture('renderedMemberIds()').then(ids => ids.join('|') !== slotBefore.join('|')),
+  );
+  check(
+    'the row keeps a handle of its own to be dragged by',
+    await evaluate(`Boolean(document.querySelector('[data-provider-id="${officialCardId}"] [data-provider-card-handle]'))`),
+  );
+  // Pressing the body opens the manager; pressing the handle and moving the card
+  // must not. The handle is a `<span>`, so "is this a control?" cannot be
+  // answered by the tag name alone.
+  check(
+    'dragging the account row does not open its sidebar',
+    await evaluate('!zcodeOfficialAccountFixture.detailPanel()'),
+  );
 
   // --- switching back restores the list layout ----------------------------
   await toggleLayout();

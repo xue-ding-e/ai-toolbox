@@ -1,5 +1,5 @@
 import React from 'react';
-import { Button, Drawer, Space, Tag, Tooltip, Typography, message } from 'antd';
+import { Button, Space, Tag, Tooltip, Typography, message } from 'antd';
 import { ApiOutlined, CheckOutlined, CodeOutlined, CopyOutlined, DeleteOutlined, EditOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
@@ -43,7 +43,6 @@ import type {
 // module, and its public surface is one list rather than four file paths.
 import {
   ProviderCompactCard,
-  ProviderDetailPanel,
   type ProviderDetailField,
   type ProviderDetailSection,
 } from '@/features/coding/shared/providerCardView';
@@ -142,8 +141,6 @@ const ClaudeProviderCard: React.FC<ClaudeProviderCardProps> = ({
   const [restoringDirect, setRestoringDirect] = React.useState(false);
   const [switchingGatewayProvider, setSwitchingGatewayProvider] = React.useState(false);
   const [launchingCli, setLaunchingCli] = React.useState(false);
-  /** The card view's detail sidebar. */
-  const [detailOpen, setDetailOpen] = React.useState(false);
 
   const settingsConfig = React.useMemo(
     () => parseClaudeSettingsConfig(provider.settingsConfig),
@@ -813,106 +810,88 @@ const ClaudeProviderCard: React.FC<ClaudeProviderCardProps> = ({
   if (viewMode === 'card') {
     const cardSubtitles = resolveClaudeCardSubtitles(modelConfig);
     return (
-      <>
-        <ProviderCompactCard
-          provider={{
-            id: provider.id,
-            name: provider.name,
-            baseUrl: configuredBaseUrl,
-          }}
-          subtitle={cardSubtitles.map((entry) => ({
-            label: t(CLAUDE_CARD_ROLE_LABELS[entry.role]),
-            value: entry.model,
-          }))}
-          providerState={props.providerState}
-          actions={props.actions}
-          nameTags={cardNameTags}
-          launchAction={launchAction}
-          // The list card renders 连通性测试 inline on its meta line; the grid
-          // cell has room for the two primary actions only, so the diagnostic
-          // moves into the menu rather than disappearing.
-          extraMenuItems={[{
-            key: 'connectivity',
-            label: t('opencode.connectivity.button'),
-            icon: <ApiOutlined />,
-            disabled: !canRunConnectivityTest,
-            onClick: () => onTest(provider),
-          }]}
-          // The card owns the drawer it opens. Threading this through the page
-          // would let a caller pass an `onOpenDetail` that renders a second
-          // drawer — or, more likely, one that silently does nothing.
-          onOpenDetail={() => setDetailOpen(true)}
-        />
-        <Drawer
-          placement="right"
-          // `size`, not `width`: antd 6 deprecated `width`/`height` in favour of
-          // one `size` prop, and warns about it in dev. `size` takes a CSS
-          // length, so the Skills and MCP detail drawers' own sizing —
-          // `min(60vw, 760px)` — carries over verbatim: the provider sidebar is
-          // the same kind of surface, and three of them at three widths read as
-          // three different products.
-          size="min(60vw, 760px)"
-          open={detailOpen}
-          onClose={() => setDetailOpen(false)}
-          destroyOnHidden
-          closable={false}
-          styles={{ body: { padding: 0, display: 'flex', flexDirection: 'column' } }}
-        >
-          <ProviderDetailPanel
-            title={<ProviderNameLink name={provider.name} baseUrl={configuredBaseUrl} />}
-            // The cell's own tag row, verbatim: the sidebar states this state
-            // about the very provider whose cell you just clicked, so the two
-            // must not be able to disagree (an earlier version listed three of
-            // the tags by hand and would have missed any added later — 代理,
-            // 绕过, the failover priority).
-            statusTags={cardNameTags}
-            sections={detailSections}
-            onClose={() => setDetailOpen(false)}
-            // The panel renders the same computed actions the grid cell does,
-            // through the same two renderers — so "the sidebar offers what the
-            // card offers" is a fact about the code, not a thing to re-check
-            // every time either side gains a button.
-            primaryActions={(
-              <>
-                {renderProviderLaunchAction(launchAction)}
-                {gatewayActions}
-                {renderProviderPrimaryAction(props.actions?.primaryAction)}
-              </>
-            )}
-            // Same icons as the card's "more" menu, so the two surfaces that
-            // offer these actions read as the same set rather than as two
-            // different lists of words.
-            secondaryActions={(
-              <Space size={4} wrap>
-                <Button
-                  size="small"
-                  type="text"
-                  icon={<ApiOutlined />}
-                  onClick={() => onTest(provider)}
-                  disabled={!canRunConnectivityTest}
-                  title={isOfficialProvider ? t('claudecode.provider.officialConnectivityHint') : undefined}
-                >
-                  {t('opencode.connectivity.button')}
+      <ProviderCompactCard
+        provider={{
+          id: provider.id,
+          name: provider.name,
+          baseUrl: configuredBaseUrl,
+        }}
+        subtitle={cardSubtitles.map((entry) => ({
+          label: t(CLAUDE_CARD_ROLE_LABELS[entry.role]),
+          value: entry.model,
+        }))}
+        providerState={props.providerState}
+        actions={props.actions}
+        nameTags={cardNameTags}
+        launchAction={launchAction}
+        // The list card renders 连通性测试 inline on its meta line; the grid
+        // cell has room for the two primary actions only, so the diagnostic
+        // moves into the menu rather than disappearing.
+        extraMenuItems={[{
+          key: 'connectivity',
+          label: t('opencode.connectivity.button'),
+          icon: <ApiOutlined />,
+          disabled: !canRunConnectivityTest,
+          onClick: () => onTest(provider),
+        }]}
+        // The detail sidebar's *content*. The drawer around it — its width,
+        // its panel, its open state — belongs to the card (shared): it was
+        // byte-identical here and in the three sibling mapping layers, and
+        // threading an opener through the page would only let a caller render
+        // a second drawer, or one that silently does nothing.
+        detail={{
+          title: <ProviderNameLink name={provider.name} baseUrl={configuredBaseUrl} />,
+          // The cell's own tag row, verbatim: the sidebar states this state
+          // about the very provider whose cell you just clicked, so the two
+          // must not be able to disagree (an earlier version listed three of
+          // the tags by hand and would have missed any added later — 代理,
+          // 绕过, the failover priority).
+          statusTags: cardNameTags,
+          sections: detailSections,
+          // The panel renders the same computed actions the grid cell does,
+          // through the same two renderers — so "the sidebar offers what the
+          // card offers" is a fact about the code, not a thing to re-check
+          // every time either side gains a button.
+          primaryActions: (
+            <>
+              {renderProviderLaunchAction(launchAction)}
+              {gatewayActions}
+              {renderProviderPrimaryAction(props.actions?.primaryAction)}
+            </>
+          ),
+          // Same icons as the card's "more" menu, so the two surfaces that
+          // offer these actions read as the same set rather than as two
+          // different lists of words.
+          secondaryActions: (
+            <Space size={4} wrap>
+              <Button
+                size="small"
+                type="text"
+                icon={<ApiOutlined />}
+                onClick={() => onTest(provider)}
+                disabled={!canRunConnectivityTest}
+                title={isOfficialProvider ? t('claudecode.provider.officialConnectivityHint') : undefined}
+              >
+                {t('opencode.connectivity.button')}
+              </Button>
+              <Button size="small" type="text" icon={<EditOutlined />} onClick={() => onEdit(provider)}>
+                {t('common.edit')}
+              </Button>
+              <Button size="small" type="text" icon={<CopyOutlined />} onClick={() => onCopy(provider)}>
+                {t('common.copy')}
+              </Button>
+              <Button size="small" type="text" icon={<Share2 size={14} aria-hidden="true" />} onClick={() => onShare(provider)}>
+                {t('common.share')}
+              </Button>
+              {!isLocalProvider && (
+                <Button size="small" type="text" danger icon={<DeleteOutlined />} onClick={() => onDelete(provider)}>
+                  {t('common.delete')}
                 </Button>
-                <Button size="small" type="text" icon={<EditOutlined />} onClick={() => onEdit(provider)}>
-                  {t('common.edit')}
-                </Button>
-                <Button size="small" type="text" icon={<CopyOutlined />} onClick={() => onCopy(provider)}>
-                  {t('common.copy')}
-                </Button>
-                <Button size="small" type="text" icon={<Share2 size={14} aria-hidden="true" />} onClick={() => onShare(provider)}>
-                  {t('common.share')}
-                </Button>
-                {!isLocalProvider && (
-                  <Button size="small" type="text" danger icon={<DeleteOutlined />} onClick={() => onDelete(provider)}>
-                    {t('common.delete')}
-                  </Button>
-                )}
-              </Space>
-            )}
-          />
-        </Drawer>
-      </>
+              )}
+            </Space>
+          ),
+        }}
+      />
     );
   }
 

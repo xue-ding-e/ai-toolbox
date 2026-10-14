@@ -7,6 +7,17 @@
   grid-template-columns: var(--management-grid-columns, repeat(3, minmax(0, 1fr)));
   gap: 10px;
   align-items: stretch;
+
+  // The gap is the grid's job here, so a card that spaces itself for the *list*
+  // layout gives that spacing up. ZCode's official-account card carries a
+  // `margin-bottom: 12` of its own — in the list the cards are siblings with no
+  // gap between them, so each one owns its bottom spacing — and inside a grid
+  // that margin lands on top of the 10px gap: the row under it read 22px while
+  // every other row read 10 (measured 2026-10-13). `!important` because the
+  // margin is an inline style, which no stylesheet rule can outrank.
+  :global([data-provider-id]) {
+    margin-bottom: 0 !important;
+  }
 }
 
 // Below this width a 350px minimum cell no longer fits more than one column;

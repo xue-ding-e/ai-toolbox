@@ -32,10 +32,24 @@
   transition:
     border-color 0.16s ease,
     background 0.16s ease,
-    box-shadow 0.16s ease;
+    box-shadow 0.16s ease,
+    transform 0.16s ease;
 
-  &:hover {
+  &[data-provider-card-clickable]:hover {
+    border-color: var(--color-border);
+    // An accented card (applied / gateway) keeps its own tint: the accent is
+    // an inline style and wins over this rule, so what is left here is the lift
+    // and the shadow — which is right, the tint says *what this provider is*,
+    // not *that the pointer is over it*.
+    background: var(--color-bg-elevated);
     box-shadow: var(--shadow-card-sm-hover);
+    // The Skills card's own hover, which is the language this card is built
+    // from: it rises a pixel and brightens. Gated on the body actually opening
+    // something — in batch-selection mode the body click is suppressed, and a
+    // card that lifts under the pointer promises a click it will not honour.
+    // The `transform` here is on the surface; the drag transform is inline on
+    // the outer node, so a dragged card follows the pointer instead of lifting.
+    transform: translateY(-1px);
 
     .name {
       color: var(--color-primary);
@@ -183,17 +197,60 @@
   min-width: 0;
   flex: 1;
   padding: 0 12px 6px;
-  // The model line is reserved whether or not this card has one: the subtitle's
-  // own 17px plus the 6px bottom padding above (the box is `border-box`, so the
-  // padding is inside this number).
+  // The second line is reserved whether or not this card states one, so that
+  // the grid stretching a row cannot make one card's slack show up as a gap
+  // somewhere else (the defect behind this rule, reported 2026-10-12).
   //
-  // The grid stretches every card in a row to the tallest, and the body is the
-  // flex child that absorbs the difference — so a provider without a model used
-  // to be 87px beside a 104px neighbour and grew its 17px of slack directly
-  // above the footer, reading as "the divider drifted away from the text".
-  // Reserving the line makes every card the same height on its own, so the
-  // divider keeps a fixed distance from whatever is above it.
+  // The height is whatever that line needs, and it depends on where the card's
+  // action row went — `actionPlacement` puts it either on this line or in the
+  // footer bar below it:
+  //
+  // - on this line (`.bodyWithAction`): the action button is the tallest thing
+  //   here at 24px (antd's small control) against the model line's 17px. The
+  //   band is 24 + the 6px bottom padding above = 30 (`border-box`, so the
+  //   padding is inside this number). It also means a cell that states only an
+  //   action — ZCode's provider cells, whose provider has no action-level fact
+  //   of its own beyond the model — is the same height as one that states a
+  //   line, which is what makes the app's compact cells one size (all of them
+  //   68px).
+  // - in the footer: nothing but the model line has to fit, so 17 + 6 = 23.
+  //   Reserving the action's height here instead would add 7px of nothing
+  //   between the model line and the footer's divider.
   min-height: 23px;
+}
+
+.bodyWithAction {
+  min-height: 30px;
+}
+
+// The second line: the models the card states, and — with
+// `actionPlacement="subtitle"` — the card's action row beside them.
+//
+// The row is vertically centred, and that is what puts the action on the model
+// line's own centre: the button's box is 24px against the line's 17px, so with
+// the row top-aligned the button sat 3.5px low on every cell (measured on the
+// Codex and Kimi grids, 2026-10-13). Centring both makes the two centres
+// coincide by construction rather than by a tuned offset.
+.subtitleRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.subtitleActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+  // `flex-shrink: 0` — the model line is the part that gives way, the same rule
+  // the header row follows between its title and its tags.
+  flex-shrink: 0;
+  white-space: nowrap;
+
+  :global(.ant-btn) {
+    font-size: 11px;
+  }
 }
 
 // The models the card states, as one line of `Role: value` pairs. The role is
@@ -204,35 +261,6 @@
 // last whole item and show no ellipsis, whereas inline content lets the browser
 // place one at the truncation point. The card's height must also stay uniform
 // across the grid, so the line never wraps — the `title` carries the full text.
-// The model line, and — with `actionPlacement="subtitle"` — the card's action
-// row on the same line. The actions are `flex-shrink: 0` so the model line is
-// the part that gives way, the same rule the header row follows.
-.subtitleRow {
-  display: flex;
-  // Top-aligned: with `actionPlacement="subtitle"` the action row can wrap
-  // under the model line on a narrow column, and centring would then float the
-  // model line against the middle of the two rows.
-  align-items: flex-start;
-  gap: 8px;
-  min-width: 0;
-}
-
-.subtitleActions {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  margin-left: auto;
-  flex-shrink: 0;
-  // Centred within its own line — one line beside the model, or one line of
-  // its own under it.
-  align-self: center;
-  white-space: nowrap;
-
-  :global(.ant-btn) {
-    font-size: 11px;
-  }
-}
-
 .subtitle {
   display: block;
   min-width: 0;
