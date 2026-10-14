@@ -69,6 +69,36 @@ fn compaction_gateway(upstream_url: &str) -> RunningGateway {
     )
 }
 
+/// The same gateway pointed at a Chat-speaking upstream, the shape a relay
+/// (sub2api and friends) presents when Codex's Responses turn is converted.
+fn chat_compaction_gateway(upstream_url: &str) -> RunningGateway {
+    RunningGateway::new_for_api_format(upstream_url, "custom", BodyLogging::Disabled, "openai_chat")
+}
+
+/// A Chat upstream's streamed summary, which the gateway must aggregate back
+/// into the Responses shape before it can be sealed.
+fn chat_summary_stream(text: &str) -> Vec<u8> {
+    let mut wire = String::new();
+    for chunk in [
+        json!({"id": "chatcmpl_compact_fixture", "object": "chat.completion.chunk",
+               "model": "fixture-model",
+               "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": null}]}),
+        json!({"id": "chatcmpl_compact_fixture", "object": "chat.completion.chunk",
+               "model": "fixture-model",
+               "choices": [{"index": 0, "delta": {"content": text}, "finish_reason": null}]}),
+        json!({"id": "chatcmpl_compact_fixture", "object": "chat.completion.chunk",
+               "model": "fixture-model",
+               "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+               "usage": {"prompt_tokens": 21, "completion_tokens": 9, "total_tokens": 30}}),
+    ] {
+        wire.push_str("data: ");
+        wire.push_str(&chunk.to_string());
+        wire.push_str("\n\n");
+    }
+    wire.push_str("data: [DONE]\n\n");
+    wire.into_bytes()
+}
+
 /// A v2 turn on the Responses identity route must leave it: the upstream sees a
 /// plain summarization request, and the client gets a sealed compaction item
 /// instead of the summary text.
@@ -197,6 +227,65 @@ async fn a_non_streaming_client_still_gets_one_compaction_item() {
     upstream.await.unwrap();
 }
 
+/// The two axes are independent: this is the non-streaming caller of the pair
+/// above, so the same buffered answer is rendered as JSON rather than SSE. It
+/// enters aggregation through the *pre-existing* predicate (which declines
+/// streaming clients), and still has to be sealed rather than passed through.
+#[tokio::test]
+async fn a_non_streaming_client_with_a_streaming_upstream_still_gets_one_item() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let upstream_url = format!("http://{}", listener.local_addr().unwrap());
+    let upstream = tokio::spawn(async move {
+        let mut socket = accept_upstream(&listener).await;
+        read_mock_request(&mut socket, "/v1/responses ").await;
+        let stream = format!(
+            "event: response.output_item.done\ndata: {}\n\n\
+             event: response.completed\ndata: {}\n\n",
+            json!({"type": "response.output_item.done", "output_index": 0,
+                   "item": {"type": "message", "role": "assistant",
+                            "content": [{"type": "output_text", "text": SUMMARY_TEXT}]}}),
+            json!({"type": "response.completed",
+                   "response": responses_reply(SUMMARY_TEXT)})
+        );
+        write_mock_reply(&mut socket, 200, stream.as_bytes(), true).await;
+    });
+
+    let gateway = compaction_gateway(&upstream_url);
+    let client = http_client::create_client_no_proxy(10).unwrap();
+    let response = client
+        .post(&gateway.url)
+        .json(&compaction_turn(false))
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = response.bytes().await.unwrap();
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&bytes));
+
+    // Not SSE: this caller did not ask for a stream.
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["status"], "completed");
+    assert_eq!(body["output"].as_array().unwrap().len(), 1, "{body}");
+    assert_eq!(
+        body["output"][0]["type"], "compaction",
+        "the summary was passed through instead of sealed: {body}"
+    );
+    assert!(
+        body["output"][0]["encrypted_content"]
+            .as_str()
+            .unwrap()
+            .starts_with(CAPSULE_PREFIX),
+        "{body}"
+    );
+    assert_eq!(body["usage"]["input_tokens"], 21);
+    assert!(
+        !String::from_utf8_lossy(&bytes).contains("Ship the compaction passthrough"),
+        "the summary reached the client in the clear: {body}"
+    );
+
+    upstream.await.unwrap();
+}
+
 /// The next turn replays the item Codex kept. The upstream must receive readable
 /// context, not an opaque capsule it cannot open.
 #[tokio::test]
@@ -306,6 +395,127 @@ async fn an_empty_summary_fails_instead_of_faking_an_item() {
     assert!(
         !String::from_utf8_lossy(&bytes).contains(CAPSULE_PREFIX),
         "a capsule was sealed from nothing: {body}"
+    );
+
+    upstream.await.unwrap();
+}
+
+/// A relay that ignores the `stream: false` the gateway asks for must still
+/// produce the compaction contract: the SSE answer is buffered whole, sealed
+/// into one `compaction` item, and re-rendered for the streaming client.
+///
+/// Relaying that SSE instead would hand Codex an ordinary assistant message,
+/// which counts zero `compaction` items — the `got 0 from 1 output items` the
+/// upstream's own summary triggers. Codex always streams its compaction turn,
+/// so `request_declares_streaming` must not exempt it from aggregation.
+#[tokio::test]
+async fn a_streaming_upstream_still_yields_one_compaction_item() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let upstream_url = format!("http://{}", listener.local_addr().unwrap());
+    let upstream = tokio::spawn(async move {
+        let mut socket = accept_upstream(&listener).await;
+        read_mock_request(&mut socket, "/v1/responses ").await;
+        // The upstream answers SSE even though the request asked for one piece.
+        let stream = format!(
+            "event: response.output_item.done\ndata: {}\n\n\
+             event: response.completed\ndata: {}\n\n",
+            json!({"type": "response.output_item.done", "output_index": 0,
+                   "item": {"type": "message", "role": "assistant",
+                            "content": [{"type": "output_text", "text": SUMMARY_TEXT}]}}),
+            json!({"type": "response.completed",
+                   "response": responses_reply(SUMMARY_TEXT)})
+        );
+        write_mock_reply(&mut socket, 200, stream.as_bytes(), true).await;
+    });
+
+    let gateway = compaction_gateway(&upstream_url);
+    let client = http_client::create_client_no_proxy(10).unwrap();
+    let response = client
+        .post(&gateway.url)
+        .json(&compaction_turn(true))
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = response.bytes().await.unwrap();
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&bytes));
+
+    let events = sse_events(&bytes);
+    let completed = completed_response(&events);
+    let output = completed["output"].as_array().unwrap();
+    assert_eq!(
+        output.len(),
+        1,
+        "Codex installs the returned item as the whole history: {completed}"
+    );
+    assert_eq!(
+        output[0]["type"], "compaction",
+        "a plain message item satisfies zero compaction items: {completed}"
+    );
+    assert!(
+        output[0]["encrypted_content"]
+            .as_str()
+            .unwrap()
+            .starts_with(CAPSULE_PREFIX),
+        "{completed}"
+    );
+    assert_eq!(completed["usage"]["input_tokens"], 21);
+    assert_eq!(completed["usage"]["output_tokens"], 9);
+    assert!(
+        !String::from_utf8_lossy(&bytes).contains("Ship the compaction passthrough"),
+        "the summary reached the client in the clear: {}",
+        String::from_utf8_lossy(&bytes)
+    );
+
+    upstream.await.unwrap();
+}
+
+/// The same buffering on a Chat-speaking upstream, where the stream has to be
+/// aggregated *and* reverse-converted before it is in any shape to seal. This
+/// is the relay arrangement the failure was reported against.
+#[tokio::test]
+async fn a_streaming_chat_upstream_still_yields_one_compaction_item() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let upstream_url = format!("http://{}", listener.local_addr().unwrap());
+    let upstream = tokio::spawn(async move {
+        let mut socket = accept_upstream(&listener).await;
+        read_mock_request(&mut socket, "/v1/chat/completions ").await;
+        write_mock_reply(&mut socket, 200, &chat_summary_stream(SUMMARY_TEXT), true).await;
+    });
+
+    let gateway = chat_compaction_gateway(&upstream_url);
+    let client = http_client::create_client_no_proxy(10).unwrap();
+    let response = client
+        .post(&gateway.url)
+        .json(&compaction_turn(true))
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = response.bytes().await.unwrap();
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&bytes));
+
+    let events = sse_events(&bytes);
+    let completed = completed_response(&events);
+    let output = completed["output"].as_array().unwrap();
+    assert_eq!(output.len(), 1, "expected one item: {completed}");
+    assert_eq!(
+        output[0]["type"], "compaction",
+        "the Chat summary was relayed instead of sealed: {completed}"
+    );
+    assert!(
+        output[0]["encrypted_content"]
+            .as_str()
+            .unwrap()
+            .starts_with(CAPSULE_PREFIX),
+        "{completed}"
+    );
+    assert_eq!(completed["usage"]["input_tokens"], 21);
+    assert_eq!(completed["usage"]["output_tokens"], 9);
+    assert!(
+        !String::from_utf8_lossy(&bytes).contains("Ship the compaction passthrough"),
+        "the summary reached the client in the clear: {}",
+        String::from_utf8_lossy(&bytes)
     );
 
     upstream.await.unwrap();

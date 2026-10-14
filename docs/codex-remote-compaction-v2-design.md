@@ -123,9 +123,10 @@ Codex ◄──┘
 - **恰好一个** compaction output item。Codex 严格校验 `compaction_count != 1` 即 Fatal（`compact_remote_v2.rs:485-488`）。
 - SSE 只需两个事件：`response.output_item.done`（携带 compaction item）+ `response.completed`。**不需要 `response.output_item.added`**——Codex 的 SSE 解析器对 `done` 独立解析（`codex-api/src/sse/responses.rs:353`），cc-switch 实测只发这两个。
 - 摘要为空或被截断（`finish_reason == "length"`）时必须拒绝（cc-switch 做法），否则会把不完整摘要固化进 Codex 历史。
-- 流式上游也要先缓冲完整摘要再合成，不能边收边转。
+- 流式上游也要先缓冲完整摘要再合成，不能边收边转。**这是上游不守约时的兜底，不是常规路径**：网关已把压缩轮次改写成 `stream: false`，但中转站/渠道可以忽略它并照旧回 SSE。此时整段必须聚合完才能 seal，原样转发等于给 Codex 一个普通 assistant item（计 0 个 compaction item）。判据落在 `compaction_sse_aggregation_kind`：它**不看客户端的 `stream` 声明**——Codex 恒为流式，正是这个标志把旧实现挡在了聚合分支之外。回归：`a_streaming_upstream_still_yields_one_compaction_item`（Responses 身份路由）、`a_streaming_chat_upstream_still_yields_one_compaction_item`（Chat 上游，需先聚合再反向转换）。
 - 非流请求直接返回 JSON 形态的同一 response 对象。
-- **SSE 重渲染必须跟随客户端声明**：合成好的 item 要改写成 SSE 只在客户端声明了 `stream: true` 时做（`upstream.rs:2449`）。Codex 恒为流式，所以这条分支实际不可达，但无条件重渲染会让非流式调用方拿到一个 `text/event-stream` 外壳、解析不出来的 body。
+- **SSE 重渲染必须跟随客户端声明**：合成好的 item 要改写成 SSE 只在客户端声明了 `stream: true` 时做（`render_compaction_sse_if_streaming`，两条响应路径共用）。无条件重渲染会让非流式调用方拿到一个 `text/event-stream` 外壳、解析不出来的 body。注意它与上一条是两个正交的判定：**聚合看「上游怎么答的」，重渲染看「客户端要怎么收」**，两者互不蕴含。
+- **用量取自聚合后的 body，不是上游原始字节**：聚合分支里的原始字节是 SSE 文本，`compaction_usage` 在里面找不到 `usage`；seal 时要把聚合后的目标协议 JSON（`target_response_body`）传进去，否则 Codex 侧这一轮的 token 计费恒为 0。
 
 ### 3.5 envelope 编码（无状态）
 
@@ -262,6 +263,9 @@ cc-switch 的 code review 明确指出：其 Anthropic 路径**未实现** compa
 
 - identity 路由端到端：v2 压缩轮次被改写（上游收不到 trigger/tools/`parallel_tool_calls`/`tool_choice`，指令被替换，末尾有产出指令，`stream: false`），客户端收到恰好 5 个 SSE 事件与一个 capsule，明文不入网（`identity_responses_compaction_is_rewritten_and_sealed`）。
 - 非流式客户端：拿到的是 JSON 形态的同一 item，不是 SSE 外壳（`a_non_streaming_client_still_gets_one_compaction_item`）。
+- 上游不守 `stream: false` 而回 SSE：整段被聚合、seal，再按客户端声明重渲染，客户端仍拿到恰好一个 capsule item 与随流 usage（`a_streaming_upstream_still_yields_one_compaction_item`）。**这条路径此前完全没有覆盖**——所有既有集成测试的 stub 上游都用非流式响应，正是这个盲区让 issue #416 的 `got 0 from 1 output items` 漏了出去。
+- 同上但客户端是非流式：同一次聚合走**另一条谓词**（`sse_aggregation_kind_for_non_streaming_client`），产出同样是 JSON 形态的一个 item（`a_non_streaming_client_with_a_streaming_upstream_still_gets_one_item`）。聚合看上游、重渲染看客户端，两个轴各测一格。
+- 同上但上游是 Chat 协议：聚合 + 反向转换之后才 seal，用量取自转换后的 body（`a_streaming_chat_upstream_still_yields_one_compaction_item`）。
 - 回放：下一轮把 item 回传后，上游收到 `Context summary from previous turns:` 开头的可读 assistant 消息，capsule 前缀 0 次出现，物品被展开而非透传（`a_replayed_capsule_becomes_readable_context_upstream`）。
 - 空摘要：请求以 400 + `gateway_request_schema_rejected` 失败，不产出 item、不 seal 空 capsule（`an_empty_summary_fails_instead_of_faking_an_item`）。
 

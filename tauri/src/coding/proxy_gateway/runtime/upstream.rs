@@ -2172,13 +2172,22 @@ async fn build_gateway_response(
     let should_restore_xai_namespaces =
         status.is_success() && !xai_namespace_restore_map.is_empty();
 
-    if let Some(aggregate_kind) = sse_aggregation_kind_for_non_streaming_client(
+    let aggregation_kind = sse_aggregation_kind_for_non_streaming_client(
         request,
         route,
         provider,
         response.headers(),
         status.as_u16(),
-    ) {
+    )
+    .or_else(|| {
+        compaction_sse_aggregation_kind(
+            remote_compaction,
+            provider,
+            response.headers(),
+            status.as_u16(),
+        )
+    });
+    if let Some(aggregate_kind) = aggregation_kind {
         let (upstream_response_body, mut body) = aggregate_sse_stream_for_non_streaming_client(
             aggregate_kind,
             response.bytes_stream(),
@@ -2211,6 +2220,20 @@ async fn build_gateway_response(
                     upstream_response_body_bytes,
                 })?;
         }
+        if remote_compaction.is_compaction_response() {
+            // The upstream answered with an ordinary summary, streamed or not.
+            // Codex needs exactly one `compaction` item instead. Usage is read
+            // from the aggregated body (the provider's own protocol shape) —
+            // the raw bytes above are SSE text and carry no `usage` to find.
+            body = build_remote_compaction_response_body(&body, &target_response_body)
+            .map_err(|message| GatewayForwardError {
+                message,
+                kind: GatewayFailureKind::GatewayParse,
+                upstream_request_body: Some(upstream_body_snapshot.clone()),
+                upstream_response_body: Some(upstream_response_body.clone()),
+                upstream_response_body_bytes,
+            })?;
+        }
         if should_restore_xai_namespaces {
             body = restore_xai_namespace_json_body(&body, &xai_namespace_restore_map);
         }
@@ -2240,17 +2263,29 @@ async fn build_gateway_response(
         );
         let served_tier = served_service_tier(&body).map(ToString::to_string);
 
+        // Aggregation decided how the *upstream* answer is read, not how the
+        // client-facing reply is rendered: a compaction turn whose client asked
+        // for a stream still leaves as the SSE lifecycle it waits on.
+        let (body, body_stream, is_streaming) = render_compaction_sse_if_streaming(
+            request,
+            body,
+            remote_compaction,
+            status.as_u16(),
+            &mut response_headers,
+        );
+        let response_body_bytes = if is_streaming { 0 } else { body.len() as u64 };
+
         return Ok(DebugHttpResponse {
             privacy: None,
             status_code: status.as_u16(),
             status_text: status.canonical_reason().unwrap_or("Unknown").to_string(),
             headers: response_headers,
-            response_body_bytes: body.len() as u64,
+            response_body_bytes,
             body,
-            body_stream: None,
+            body_stream,
             token_usage,
             first_token_ms: None,
-            is_streaming: false,
+            is_streaming,
             cli_key: Some(provider.cli_key),
             route_name: route.route_name.to_string(),
             provider_id: Some(provider.id.clone()),
@@ -2275,7 +2310,10 @@ async fn build_gateway_response(
             provider_attempt_count: 1,
             provider_attempts: Vec::new(),
             failover: false,
-            source_protocol: None,
+            // A compaction turn can leave this branch as SSE, and the writer
+            // renders its error dialect from this. `write_streaming_body`
+            // overwrites `stream_outcome` once it has consumed the stream.
+            source_protocol,
             stream_outcome: GatewayStreamOutcome::NotStreaming,
             note: format!(
                 "aggregated {} streaming response from provider id={} name={}",
@@ -2517,26 +2555,13 @@ async fn build_gateway_response(
     // Render the finished item as the SSE stream the client is waiting for —
     // only when it actually asked for one, so a non-streaming caller still gets
     // the JSON item instead of a `text/event-stream` body it cannot parse.
-    let compaction_stream = if remote_compaction.is_compaction_response()
-        && (200..400).contains(&status.as_u16())
-        && request_declares_streaming(request)
-    {
-        serde_json::from_slice::<Value>(&body)
-            .ok()
-            .map(|response| codex_remote_compaction::build_compaction_sse(&response))
-            .filter(|stream| !stream.is_empty())
-    } else {
-        None
-    };
-    let (body, body_stream, is_streaming) = match compaction_stream {
-        Some(stream) => {
-            set_response_content_type(&mut response_headers, "text/event-stream");
-            let bytes = stream.into_bytes();
-            let stream = futures_util::stream::once(async move { Ok(bytes) });
-            (Vec::new(), Some(Box::pin(stream) as DebugBodyStream), true)
-        }
-        None => (body, None, false),
-    };
+    let (body, body_stream, is_streaming) = render_compaction_sse_if_streaming(
+        request,
+        body,
+        remote_compaction,
+        status.as_u16(),
+        &mut response_headers,
+    );
     let response_body_bytes = if is_streaming {
         0
     } else {
@@ -2605,6 +2630,16 @@ impl SseAggregateKind {
             Self::GeminiNative => "Gemini Native",
         }
     }
+
+    /// The aggregator that reads a target protocol's own stream dialect.
+    fn from_protocol(protocol: AiProtocol) -> Self {
+        match protocol {
+            AiProtocol::OpenAiResponses => Self::OpenAiResponses,
+            AiProtocol::OpenAiChat => Self::OpenAiChat,
+            AiProtocol::AnthropicMessages => Self::AnthropicMessages,
+            AiProtocol::GeminiNative => Self::GeminiNative,
+        }
+    }
 }
 
 fn sse_aggregation_kind_for_non_streaming_client(
@@ -2621,12 +2656,32 @@ fn sse_aggregation_kind_for_non_streaming_client(
     {
         return None;
     }
-    match provider.target_protocol {
-        AiProtocol::OpenAiResponses => Some(SseAggregateKind::OpenAiResponses),
-        AiProtocol::OpenAiChat => Some(SseAggregateKind::OpenAiChat),
-        AiProtocol::AnthropicMessages => Some(SseAggregateKind::AnthropicMessages),
-        AiProtocol::GeminiNative => Some(SseAggregateKind::GeminiNative),
+    Some(SseAggregateKind::from_protocol(provider.target_protocol))
+}
+
+/// Whether a compaction turn must buffer an upstream SSE answer.
+///
+/// The Gateway asks upstream for the summary in one piece (`stream: false`), but
+/// a relay is free to ignore that and answer with SSE anyway. Such an answer
+/// cannot be relayed: the client counts `compaction` items, and an ordinary
+/// assistant summary counts zero of them, so the whole reply has to be read
+/// before the item can be sealed. Unlike
+/// [`sse_aggregation_kind_for_non_streaming_client`], the client's own `stream`
+/// flag does not matter here — Codex always sets it, and buffering is the only
+/// way to satisfy the contract either way.
+fn compaction_sse_aggregation_kind(
+    remote_compaction: RemoteCompactionCompat,
+    provider: &UpstreamProvider,
+    headers: &HeaderMap,
+    status_code: u16,
+) -> Option<SseAggregateKind> {
+    if !remote_compaction.is_compaction_response()
+        || !(200..400).contains(&status_code)
+        || !response_is_sse(headers)
+    {
+        return None;
     }
+    Some(SseAggregateKind::from_protocol(provider.target_protocol))
 }
 
 #[cfg(test)]
@@ -4920,6 +4975,45 @@ fn should_attempt_responses_encrypted_content_rectifier(
         && !route_is_openai_responses_compact(route)
         && !should_stream_response(request, route, headers, status_code)
         && (400..500).contains(&status_code)
+}
+
+/// Renders a sealed compaction item as the SSE lifecycle a streaming client waits on.
+///
+/// The summary has to be complete before anything can be emitted, so the item is
+/// built first and only then unwrapped into events. A client that did not ask for
+/// a stream keeps the JSON item instead of a `text/event-stream` body it cannot
+/// parse. Both response paths end here: whether the upstream answer arrived as
+/// SSE or as one JSON body says nothing about how the client asked to receive it.
+///
+/// Only a 2xx body was rewritten into an item, so only a 2xx body can be
+/// rendered: an error envelope is passed through for the client to read.
+fn render_compaction_sse_if_streaming(
+    request: &DebugHttpRequest,
+    body: Vec<u8>,
+    remote_compaction: RemoteCompactionCompat,
+    status_code: u16,
+    response_headers: &mut Vec<(String, String)>,
+) -> (Vec<u8>, Option<DebugBodyStream>, bool) {
+    let stream = if remote_compaction.is_compaction_response()
+        && (200..400).contains(&status_code)
+        && request_declares_streaming(request)
+    {
+        serde_json::from_slice::<Value>(&body)
+            .ok()
+            .map(|response| codex_remote_compaction::build_compaction_sse(&response))
+            .filter(|stream| !stream.is_empty())
+    } else {
+        None
+    };
+    match stream {
+        Some(stream) => {
+            set_response_content_type(response_headers, "text/event-stream");
+            let bytes = stream.into_bytes();
+            let stream = futures_util::stream::once(async move { Ok(bytes) });
+            (Vec::new(), Some(Box::pin(stream) as DebugBodyStream), true)
+        }
+        None => (body, None, false),
+    }
 }
 
 /// Turns an upstream summarization reply into the `compaction` item Codex installs.
@@ -12866,6 +12960,110 @@ data: {data}\r\n\r\n"
                 200,
             ),
             Some(SseAggregateKind::GeminiNative)
+        );
+    }
+
+    /// The client's own `stream` flag must not exempt a compaction turn from
+    /// aggregation: Codex always sets it, and a relayed SSE answer would reach
+    /// Codex as an ordinary message item — zero `compaction` items.
+    #[test]
+    fn compaction_sse_aggregate_ignores_the_client_streaming_flag() {
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("text/event-stream"));
+        let provider = UpstreamProvider {
+            target_protocol: AiProtocol::OpenAiResponses,
+            ..provider_for_cli(GatewayCliKey::Codex)
+        };
+        let route = gateway_route(GatewayCliKey::Codex, "/v1/responses");
+        let streaming_request = DebugHttpRequest {
+            id: 1,
+            method: "POST".to_string(),
+            path: "/openai/v1/responses".to_string(),
+            headers: Vec::new(),
+            body: br#"{"model":"gpt-5","stream":true,"input":[]}"#.to_vec(),
+        };
+
+        // The pre-existing predicate declines a streaming client — which is
+        // exactly why the compaction turn needs its own.
+        assert!(
+            sse_aggregation_kind_for_non_streaming_client(
+                &streaming_request,
+                &route,
+                &provider,
+                &headers,
+                200,
+            )
+            .is_none(),
+            "a streaming client is left to the streaming path"
+        );
+        assert_eq!(
+            compaction_sse_aggregation_kind(
+                RemoteCompactionCompat::Summarize,
+                &provider,
+                &headers,
+                200,
+            ),
+            Some(SseAggregateKind::OpenAiResponses),
+            "a compaction turn buffers whatever the client asked for"
+        );
+    }
+
+    /// Every other mode keeps the ordinary turn's behaviour: only a turn whose
+    /// answer is rewritten into a `compaction` item needs buffering.
+    #[test]
+    fn compaction_sse_aggregate_applies_only_to_the_summarize_turn() {
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("text/event-stream"));
+        let provider = UpstreamProvider {
+            target_protocol: AiProtocol::OpenAiChat,
+            ..provider_for_cli(GatewayCliKey::Codex)
+        };
+
+        for mode in [
+            RemoteCompactionCompat::None,
+            RemoteCompactionCompat::ReplayCapsules,
+        ] {
+            assert_eq!(
+                compaction_sse_aggregation_kind(mode, &provider, &headers, 200),
+                None,
+                "{mode:?} has no item to seal"
+            );
+        }
+        assert_eq!(
+            compaction_sse_aggregation_kind(
+                RemoteCompactionCompat::Summarize,
+                &provider,
+                &headers,
+                200,
+            ),
+            Some(SseAggregateKind::OpenAiChat),
+            "the aggregator follows the provider's own protocol"
+        );
+
+        // A non-SSE answer is already one piece, and a non-2xx one is an error
+        // the caller must see, not a summary to seal.
+        let json_headers = {
+            let mut headers = HeaderMap::new();
+            headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+            headers
+        };
+        assert_eq!(
+            compaction_sse_aggregation_kind(
+                RemoteCompactionCompat::Summarize,
+                &provider,
+                &json_headers,
+                200,
+            ),
+            None
+        );
+        assert_eq!(
+            compaction_sse_aggregation_kind(
+                RemoteCompactionCompat::Summarize,
+                &provider,
+                &headers,
+                500,
+            ),
+            None
         );
     }
 
