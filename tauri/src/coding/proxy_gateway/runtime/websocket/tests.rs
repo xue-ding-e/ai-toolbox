@@ -545,6 +545,108 @@ async fn websocket_compaction_turn_is_summarized_and_replaced() {
     assert_eq!(detail.summary.total_attempt_count, 1);
 }
 
+/// Codex keeps the compaction item at the head of its history, so a session
+/// that compacts a second time sends that item *and* a fresh
+/// `compaction_trigger` in the same turn.
+///
+/// The capsule is this Gateway's own ciphertext — the upstream that rejected it
+/// is the one that reported `invalid_encrypted_content`. Expanding it therefore
+/// cannot be the replay turn's private step, and the WS transport rewrites the
+/// request through the same helper the HTTP route does.
+#[tokio::test]
+async fn websocket_second_compaction_expands_the_previous_capsule() {
+    let previous = super::super::compat::codex_remote_compaction::build_compaction_item(
+        "Goal: the first summary",
+        "test-model",
+    )
+    .expect("the fixture capsule must seal");
+
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let (_directory, context, _) = test_context(
+        &format!("http://{}/v1", listener.local_addr().unwrap()),
+        "openai_responses",
+        true,
+    );
+    let upstream = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
+        let request = receive_json(&mut socket).await;
+        let input = request["input"].as_array().cloned().unwrap_or_default();
+
+        assert!(
+            !input.iter().any(|item| item["type"] == "compaction"),
+            "the Gateway's own capsule reached the upstream: {request}"
+        );
+        assert!(
+            !request.to_string().contains("ai-toolbox-compact-v1:"),
+            "the capsule prefix leaked upstream: {request}"
+        );
+        assert!(
+            !input.iter().any(|item| item["type"] == "compaction_trigger"),
+            "the compaction trigger leaked upstream: {request}"
+        );
+        assert!(
+            input.iter().any(|item| item["content"][0]["text"]
+                .as_str()
+                .is_some_and(|text| text.contains("Goal: the first summary"))),
+            "the previous summary must reach the summarizer as context: {request}"
+        );
+
+        send_json(
+            &mut socket,
+            json!({"type":"response.output_text.delta","delta":"Goal: the second"}),
+        )
+        .await;
+        send_json(
+            &mut socket,
+            json!({"type":"response.completed","response":{"id":"upstream-response","usage":{"input_tokens":7,"output_tokens":2}}}),
+        )
+        .await;
+        let _ = socket.next().await;
+    });
+
+    let (mut client, gateway) = gateway_connection(context.clone()).await;
+    send_json(
+        &mut client,
+        json!({
+            "type": "response.create",
+            "model": "test-model",
+            "instructions": "You are a coding agent.",
+            "input": [
+                previous,
+                { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "keep going" }] },
+                { "type": "compaction_trigger" },
+            ],
+        }),
+    )
+    .await;
+
+    let mut frames = Vec::new();
+    loop {
+        let frame = receive_json(&mut client).await;
+        let terminal = frame["type"] == "response.completed";
+        frames.push(frame);
+        if terminal {
+            break;
+        }
+    }
+    let _ = client.close(None).await;
+    gateway.await.unwrap();
+    upstream.await.unwrap();
+
+    let items: Vec<&Value> = frames
+        .iter()
+        .filter_map(|frame| (frame["type"] == "response.output_item.done").then(|| &frame["item"]))
+        .collect();
+    assert_eq!(items.len(), 1, "expected exactly one done item: {frames:?}");
+    assert_eq!(items[0]["type"], "compaction");
+    let summary = super::super::compat::codex_remote_compaction::open_compaction_summary(
+        items[0]["encrypted_content"].as_str().unwrap(),
+    )
+    .expect("the item must carry a capsule this Gateway can read back");
+    assert_eq!(summary, "Goal: the second");
+}
+
 /// Codex may send the compaction turn as an incremental delta: only the items
 /// since the last response, plus the trigger, with `previous_response_id`
 /// carrying the rest of the conversation.

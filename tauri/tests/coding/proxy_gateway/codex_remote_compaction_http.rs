@@ -356,6 +356,82 @@ async fn a_replayed_capsule_becomes_readable_context_upstream() {
     upstream.await.unwrap();
 }
 
+/// A session that compacts twice carries the first capsule *and* a fresh
+/// trigger. Expanding the capsule is not optional then: a summarization turn
+/// still travels to an upstream, and the Gateway's own ciphertext is one no
+/// upstream can open — forwarding it is a guaranteed `invalid_encrypted_content`.
+#[tokio::test]
+async fn a_second_compaction_expands_the_previous_capsule_before_summarizing() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let upstream_url = format!("http://{}", listener.local_addr().unwrap());
+    let upstream = tokio::spawn(async move {
+        let mut socket = accept_upstream(&listener).await;
+        read_mock_request(&mut socket, "/v1/responses ").await;
+        reply_with(&mut socket, &responses_reply(SUMMARY_TEXT)).await;
+
+        let mut socket = accept_upstream(&listener).await;
+        let body = read_mock_request(&mut socket, "/v1/responses ").await;
+        // The second turn is still a summarization turn...
+        assert_eq!(
+            body["stream"],
+            json!(false),
+            "the summary must be fetched in one piece: {body}"
+        );
+        assert!(body.get("tools").is_none(), "tools leaked upstream: {body}");
+        // ...but the item Codex kept from the first compaction is ours.
+        assert!(
+            !body.to_string().contains(CAPSULE_PREFIX),
+            "the Gateway's own capsule reached an upstream that cannot open it: {body}"
+        );
+        assert!(
+            !body["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["type"] == "compaction"),
+            "the old item must be expanded, not passed through: {body}"
+        );
+        assert!(
+            body.to_string().contains("Ship the compaction passthrough"),
+            "the previous summary must reach the summarizer as context: {body}"
+        );
+        reply_with(&mut socket, &responses_reply(SUMMARY_TEXT)).await;
+    });
+
+    let gateway = compaction_gateway(&upstream_url);
+    let client = http_client::create_client_no_proxy(10).unwrap();
+
+    let first = client
+        .post(&gateway.url)
+        .json(&compaction_turn(true))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first.status(), 200);
+    let bytes = first.bytes().await.unwrap();
+    let item = completed_response(&sse_events(&bytes))["output"][0].clone();
+    assert_eq!(item["type"], "compaction");
+
+    // Codex keeps the compaction item as the head of its history, so the next
+    // compaction carries both it and a new `compaction_trigger`.
+    let mut second_turn = compaction_turn(true);
+    let mut input = second_turn["input"].as_array().unwrap().clone();
+    input.insert(0, item);
+    second_turn["input"] = json!(input);
+
+    let second = client
+        .post(&gateway.url)
+        .json(&second_turn)
+        .send()
+        .await
+        .unwrap();
+    let status = second.status();
+    let bytes = second.bytes().await.unwrap();
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&bytes));
+
+    upstream.await.unwrap();
+}
+
 /// An unusable summary must fail the turn. Codex installs whatever item comes
 /// back as the entire conversation history, so a placeholder would silently
 /// discard the context the compaction was supposed to preserve.

@@ -116,7 +116,7 @@ Codex ◄──┘
 | 指令 | 替换 Codex 的 `instructions` 为专用摘要指令 | Codex 的 base instructions 是"继续实现任务"，会让模型继续干活而不是总结。cc-switch 直接 `body.remove("instructions")` |
 | 降级 | 历史 `system` / `developer` item 抽出来，以带标签文本降级为 assistant 消息（插在 index 1），专用指令作为唯一 system | 历史指令是 transcript 数据，不能与压缩指令同级。cc-switch 用 `COMPACTION_HISTORICAL_SYSTEM_HEADING` + `[role]` 标签 |
 | 尾注 | 末尾追加一条 user 指令"现在产出摘要" | 给模型明确的产出触发点 |
-| 回填 | 识别 input 中的 compaction item，解出摘要，还原为带标题的 assistant 消息 | Codex 会把上次的 compaction item 回传；摘要还原后须**位于**前置工具结果媒体之后（cc-switch 的 media bridge 顺序约束） |
+| 回填 | 识别 input 中的 compaction item，解出摘要，还原为带标题的 assistant 消息。**对压缩轮次与普通轮次一律执行** | Codex 会把上次的 compaction item 作为历史载体回传（`compact_remote_v2.rs:519`），下一次压缩的 input 里因此**同时**有旧 item 和新 trigger。展开与「改写摘要请求」不是二选一：只改写不展开，等于把网关自制的密文发给上游，可解的上游一律回 `invalid_encrypted_content`（issue #416）。摘要还原后须**位于**前置工具结果媒体之后（cc-switch 的 media bridge 顺序约束） |
 
 ### 3.4 响应合成规则
 
@@ -224,7 +224,7 @@ cc-switch 的 code review 明确指出：其 Anthropic 路径**未实现** compa
 |---|---|---|
 | 请求识别 | `runtime/compat/codex_remote_compaction.rs` | `RemoteCompactionCompat::resolve`（HTTP，按路由+body）/ `resolve_websocket`（WS，只按 body）：`compaction_trigger` → `Summarize`，回传的本地 capsule → `ReplayCapsules` |
 | 请求改写 | 同上 | `build_compaction_summary_request`：剥离 trigger、去五项工具字段、替换 instructions、追加产出指令、`stream: false` |
-| capsule 回填 | 同上 | `expand_compaction_capsules`：解开本地 capsule，还原为带标题的可读上下文 |
+| capsule 回填 | 同上 | `expand_compaction_capsules`：解开本地 capsule，还原为带标题的可读上下文。**对 `Summarize` 与 `ReplayCapsules` 一律执行**，不互斥（见 §3.3） |
 | 响应合成 | 同上 | `build_compaction_response` / `build_websocket_compaction_response` → `build_compaction_sse` / `build_compaction_frames`（恰好一个 compaction item + `response.completed`） |
 | 摘要抽取 | 同上 | `extract_summary_text`（HTTP，按结构识别四种协议） / `CompactionStreamSummary`（WS，从 delta 重组） |
 | capsule | 同上（纯函数） | AES-256-GCM 封装 + 自识别前缀，无状态 |
@@ -267,6 +267,7 @@ cc-switch 的 code review 明确指出：其 Anthropic 路径**未实现** compa
 - 同上但客户端是非流式：同一次聚合走**另一条谓词**（`sse_aggregation_kind_for_non_streaming_client`），产出同样是 JSON 形态的一个 item（`a_non_streaming_client_with_a_streaming_upstream_still_gets_one_item`）。聚合看上游、重渲染看客户端，两个轴各测一格。
 - 同上但上游是 Chat 协议：聚合 + 反向转换之后才 seal，用量取自转换后的 body（`a_streaming_chat_upstream_still_yields_one_compaction_item`）。
 - 回放：下一轮把 item 回传后，上游收到 `Context summary from previous turns:` 开头的可读 assistant 消息，capsule 前缀 0 次出现，物品被展开而非透传（`a_replayed_capsule_becomes_readable_context_upstream`）。
+- **二次压缩**：同一次会话再次触发压缩时，input 里同时有旧 item 与新 trigger，展开仍须发生——上游收不到 capsule 前缀、收不到任何 `compaction` 项，却收到上一轮摘要作为可读上下文（`a_second_compaction_expands_the_previous_capsule_before_summarizing`）。这条曾经漏掉，直接导致 issue #416 的 `invalid_encrypted_content`。
 - 空摘要：请求以 400 + `gateway_request_schema_rejected` 失败，不产出 item、不 seal 空 capsule（`an_empty_summary_fails_instead_of_faking_an_item`）。
 
 ### 6.5 回归

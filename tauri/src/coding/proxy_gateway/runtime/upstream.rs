@@ -6275,6 +6275,17 @@ fn build_upstream_body_for_provider(
     if cli_key == GatewayCliKey::Claude && strip_thinking_for_retry {
         strip_thinking_blocks(&mut value);
     }
+    // Expanding this Gateway's capsules is not the replay turn's private step.
+    // Codex keeps the compaction item at the head of its history, so the *next*
+    // compaction carries it alongside a fresh `compaction_trigger` — and a
+    // summarization turn still travels to an upstream. A capsule is ciphertext
+    // only this Gateway can open, so forwarding it is a guaranteed
+    // `invalid_encrypted_content` from an upstream that validates it, and
+    // meaningless context for one that does not. Items written by anyone else
+    // are left untouched.
+    if remote_compaction.is_remote_compaction() || remote_compaction.may_replay_capsules() {
+        codex_remote_compaction::expand_compaction_capsules(&mut value);
+    }
     if remote_compaction.is_remote_compaction() {
         // The upstream must see a plain summarization turn: Codex's
         // `compaction_trigger` is a private control item no third-party provider
@@ -6284,10 +6295,6 @@ fn build_upstream_body_for_provider(
         {
             value = summary_request;
         }
-    } else if remote_compaction.may_replay_capsules() {
-        // A later turn replays the compaction item this Gateway wrote. Expand it
-        // back into readable context; items written by anyone else are untouched.
-        codex_remote_compaction::expand_compaction_capsules(&mut value);
     }
     let rewritten_body = serde_json::to_vec(&value).map_err(|error| GatewayForwardError {
         message: format!("Failed to rewrite upstream request model: {error}"),
