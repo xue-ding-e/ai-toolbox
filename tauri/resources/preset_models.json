@@ -867,6 +867,48 @@
   ],
   "@ai-sdk/google": [
     {
+      "id": "gemini-4-argon",
+      "name": "Gemini 4 Argon",
+      "contextLimit": 1048576,
+      "outputLimit": 1048576,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "pdf",
+          "video",
+          "audio"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": true,
+      "tool_call": true,
+      "temperature": true,
+      "attachment": true,
+      "variants": {
+        "low": {
+          "thinkingConfig": {
+            "includeThoughts": true,
+            "thinkingLevel": "low"
+          }
+        },
+        "medium": {
+          "thinkingConfig": {
+            "includeThoughts": true,
+            "thinkingLevel": "medium"
+          }
+        },
+        "high": {
+          "thinkingConfig": {
+            "includeThoughts": true,
+            "thinkingLevel": "high"
+          }
+        }
+      }
+    },
+    {
       "id": "gemini-3.8-flash",
       "name": "Gemini 3.8 Flash",
       "contextLimit": 1048576,

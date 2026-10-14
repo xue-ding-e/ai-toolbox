@@ -784,6 +784,14 @@
     "cache_creation_cost_per_million": "0"
   },
   {
+    "model_id": "gemini-4-argon",
+    "display_name": "Gemini 4 Argon",
+    "input_cost_per_million": "4",
+    "output_cost_per_million": "20",
+    "cache_read_cost_per_million": "0.20",
+    "cache_creation_cost_per_million": "0"
+  },
+  {
     "model_id": "gemini-3.8-flash",
     "display_name": "Gemini 3.8 Flash",
     "input_cost_per_million": "1.50",
