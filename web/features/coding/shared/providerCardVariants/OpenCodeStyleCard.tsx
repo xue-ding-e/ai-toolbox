@@ -1,5 +1,5 @@
 import React from 'react';
-import { Button, Popconfirm, Space, Switch, Tooltip, Typography } from 'antd';
+import { Button, Popconfirm, Space, Tooltip, Typography } from 'antd';
 import {
   CopyOutlined,
   DeleteOutlined,
@@ -12,6 +12,7 @@ import ProviderNameLink from '@/components/common/ProviderNameLink';
 import ProviderConnectivityStatus from '@/features/coding/shared/providerConnectivity/ProviderConnectivityStatus';
 import CardShell from './CardShell';
 import ProviderModelSection from './ProviderModelSection';
+import { ProviderEnabledSwitch } from './providerCardActions';
 import type { ProviderCardVariantProps } from './types';
 
 const { Text } = Typography;
@@ -122,9 +123,7 @@ const OpenCodeStyleCard: React.FC<ProviderCardVariantProps> = ({
               destructive action, which is where the eye expects it. */}
           {actions?.extraActions}
           {onToggleDisabled && (
-            <Tooltip title={isDisabled ? t('common.provider.disabled') : t('common.provider.enabled')}>
-              <Switch size="small" checked={!isDisabled} onChange={onToggleDisabled} />
-            </Tooltip>
+            <ProviderEnabledSwitch isDisabled={isDisabled} onToggleDisabled={onToggleDisabled} />
           )}
           {actions?.onEdit && (
             <Button size="small" icon={<EditOutlined />} onClick={actions.onEdit} />

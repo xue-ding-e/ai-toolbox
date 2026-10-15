@@ -1,4 +1,4 @@
-import { Switch, Typography } from 'antd';
+import { Typography } from 'antd';
 import type { MenuProps } from 'antd';
 import {
   CopyOutlined,
@@ -7,6 +7,7 @@ import {
 } from '@ant-design/icons';
 import { Share2 } from 'lucide-react';
 import type { TFunction } from 'i18next';
+import { ProviderEnabledSwitch } from './providerCardActions';
 import type { ProviderCardActions } from './types';
 
 const { Text } = Typography;
@@ -69,7 +70,12 @@ export function buildProviderCardMenuItems({
                   </Text>
                 )}
               </div>
-              <Switch checked={!isDisabled} onChange={onToggleDisabled} size="small" />
+              {/* No tooltip: the item names the control on its own line. */}
+              <ProviderEnabledSwitch
+                isDisabled={isDisabled}
+                onToggleDisabled={onToggleDisabled}
+                tooltip={false}
+              />
             </div>
           ),
         }]

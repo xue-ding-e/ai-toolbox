@@ -405,5 +405,78 @@ export async function verifyZcodeCardView({ send, evaluate, baseUrl, artifactRoo
   );
   await screenshot('zcode-card-view-idle-channel');
 
+  // --- the cell states the control this CLI actually has -------------------
+  //
+  // ZCode applies no provider — `设为默认` lives on a model row — so the cell's
+  // action row, the one Codex's and Kimi's cells give to 应用 / 网关代理, used to
+  // state nothing at all, while the per-provider enable switch sat folded into
+  // the "more" menu. The user asked for it out and in that slot: 「针对 zcode
+  // 这种不需要应用的渠道，把它在列表模式下的开关按钮放出来，放到现在应用的地方」
+  // (2026-10-15). One control, one place: the cell states it, the menu drops it.
+  await openFixture('viewMode=card');
+  check(
+    'a cell states the provider\'s enable switch on its action row',
+    await fixture('cellSwitchState("provider-b")'),
+    { checked: true, endsTheRow: true, rowButtonCount: 1 },
+  );
+  // A pointer that is already somewhere else, then onto the control: the
+  // tooltip opens on `mouseenter`, and a single move to one spot need not
+  // produce one (the same reset the Codex suite makes before its own hover).
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 2, y: 2 });
+  await delay(200);
+  const switchCenter = await fixture('cellSwitchCenter("provider-b")');
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: switchCenter.x, y: switchCenter.y });
+  await delay(500);
+  check(
+    'the switch is the one the list card draws — same control, same wording',
+    await fixture('openTooltipText()'),
+    '已启用',
+  );
+
+  // A real click, because everything here is about what the user can do: the
+  // provider is turned off, the card says so, and the way back stays on screen.
+  await clickAt(switchCenter);
+  await delay(600);
+  check(
+    'clicking the switch disables this provider',
+    await fixture('lastProviderToggle()'),
+    { providerId: 'provider-b', isDisabled: true },
+  );
+  check(
+    'the card states the provider it just disabled',
+    await fixture('cardTagLabels("provider-b")'),
+    ['已禁用'],
+  );
+  check(
+    'the way back is on the row that turned it off',
+    await fixture('cellSwitchState("provider-b")').then(state => state && state.checked),
+    false,
+  );
+  // The switch is a control on the card body, and the body click opens the
+  // sidebar — the same trap the drag handle sets (2026-10-14).
+  check(
+    'clicking the switch does not open the cell\'s sidebar',
+    await evaluate('!zcodeOfficialAccountFixture.detailPanel()'),
+  );
+
+  // And the menu gives up its copy: the switch is on the card now, so the entry
+  // would be the same control twice on one card.
+  await send('Input.dispatchMouseEvent', {
+    type: 'mouseMoved',
+    x: (await fixture('cardCenter("provider-b")')).x,
+    y: (await fixture('cardCenter("provider-b")')).y,
+  });
+  await delay(300);
+  await clickAt(await fixture('moreButtonCenter("provider-b")'));
+  await delay(300);
+  check(
+    'the menu no longer carries the switch the cell states',
+    await fixture('openMenuItemLabels()'),
+    ['编辑', '复制', '删除'],
+  );
+  await evaluate('document.body.click()');
+  await delay(200);
+  await screenshot('zcode-card-view-provider-switch');
+
   return checks;
 }

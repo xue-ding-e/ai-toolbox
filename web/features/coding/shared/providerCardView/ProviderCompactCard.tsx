@@ -149,6 +149,24 @@ interface ProviderCompactCardProps {
    */
   actionPlacement?: 'footer' | 'subtitle';
   /**
+   * The cell's own control of this provider, on its action row, before the
+   * primary action — the slot where the CLIs that *do* apply a provider show
+   * 应用 / 网关代理.
+   *
+   * A CLI whose providers are never applied has no such action, and the row
+   * would state nothing while every neighbouring cell states its control
+   * (ZCode: `设为默认` lives on a model row, and the one per-provider control
+   * is the enable switch the list card draws inline in its header). Passing it
+   * here puts the same control in the same place on the cell — and takes it out
+   * of the "more" menu, which is where it lives while a primary action is
+   * beside it (a switch next to 应用 competes with it; that is the menu's whole
+   * reason, see `providerCardMenu.tsx`).
+   *
+   * A slot rather than a flag: the card does not decide what a provider's state
+   * control is, its CLI does.
+   */
+  cellControl?: React.ReactNode;
+  /**
    * Extra entries for the "more" menu, inserted after 分享 and before the
    * divider. The card view folds the list card's inline 连通性测试 here.
    */
@@ -181,6 +199,7 @@ const ProviderCompactCard: React.FC<ProviderCompactCardProps> = ({
   nameTags,
   launchAction,
   actionPlacement = 'footer',
+  cellControl,
   extraMenuItems,
   detail,
 }) => {
@@ -232,6 +251,7 @@ const ProviderCompactCard: React.FC<ProviderCompactCardProps> = ({
       {renderProviderLaunchAction(launchAction)}
       <span className={styles.footerActions}>
         {actions?.gatewayActions}
+        {cellControl}
         {renderProviderPrimaryAction(primary)}
       </span>
     </>
@@ -240,7 +260,10 @@ const ProviderCompactCard: React.FC<ProviderCompactCardProps> = ({
     t,
     actions,
     isDisabled,
-    onToggleDisabled,
+    // A cell that states the switch on its own row drops the menu's copy of it:
+    // one control, one place on one card — the same rule that keeps the block's
+    // 默认 mark and its 切换 button from both being on screen.
+    onToggleDisabled: cellControl ? undefined : onToggleDisabled,
     extraItems: extraMenuItems,
   });
 

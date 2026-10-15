@@ -6,6 +6,7 @@ import AppliedTag from '@/components/common/AppliedTag';
 import ProviderNameLink from '@/components/common/ProviderNameLink';
 import OpenCodeStyleCard from '@/features/coding/shared/providerCardVariants/OpenCodeStyleCard';
 import ProviderModelSection from '@/features/coding/shared/providerCardVariants/ProviderModelSection';
+import { ProviderEnabledSwitch } from '@/features/coding/shared/providerCardVariants/providerCardActions';
 import type {
   ProviderCardModels,
   ProviderCardVariantProps,
@@ -278,10 +279,20 @@ const ZcodeProviderCard: React.FC<ZcodeProviderCardProps> = ({
       subtitle={defaultModelLabel
         ? [{ label: t('zcode.model.defaultLabel'), value: defaultModelLabel }]
         : undefined}
-      // One fact and no action of its own (a ZCode provider is never applied —
-      // `设为默认` lives on a model row), so there is nothing to put in a
-      // footer bar.
+      // One fact and no *primary* action of its own (a ZCode provider is never
+      // applied — `设为默认` lives on a model row), so there is nothing to put
+      // in a footer bar, and the row's right end is free for the one control
+      // this CLI does have per provider. It is the same switch the list card
+      // draws inline in its header, and it rides the row the other CLIs' cells
+      // give to 应用 / 网关代理 (user-directed, 2026-10-15: 「把它在列表模式下的
+      // 开关按钮放出来，放到现在应用的地方」).
       actionPlacement="subtitle"
+      cellControl={
+        <ProviderEnabledSwitch
+          isDisabled={provider.isDisabled}
+          onToggleDisabled={onToggleDisabled}
+        />
+      }
       providerState={props.providerState}
       actions={props.actions}
       nameTags={nameTags}

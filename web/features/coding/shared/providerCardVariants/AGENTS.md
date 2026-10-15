@@ -93,6 +93,9 @@
 
 Claude / Codex 式的菜单**固定为**：启用（含副标题）→ 编辑 → 复制 → 分享 → 分隔线 → 删除，每项带图标，`trigger={['click']}`。
 
+**那颗启用开关共用一个实现：`ProviderEnabledSwitch`（`providerCardActions.tsx`）。** 它出现在三处——列表卡片的头部（`OpenCodeStyleCard`，也是 ZCode 的列表卡）、**把动作折叠起来的卡片的「更多」菜单里**（Claude / Codex 式，以及带主操作的紧凑卡片）、以及**没有主操作的格子自己的动作槽**（`ProviderCompactCard` 的 `cellControl`，2026-10-15 用户指定：「针对 zcode 这种不需要应用的渠道，把它在列表模式下的开关按钮放出来，放到现在应用的地方」）。三处必须是同一个控件：`checked` 说的是**启用**（记录里存的是 `isDisabled`，全仓唯一的取反就在这里），尺寸、tooltip 文案（`common.provider.*` 的已启用 / 已禁用）都在组件里定义一次。**菜单那份带 `tooltip={false}`**——菜单项在自己的行上已经写了「启用」，tooltip 会把同一件事说两遍。
+> **开关只在「旁边没有主操作」时才从菜单里出来**：菜单把它收起来本来就是因为「一颗 Switch 紧挨着 应用 / 网关代理 会与之争抢」（见 `providerCardMenu.tsx` 的注释）。ZCode 的 provider 永远不被应用（`设为默认` 在模型行上），格子的动作槽是空的，开关就成了这张格子唯一的控件——所以它上槽、菜单把那一条让出来（`ProviderCompactCard` 里 `cellControl ? undefined : onToggleDisabled`）。同一个控件在同一张卡片上说两遍正是本仓反复拦的那类事。
+
 这些细节（图标、分隔线、副标题文案、点击而非 hover）**迁移前就存在**，用户看得见。迁移时把它们简化掉——比如只留 `{ key, label }` 而丢掉 `icon` / `divider`，或把「编辑」提到头部——**不会有任何报错**，只是菜单长得像另一个产品。改这个菜单前先 `git show <迁移前的 commit>:<原文件>` 对照一遍。
 
 **原实现里契约之外的菜单项，按语义找插槽，不要删也不要破例。** 例：Kimi 把「连通性测试」放在菜单里（全仓唯一），而它本质是「对模型目录的探测」——迁到模型区工具栏（`modelSection.onTestModels`）与卡片第二行（`inlineActions`），与同样有模型目录的 Codex 卡一致。位置变了就是行为变了：**写进提交说明**，否则用户按肌肉记忆去菜单里找会找不到（同 #103）。

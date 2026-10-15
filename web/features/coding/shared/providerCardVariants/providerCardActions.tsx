@@ -1,5 +1,6 @@
 import React from 'react';
-import { Button, Tooltip } from 'antd';
+import { Button, Switch, Tooltip } from 'antd';
+import { useTranslation } from 'react-i18next';
 import type { ProviderCardActions } from './types';
 
 /**
@@ -113,3 +114,37 @@ export function renderProviderLaunchAction(
     </Tooltip>
   );
 }
+
+/**
+ * The enable/disable switch of one provider — one control, drawn once.
+ *
+ * It belongs in three places and they must read as the same control: the list
+ * card's header (the OpenCode style, which is ZCode's list card), the "more"
+ * menu of a card that keeps it folded, and the grid cell whose action row has
+ * no primary action of its own to carry. Three copies is how the three start
+ * disagreeing about which way `checked` reads, or about what the tooltip says.
+ *
+ * `checked` is the **enabled** state while the record stores `isDisabled` — the
+ * one inversion in this control, so it lives in one place.
+ *
+ * `tooltip` defaults on, because a bare Switch beside icon buttons has no label
+ * of its own. The "more" menu passes `false`: its item names the control on its
+ * own line, and a tooltip there would say that twice.
+ */
+export const ProviderEnabledSwitch: React.FC<{
+  isDisabled?: boolean;
+  onToggleDisabled?: (enabled: boolean) => void;
+  tooltip?: boolean;
+}> = ({ isDisabled, onToggleDisabled, tooltip = true }) => {
+  const { t } = useTranslation();
+  const control = (
+    <Switch size="small" checked={!isDisabled} onChange={onToggleDisabled} />
+  );
+  return tooltip ? (
+    <Tooltip title={isDisabled ? t('common.provider.disabled') : t('common.provider.enabled')}>
+      {control}
+    </Tooltip>
+  ) : (
+    control
+  );
+};

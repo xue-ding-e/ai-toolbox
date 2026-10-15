@@ -181,6 +181,15 @@ window.__TAURI_INTERNALS__ = {
           .filter(Boolean);
         return null;
       }
+      case 'toggle_zcode_provider_disabled': {
+        // Flip the stored record, the way the backend does: the page reloads
+        // the list after the call, so a stub that only records the request
+        // would leave the card looking untouched.
+        const provider = state.providers.find(item => item.id === args.providerId);
+        if (!provider) throw new Error('No fixture provider: ' + args.providerId);
+        provider.isDisabled = args.isDisabled;
+        return null;
+      }
       case 'save_zcode_official_local_account': {
         const virtual = state.officialAccounts.find(account => account.isVirtual);
         if (!virtual) throw new Error('No live ZCode login to save');
@@ -405,6 +414,65 @@ window.zcodeOfficialAccountFixture = {
     const row = cardFor(key)?.querySelector('[data-provider-card-tags]');
     if (!row) return null;
     return [...row.querySelectorAll('.ant-tag')].map(tag => tag.textContent.trim());
+  },
+  /**
+   * The enable switch a cell draws on its own action row, or null.
+   *
+   * Addressed through the row (`[data-provider-card-footer]`) rather than the
+   * card: the same switch also sits in the "more" menu, and a query on the card
+   * would find whichever came first in the DOM.
+   */
+  cellSwitch(key) {
+    return cardFor(key)?.querySelector('[data-provider-card-footer] .ant-switch') ?? null;
+  },
+  cellSwitchCenter(key) {
+    const control = window.zcodeOfficialAccountFixture.cellSwitch(key);
+    if (!control) return null;
+    const rect = control.getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  },
+  /**
+   * What the cell's switch states, and where it sits on the row.
+   *
+   * `rowRight` is the row's own right edge: with no primary action on this CLI,
+   * the switch is what ends the row — the edge the other CLIs' 应用 button ends
+   * theirs on.
+   */
+  cellSwitchState(key) {
+    const control = window.zcodeOfficialAccountFixture.cellSwitch(key);
+    if (!control) return null;
+    const row = control.closest('[data-provider-card-footer]');
+    const rowButtons = [...row.querySelectorAll('button')];
+    return {
+      checked: control.classList.contains('ant-switch-checked'),
+      endsTheRow: Math.abs(
+        control.getBoundingClientRect().right - row.getBoundingClientRect().right,
+      ) <= 1,
+      // ZCode hands the cell no launch action and no primary action either, so
+      // the row is this one control — and the switch itself renders as a
+      // `<button>`, so the count is 1 rather than 0.
+      rowButtonCount: rowButtons.length,
+    };
+  },
+  /** The args of the last enable/disable call, or null when none was made. */
+  lastProviderToggle() {
+    const call = [...state.requests].reverse()
+      .find(entry => entry.command === 'toggle_zcode_provider_disabled');
+    return call ? call.args : null;
+  },
+  moreButtonCenter(key) {
+    const button = cardFor(key)?.querySelector('[data-provider-card-actions] button');
+    if (!button) return null;
+    const rect = button.getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  },
+  openMenuItemLabels() {
+    return [...document.querySelectorAll('.ant-dropdown-menu-item')]
+      .map(item => item.textContent.trim());
+  },
+  /** The text of the tooltip that is open right now, or null. */
+  openTooltipText() {
+    return document.querySelector('.ant-tooltip:not(.ant-tooltip-hidden)')?.textContent?.trim() ?? null;
   },
   /** The open detail sidebar, or null when none is open. */
   detailPanel() {
