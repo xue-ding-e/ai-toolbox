@@ -613,10 +613,23 @@ export async function verifyCodexCardView({ send, evaluate, baseUrl, artifactRoo
   // states: the login the channel runs on, the login only the CLI's own file
   // holds, or 「未登录」 when there is neither.
   await openFixture('viewMode=card&accounts=virtual');
+  // The reporter's own shape: one saved account that is not in use, and the
+  // login the CLI's `auth.json` still holds. Both are rows under this heading,
+  // and the cell has to name the live one — naming the idle saved account would
+  // state as current something the CLI is not running on.
   check(
-    'a login only the CLI file holds is stated as the current login',
+    'a live login beside an idle saved one is the one stated',
     await fixture('subtitleText("provider-c")'),
     '当前登录: live@example.invalid',
+  );
+  check(
+    'the idle saved account is not what the cell names',
+    await fixture('subtitleText("provider-c")').then(text => text.includes('first@example.invalid')),
+    false,
+  );
+  check(
+    'both rows are still stated by the heading',
+    await fixture('cardText("provider-c")').then(text => text.includes('(2)')),
   );
 
   await openFixture('viewMode=card&accounts=idle');

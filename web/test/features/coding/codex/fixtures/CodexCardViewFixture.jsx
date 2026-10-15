@@ -140,9 +140,14 @@ const liveLoginAccount = {
 };
 
 /**
- * Which accounts the official channel holds. `idle` is the state the cell used
- * to render as nothing at all — accounts saved, none of them in use — and
- * `virtual` is the state where the only login is the one in the CLI's own file.
+ * Which accounts the official channel holds.
+ *
+ * `idle` is the state the cell used to render as nothing at all — accounts
+ * saved, none of them in use. `virtual` is the state the reporter's machine was
+ * actually in: a saved account that is not in use **plus** the login the CLI's
+ * own `auth.json` still carries, which is the pair the cell has to choose from
+ * (it must name the live one, not the idle one) and the pair that made the
+ * heading read `官方账号 (2)`.
  */
 const accountMode = parameters.get('accounts') || 'saved';
 
@@ -155,7 +160,12 @@ const state = {
     accountMode === 'idle'
       ? accountsForProviderC.map((account) => ({ ...account, isApplied: false }))
       : accountMode === 'virtual'
-        ? [liveLoginAccount]
+        // The saved account first, the live login last: the order the backend
+        // lists them in, and the order the cell must not be fooled by.
+        ? [
+            { ...accountsForProviderC[0], isApplied: false },
+            liveLoginAccount,
+          ]
         : accountsForProviderC,
   providers: [
     // Applied, with a full catalog, a protocol the user picked, a long key and
