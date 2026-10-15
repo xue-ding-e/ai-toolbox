@@ -2227,8 +2227,12 @@ async fn build_gateway_response(
             // the raw bytes above are SSE text and carry no `usage` to find.
             body = build_remote_compaction_response_body(&body, &target_response_body)
             .map_err(|message| GatewayForwardError {
+                // A 2xx whose summary cannot be sealed is an upstream failure, not
+                // a client schema rejection. `GatewayParse` would answer 400 and
+                // throw away the retry Codex classifies from the error; this class
+                // retries the same provider, then fails over, and reports 502.
                 message,
-                kind: GatewayFailureKind::GatewayParse,
+                kind: GatewayFailureKind::EmptyResponse,
                 upstream_request_body: Some(upstream_body_snapshot.clone()),
                 upstream_response_body: Some(upstream_response_body.clone()),
                 upstream_response_body_bytes,
@@ -2508,8 +2512,10 @@ async fn build_gateway_response(
         // Gateway can read back on later turns.
         body = build_remote_compaction_response_body(&body, &upstream_response_body)
         .map_err(|message| GatewayForwardError {
+            // Same class as the aggregated path above: the upstream answered, but
+            // not with a summary this Gateway can hand to Codex.
             message,
-            kind: GatewayFailureKind::GatewayParse,
+            kind: GatewayFailureKind::EmptyResponse,
             upstream_request_body: Some(upstream_body_snapshot.clone()),
             upstream_response_body: Some(upstream_response_body.clone()),
             upstream_response_body_bytes,

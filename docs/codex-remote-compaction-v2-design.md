@@ -268,8 +268,8 @@ cc-switch 的 code review 明确指出：其 Anthropic 路径**未实现** compa
 - 同上但上游是 Chat 协议：聚合 + 反向转换之后才 seal，用量取自转换后的 body（`a_streaming_chat_upstream_still_yields_one_compaction_item`）。
 - 回放：下一轮把 item 回传后，上游收到 `Context summary from previous turns:` 开头的可读 assistant 消息，capsule 前缀 0 次出现，物品被展开而非透传（`a_replayed_capsule_becomes_readable_context_upstream`）。
 - **二次压缩**：同一次会话再次触发压缩时，input 里同时有旧 item 与新 trigger，展开仍须发生——上游收不到 capsule 前缀、收不到任何 `compaction` 项，却收到上一轮摘要作为可读上下文（`a_second_compaction_expands_the_previous_capsule_before_summarizing`）。这条曾经漏掉，直接导致 issue #416 的 `invalid_encrypted_content`。
-- 空摘要：请求以 400 + `gateway_request_schema_rejected` 失败，不产出 item、不 seal 空 capsule（`an_empty_summary_fails_instead_of_faking_an_item`）。
-- 截断：上游回了 SSE 且以 `response.incomplete` 收尾（部分文本非空）时，整轮以 400 失败、不产出 item、不 seal capsule（`a_truncated_summary_fails_instead_of_sealing_partial_context`）。**这条在修复前真的会 seal**：旧判定只认 Chat / Anthropic 停止原因，Responses 形态判不出来，于是把半截摘要当成完整上下文写了进去。
+- 空摘要：整轮以 **502 + `upstream_forward_failed`** 失败，不产出 item、不 seal 空 capsule（`an_empty_summary_fails_instead_of_faking_an_item`）。**不要退回 400 / `gateway_request_schema_rejected`**：那是「客户端请求不合法」的语义，会让 Codex 丢掉这一轮的重试，而问题出在上游（2xx 却没有可用的摘要）。改用既有的 `GatewayFailureKind::EmptyResponse`——「2xx 但没拿到可用内容」这一类：同供应商可重试、随后可 failover，且不把责任算在客户端。
+- 截断：上游回了 SSE 且以 `response.incomplete` 收尾（部分文本非空）时，整轮以 502 + `upstream_forward_failed` 失败、不产出 item、不 seal capsule（`a_truncated_summary_fails_instead_of_sealing_partial_context`）。**这条在修复前真的会 seal**：旧判定只认 Chat / Anthropic 停止原因，Responses 形态判不出来，于是把半截摘要当成完整上下文写了进去。
 
 ### 6.5 回归
 

@@ -9,6 +9,41 @@ import { build } from 'vite';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
+// Terminate a headless browser and everything it spawned.
+//
+// Teardown used to be `await send('Browser.close')` followed by `browser.kill()`.
+// Neither step is guaranteed while the browser is unresponsive — which is the
+// state that produces the failure — and `browser.kill()` only reaps the process
+// Node spawned, not the renderer/GPU/utility children Chromium gave it. So stop
+// trusting the handshake: allow a grace period, then take the whole tree down.
+//
+// What this cannot cover: a script killed from outside (command timeout, Ctrl+C,
+// a truncated pipe) never reaches teardown at all, and the whole browser survives.
+// The recognition and cleanup recipe for those orphans is in the root AGENTS.md.
+async function killBrowserTree(browser) {
+  if (!browser || browser.exitCode !== null || browser.signalCode !== null) return;
+  const exited = new Promise(resolve => browser.once('exit', () => resolve(true)));
+  let graceTimer;
+  const gracePeriod = new Promise(resolve => { graceTimer = setTimeout(() => resolve(false), 2000); });
+  browser.kill();
+  const didExit = await Promise.race([exited, gracePeriod]);
+  // A pending timer holds the event loop open, so a healthy exit must not leave
+  // the fixture script sitting here for the rest of the grace period.
+  clearTimeout(graceTimer);
+  if (didExit) return;
+  if (process.platform === 'win32') {
+    // Windows does not cascade a terminated parent onto its children, so ask for
+    // the tree explicitly; `/T` is what reaches the stuck renderer/GPU pair.
+    await new Promise(resolve => {
+      const killer = spawn('taskkill', ['/PID', String(browser.pid), '/T', '/F'], { stdio: 'ignore' });
+      killer.once('exit', resolve);
+      killer.once('error', resolve);
+    });
+    return;
+  }
+  try { browser.kill('SIGKILL'); } catch { /* Already gone. */ }
+}
+
 // Shared Chromium/Vite fixture runner. All HTTP, profiles and artifacts are local.
 export async function runBrowserFixture({ fixtureDirectory, fixtureFilename, artifactPrefix, verify, fixtureAliases = [] }) {
   const { values } = parseArgs({ options: { browser: { type: 'string' }, output: { type: 'string' } } });
@@ -120,9 +155,14 @@ export async function runBrowserFixture({ fixtureDirectory, fixtureFilename, art
       await send('Page.enable'); await send('Runtime.enable');
       await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
       return { send, evaluate, exceptions,
-        async close() { try { await send('Browser.close'); } finally { socket.close(); browser.kill(); } },
+        async close() {
+          try { await send('Browser.close'); }
+          // The handshake is best effort: a browser that ignores it still has to
+          // go, children included, or the next fixture inherits its memory.
+          finally { socket.close(); await killBrowserTree(browser); }
+        },
       };
-    } catch (error) { socket?.close(); browser.kill(); throw error; }
+    } catch (error) { socket?.close(); await killBrowserTree(browser); throw error; }
   }
 
   const fixtureRoot = path.join(artifactRoot, 'dist');
@@ -164,6 +204,9 @@ export async function runBrowserFixture({ fixtureDirectory, fixtureFilename, art
     // surface as a passing run failing on `Browser.close`.
     try { if (browser) await browser.close(); }
     catch (closeError) { console.error('Browser did not close cleanly:', closeError.message); }
+    // `close` waits for open connections, and a keep-alive one would hold this
+    // promise forever — turning "the browser went away" into a hung run.
+    server.closeAllConnections?.();
     await new Promise(resolve => server.close(resolve));
   }
 

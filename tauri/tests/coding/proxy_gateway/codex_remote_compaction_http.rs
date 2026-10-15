@@ -456,10 +456,12 @@ async fn an_empty_summary_fails_instead_of_faking_an_item() {
         .unwrap();
     let status = response.status();
     let bytes = response.bytes().await.unwrap();
-    assert_eq!(status, 400, "{}", String::from_utf8_lossy(&bytes));
+    // 502, not 400: nothing is wrong with Codex's request, and an upstream-class
+    // error is what keeps the turn retryable instead of blaming the client.
+    assert_eq!(status, 502, "{}", String::from_utf8_lossy(&bytes));
 
     let body: Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(body["error"], "gateway_request_schema_rejected");
+    assert_eq!(body["error"], "upstream_forward_failed");
     assert!(
         body["message"]
             .as_str()
@@ -521,9 +523,10 @@ async fn a_truncated_summary_fails_instead_of_sealing_partial_context() {
         .unwrap();
     let status = response.status();
     let bytes = response.bytes().await.unwrap();
-    assert_eq!(status, 400, "{}", String::from_utf8_lossy(&bytes));
+    assert_eq!(status, 502, "{}", String::from_utf8_lossy(&bytes));
 
     let body: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["error"], "upstream_forward_failed");
     assert!(
         body["message"]
             .as_str()
