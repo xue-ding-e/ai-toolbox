@@ -604,5 +604,32 @@ export async function verifyCodexCardView({ send, evaluate, baseUrl, artifactRoo
   );
   await screenshot('codex-card-view-dark');
 
+  // --- the login line answers in every state ------------------------------
+  //
+  // The cell's second line is reserved whether or not it states something, so a
+  // channel that has accounts but none in use left the band blank — which reads
+  // as a broken card, not as "nothing to say" (user-reported 2026-10-14, on two
+  // idle channels). The line now answers the question it exists for in all three
+  // states: the login the channel runs on, the login only the CLI's own file
+  // holds, or 「未登录」 when there is neither.
+  await openFixture('viewMode=card&accounts=virtual');
+  check(
+    'a login only the CLI file holds is stated as the current login',
+    await fixture('subtitleText("provider-c")'),
+    '当前登录: live@example.invalid',
+  );
+
+  await openFixture('viewMode=card&accounts=idle');
+  check(
+    'a channel with no login in use says so instead of leaving the line empty',
+    await fixture('subtitleText("provider-c")'),
+    '当前登录: 未登录',
+  );
+  check(
+    'the idle channel still states how many accounts it holds',
+    await fixture('cardText("provider-c")').then(text => text.includes('(2)')),
+  );
+  await screenshot('codex-card-view-idle-channel');
+
   return checks;
 }

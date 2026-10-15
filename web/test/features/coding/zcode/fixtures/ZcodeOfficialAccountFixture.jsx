@@ -121,7 +121,14 @@ const state = {
     createProvider('provider-b', 'Provider B', '2026-01-02T00:00:00.000Z'),
     createProvider('provider-c', 'Provider C', '2026-01-01T00:00:00.000Z'),
   ],
-  officialAccounts: accountMode === '0' ? [] : structuredClone(savedAccounts),
+  officialAccounts:
+    accountMode === '0'
+      ? []
+      : accountMode === 'idle'
+        // Accounts saved, none of them in use: the state the card layout's cell
+        // used to render as a blank second line.
+        ? savedAccounts.map(account => ({ ...account, isApplied: false }))
+        : structuredClone(savedAccounts),
 };
 
 const gatewayCliStatus = {

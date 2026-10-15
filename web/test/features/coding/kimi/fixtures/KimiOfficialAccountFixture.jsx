@@ -135,9 +135,13 @@ const state = {
   officialAccounts:
     accountMode === '0'
       ? []
-      : accountMode === 'virtual'
-        ? [structuredClone(virtualAccount)]
-        : structuredClone(savedAccounts),
+      : accountMode === 'idle'
+        // Accounts saved, none of them in use: the state the card layout's cell
+        // used to render as a blank second line.
+        ? savedAccounts.map(account => ({ ...account, isApplied: false }))
+        : accountMode === 'virtual'
+          ? [structuredClone(virtualAccount)]
+          : structuredClone(savedAccounts),
 };
 
 const gatewayCliStatus = {

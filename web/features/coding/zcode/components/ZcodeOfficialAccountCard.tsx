@@ -198,7 +198,15 @@ const ZcodeOfficialAccountCard: React.FC<ZcodeOfficialAccountCardProps> = ({
     // The one fact this cell states: which login ZCode is running on. The list
     // layout states it on the account's own row (the 默认 tag), and the label is
     // that same row's label — one account, one way of naming it.
-    const appliedRow = accountRows.find((row) => row.isApplied);
+    //
+    // The applied row wins; when it is missing, the live login the CLI's own
+    // credential file holds (the `当前` row, `isVirtual`) is still a login this
+    // channel runs on. When the channel holds neither, the cell says 未登录
+    // rather than leaving its second line blank — a silently empty line under
+    // the count reads as a broken card (user-reported 2026-10-14).
+    const currentLoginRow =
+      accountRows.find((row) => row.isApplied)
+      ?? accountRows.find((row) => row.isVirtual);
     return (
       <ProviderCompactCard
         provider={{
@@ -209,9 +217,12 @@ const ZcodeOfficialAccountCard: React.FC<ZcodeOfficialAccountCardProps> = ({
         // draws its own heading from, so the two layouts cannot drift apart.
         namePrefix={<OfficialAccountHeadingIcon />}
         nameTags={<OfficialAccountCount count={accounts.length} />}
-        subtitle={appliedRow
-          ? [{ label: t('common.officialAccount.currentLogin'), value: appliedRow.label }]
-          : undefined}
+        subtitle={[{
+          label: t('common.officialAccount.currentLogin'),
+          value: currentLoginRow
+            ? currentLoginRow.label
+            : t('common.officialAccount.currentLoginNone'),
+        }]}
         // One fact and no action of its own at the card level: switching, saving
         // and deleting are all actions *on an account row*, inside the sidebar.
         actionPlacement="subtitle"

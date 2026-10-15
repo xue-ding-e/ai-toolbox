@@ -1846,6 +1846,7 @@
       "headingTitle": "Official Account",
       "listTitle": "Account List",
       "currentLogin": "Current login",
+      "currentLoginNone": "Not signed in",
       "refresh": "Refresh",
       "details": "Details",
       "switch": "Switch",

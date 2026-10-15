@@ -628,11 +628,24 @@ const KimiProviderCard: React.FC<KimiProviderCardProps> = ({
   /**
    * The login the official channel is running on.
    *
+   * The applied row wins: it is the login the channel actually runs on. When the
+   * channel holds no applied account, the CLI's own credential file can still
+   * hold a login the app never saved — that is the `当前` row the block draws
+   * (`isVirtual`), and stating it is reading that file, not claiming a runtime.
+   * When neither exists the channel has no login at all, and the cell says so
+   * rather than leaving its second line blank, which reads as a broken card
+   * (user-reported 2026-10-14, on a channel that was simply idle).
+   *
    * Read off the mapped rows rather than off the raw records, so the value the
    * cell states is the very label the account's own row carries — the grid cell
-   * speaks for that row, and one account cannot be named two ways.
+   * speaks for that row, and one account cannot be named two ways. Kimi's rows
+   * carry no gateway gate (unlike Codex's): a gateway takeover leaves the channel's
+   * login in place and says so with the 绕过 tag beside it, so the cell keeps
+   * naming the account it names.
    */
-  const appliedAccountRow = officialAccountRows.find((row) => row.isApplied);
+  const currentLoginRow =
+    officialAccountRows.find((row) => row.isApplied)
+    ?? officialAccountRows.find((row) => row.isVirtual);
 
   const officialAccountById = (id: string) =>
     officialAccounts.find((account) => account.id === id);
@@ -932,13 +945,15 @@ const KimiProviderCard: React.FC<KimiProviderCardProps> = ({
       // The official channel states the login it is running on instead: the
       // accounts are what that row is about, and the value is the same label its
       // own row carries inside the block (one account, one way of naming it).
+      // It always states one: a channel that holds no login says 未登录 rather
+      // than leaving the line blank.
       subtitle={isOfficialProvider
-        ? (appliedAccountRow
-            ? [{
-                label: t('common.officialAccount.currentLogin'),
-                value: appliedAccountRow.label,
-              }]
-            : undefined)
+        ? [{
+            label: t('common.officialAccount.currentLogin'),
+            value: currentLoginRow
+              ? currentLoginRow.label
+              : t('common.officialAccount.currentLoginNone'),
+          }]
         : (!isLocalProvider && modelName
           ? [{ label: t('kimi.providerForm.defaultModelKey'), value: modelName }]
           : undefined)}

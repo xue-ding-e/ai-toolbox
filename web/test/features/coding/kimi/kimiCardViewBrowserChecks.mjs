@@ -291,5 +291,31 @@ export async function verifyKimiCardView({ send, evaluate, baseUrl, artifactRoot
   check('the dark grid is still a grid', await fixture('gridColumnCount()') > 1);
   await screenshot('kimi-card-view-dark');
 
+  // --- the login line answers in every state ------------------------------
+  //
+  // The cell's second line is reserved whether or not it states something, so a
+  // channel that has accounts but none in use left the band blank — which reads
+  // as a broken card rather than as "nothing to say" (user-reported 2026-10-14,
+  // on an idle channel). It now answers the question it exists for in every
+  // state: the login in use, the login only the CLI's credential file holds, or
+  // 未登录 when there is neither.
+  await openFixture('viewMode=card&accounts=virtual');
+  check(
+    'a login only the CLI file holds is stated as the current login',
+    await fixture(`subtitleText(${JSON.stringify(OFFICIAL_ID)})`),
+    '当前登录: moonwalker',
+  );
+
+  await openFixture('viewMode=card&accounts=idle');
+  check(
+    'a channel with no login in use says so instead of leaving the line empty',
+    await fixture(`subtitleText(${JSON.stringify(OFFICIAL_ID)})`),
+    '当前登录: 未登录',
+  );
+  check(
+    'the idle channel still states how many accounts it holds',
+    await fixture(`cardText(${JSON.stringify(OFFICIAL_ID)})`).then(text => text.includes('(2)')),
+  );
+
   return checks;
 }

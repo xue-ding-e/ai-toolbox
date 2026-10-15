@@ -1846,6 +1846,7 @@
       "headingTitle": "官方账号",
       "listTitle": "账号列表",
       "currentLogin": "当前登录",
+      "currentLoginNone": "未登录",
       "refresh": "刷新",
       "details": "详情",
       "switch": "切换",

@@ -115,12 +115,48 @@ const accountsForProviderC = [
   },
 ];
 
+/**
+ * The login the CLI itself is holding, when no saved row represents it.
+ *
+ * `auth.json` can carry a login the app has never captured, and the backend
+ * hands that to the frontend as one virtual row (`isVirtual`, no snapshot of its
+ * own, `isApplied: false` by construction) — the shape the block draws as 本地
+ * and the cell names as the login in use.
+ */
+const liveLoginAccount = {
+  id: '__local__',
+  // The backend hands the virtual row to the official provider that asked for
+  // it (`assign_provider_id`), which is the list it belongs to.
+  providerId: 'provider-c',
+  name: '__local__',
+  kind: 'local',
+  email: 'live@example.invalid',
+  planType: null,
+  limitMonthlyText: null,
+  isApplied: false,
+  isVirtual: true,
+  createdAt: '2026-01-01T00:00:00.000Z',
+  updatedAt: '2026-01-01T00:00:00.000Z',
+};
+
+/**
+ * Which accounts the official channel holds. `idle` is the state the cell used
+ * to render as nothing at all — accounts saved, none of them in use — and
+ * `virtual` is the state where the only login is the one in the CLI's own file.
+ */
+const accountMode = parameters.get('accounts') || 'saved';
+
 const state = {
   runId: parameters.get('runId'),
   requests: [],
   sortMode: 'custom',
   viewMode: initialViewMode,
-  officialAccounts: accountsForProviderC,
+  officialAccounts:
+    accountMode === 'idle'
+      ? accountsForProviderC.map((account) => ({ ...account, isApplied: false }))
+      : accountMode === 'virtual'
+        ? [liveLoginAccount]
+        : accountsForProviderC,
   providers: [
     // Applied, with a full catalog, a protocol the user picked, a long key and
     // a note: the record whose sidebar states every row.

@@ -560,13 +560,28 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
    * The login the official channel is running on — what its cell states instead
    * of a primary model.
    *
+   * The applied row wins: it is the login the channel actually runs on. When the
+   * channel holds no applied account, the CLI's own `auth.json` can still hold a
+   * login the app never saved — and that is precisely the `本地` row the block
+   * already draws (`isVirtual`), which the app's own wording calls what is in use.
+   * Stating it is reading the file, not claiming a runtime: it is the same fact
+   * the block's row states one click away. When neither row exists the channel
+   * has no login at all, and the cell says so — a silently empty second line
+   * reads as a broken card (user-reported 2026-10-14, on two channels that were
+   * simply idle).
+   *
    * Read off the mapped rows rather than off the raw records, so the value is
    * the very label the account's own row carries: the cell speaks for that row,
-   * and one account cannot be named two ways. While the gateway owns the runtime
-   * the rows carry no applied account (see `isApplied` above), and the cell drops
-   * the line with them — the same state the block states by dropping its 默认 mark.
+   * and one account cannot be named two ways. The whole line is behind
+   * `showOfficialRuntimeState`, the gate this CLI already puts on the applied
+   * mark: while the gateway owns the runtime, `auth.json` holds *its* credentials
+   * rather than this channel's login, so neither row is the channel's current
+   * login and the cell says 未登录 like any other idle channel.
    */
-  const appliedAccountRow = officialAccountRows.find((row) => row.isApplied);
+  const currentLoginRow = showOfficialRuntimeState
+    ? (officialAccountRows.find((row) => row.isApplied)
+      ?? officialAccountRows.find((row) => row.isVirtual))
+    : undefined;
 
   const officialAccountById = (id: string) =>
     officialAccounts.find((account) => account.id === id);
@@ -1159,14 +1174,15 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
         //
         // The official channel answers a different question — which login it
         // is running on — because that is what the row is about; the accounts
-        // are what its card opens.
+        // are what its card opens. It always answers it: a channel that holds
+        // no login says 「未登录」 rather than leaving the line blank.
         subtitle={isOfficialProvider
-          ? (appliedAccountRow
-              ? [{
-                  label: t('common.officialAccount.currentLogin'),
-                  value: appliedAccountRow.label,
-                }]
-              : undefined)
+          ? [{
+              label: t('common.officialAccount.currentLogin'),
+              value: currentLoginRow
+                ? currentLoginRow.label
+                : t('common.officialAccount.currentLoginNone'),
+            }]
           : (displayModelName
               ? [{ label: t('codex.model.primaryLabel'), value: displayModelName }]
               : undefined)}
