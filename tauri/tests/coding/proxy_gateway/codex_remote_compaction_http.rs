@@ -476,6 +476,70 @@ async fn an_empty_summary_fails_instead_of_faking_an_item() {
     upstream.await.unwrap();
 }
 
+/// A truncated summary must fail the turn too - even though the upstream already
+/// produced text. Codex installs the returned item as the entire conversation
+/// history, so sealing a half-built summary would silently drop the context the
+/// compaction exists to preserve.
+///
+/// This is the shape issue #416 reported as `Upstream returned an empty
+/// compaction summary`: the answer was truncated, not empty, and the
+/// classification only looked at Chat / Anthropic stop reasons - which the
+/// converted Responses body never carries. The gateway asks for `stream: false`
+/// and a relay answers SSE anyway, which is how a truncation reaches an
+/// aggregating gateway in the first place.
+#[tokio::test]
+async fn a_truncated_summary_fails_instead_of_sealing_partial_context() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let upstream_url = format!("http://{}", listener.local_addr().unwrap());
+    let upstream = tokio::spawn(async move {
+        let mut socket = accept_upstream(&listener).await;
+        read_mock_request(&mut socket, "/v1/responses ").await;
+        // A truncated turn: text arrived, then the upstream said it stopped.
+        let stream = format!(
+            "event: response.output_text.delta\ndata: {}\n\n\
+             event: response.incomplete\ndata: {}\n\n",
+            json!({"type": "response.output_text.delta", "delta": SUMMARY_TEXT}),
+            json!({"type": "response.incomplete",
+                   "response": {"id": "upstream-summary", "object": "response",
+                                "status": "incomplete",
+                                "incomplete_details": {"reason": "max_output_tokens"},
+                                "model": "fixture-model",
+                                "output": [{"type": "message", "role": "assistant",
+                                            "content": [{"type": "output_text", "text": SUMMARY_TEXT}]}],
+                                "usage": {"input_tokens": 21, "output_tokens": 9, "total_tokens": 30}}})
+        );
+        write_mock_reply(&mut socket, 200, stream.as_bytes(), true).await;
+    });
+
+    let gateway = compaction_gateway(&upstream_url);
+    let client = http_client::create_client_no_proxy(10).unwrap();
+    let response = client
+        .post(&gateway.url)
+        .json(&compaction_turn(true))
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = response.bytes().await.unwrap();
+    assert_eq!(status, 400, "{}", String::from_utf8_lossy(&bytes));
+
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap()
+            .contains("truncated the compaction summary"),
+        "{body}"
+    );
+    assert!(body.get("output").is_none(), "an item was faked: {body}");
+    assert!(
+        !String::from_utf8_lossy(&bytes).contains(CAPSULE_PREFIX),
+        "a partial summary was sealed: {body}"
+    );
+
+    upstream.await.unwrap();
+}
+
 /// A relay that ignores the `stream: false` the gateway asks for must still
 /// produce the compaction contract: the SSE answer is buffered whole, sealed
 /// into one `compaction` item, and re-rendered for the streaming client.

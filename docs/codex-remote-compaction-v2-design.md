@@ -122,7 +122,7 @@ Codex ◄──┘
 
 - **恰好一个** compaction output item。Codex 严格校验 `compaction_count != 1` 即 Fatal（`compact_remote_v2.rs:485-488`）。
 - SSE 只需两个事件：`response.output_item.done`（携带 compaction item）+ `response.completed`。**不需要 `response.output_item.added`**——Codex 的 SSE 解析器对 `done` 独立解析（`codex-api/src/sse/responses.rs:353`），cc-switch 实测只发这两个。
-- 摘要为空或被截断（`finish_reason == "length"`）时必须拒绝（cc-switch 做法），否则会把不完整摘要固化进 Codex 历史。
+- 摘要为空、被截断、或上游自己报了失败/取消时必须拒绝（cc-switch 做法），否则会把不完整摘要固化进 Codex 历史。判定统一在 `extract_summary_text`，优先级 **failed > truncated > empty**（与 WS 的 `CompactionStreamSummary::finish` 同序）。重点是**截断的两种形状都要认**：原始 Chat / Anthropic body 带 `finish_reason` / `stop_reason`，而转换后的 Responses body（四种源协议转换后的共同形态，也是 Codex 直连上游的原生形态）带的是 `status: "incomplete"`——`finish_to_responses_status` 会把四协议的 `length` / `max_tokens` 都写成它，forced-stream 聚合器也保留终态 `status`。HTTP 侧此前只查前两种 wire 字段，在 Responses 形态上**永不命中**：非空的部分文本会被当成完整摘要 seal 进 Codex 历史（静默丢上下文），无文本时则被误报成 `Upstream returned an empty compaction summary`——issue #416 的第三条报错就是这个误判的措辞。回归 `a_truncated_summary_fails_instead_of_sealing_partial_context`。
 - 流式上游也要先缓冲完整摘要再合成，不能边收边转。**这是上游不守约时的兜底，不是常规路径**：网关已把压缩轮次改写成 `stream: false`，但中转站/渠道可以忽略它并照旧回 SSE。此时整段必须聚合完才能 seal，原样转发等于给 Codex 一个普通 assistant item（计 0 个 compaction item）。判据落在 `compaction_sse_aggregation_kind`：它**不看客户端的 `stream` 声明**——Codex 恒为流式，正是这个标志把旧实现挡在了聚合分支之外。回归：`a_streaming_upstream_still_yields_one_compaction_item`（Responses 身份路由）、`a_streaming_chat_upstream_still_yields_one_compaction_item`（Chat 上游，需先聚合再反向转换）。
 - 非流请求直接返回 JSON 形态的同一 response 对象。
 - **SSE 重渲染必须跟随客户端声明**：合成好的 item 要改写成 SSE 只在客户端声明了 `stream: true` 时做（`render_compaction_sse_if_streaming`，两条响应路径共用）。无条件重渲染会让非流式调用方拿到一个 `text/event-stream` 外壳、解析不出来的 body。注意它与上一条是两个正交的判定：**聚合看「上游怎么答的」，重渲染看「客户端要怎么收」**，两者互不蕴含。
@@ -247,7 +247,7 @@ cc-switch 的 code review 明确指出：其 Anthropic 路径**未实现** compa
 ### 6.2 边界
 
 - `compaction_trigger` 与本地 checkpoint compaction（仅 `request_kind` 头）区分：后者必须仍返回 assistant 摘要（`local_checkpoint_metadata_is_not_remote_compaction`）。
-- 摘要为空 / 被截断 / 上游失败 → 一律不产出 item（HTTP 走错误路径，WS 转发上游终态）。
+- 摘要为空 / 被截断 / 上游失败 → 一律不产出 item（HTTP 走错误路径，WS 转发上游终态）。截断判定必须同时覆盖 Responses 的 `status: "incomplete"`（见 §3.4）；失败判定覆盖 `status: failed/canceled/cancelled` 与非空 `error` 对象。`truncated_and_empty_summaries_are_rejected` 逐条钉住这些形状，含「部分文本 + `incomplete` 不得 seal」与「`error: null` 不算失败」。
 - WS 无 delta 时回退到 `output_item.done` 的完整文本（`a_summary_without_deltas_falls_back_to_the_completed_item`）。
 - WS 上游失败/截断/空摘要均不产出 item（`a_failed_or_empty_summary_yields_no_item`；relay 层三条：`websocket_compaction_failure_is_forwarded_not_synthesized`、`websocket_empty_summary_forwards_the_upstream_terminal`、`websocket_truncated_summary_forwards_the_upstream_terminal`）。后两条钉住「上游**成功**但摘要不可用」这条最容易被误当成可合成的情况——它只转发上游自己的 `response.completed`/`response.incomplete`，Codex 因此报自己的 `expected exactly one compaction output item`，而不是被塞进一个伪造的上下文。
 - legacy `/responses/compact` 不被本模块认领（`the_legacy_compact_endpoint_is_not_claimed`）。
@@ -269,6 +269,7 @@ cc-switch 的 code review 明确指出：其 Anthropic 路径**未实现** compa
 - 回放：下一轮把 item 回传后，上游收到 `Context summary from previous turns:` 开头的可读 assistant 消息，capsule 前缀 0 次出现，物品被展开而非透传（`a_replayed_capsule_becomes_readable_context_upstream`）。
 - **二次压缩**：同一次会话再次触发压缩时，input 里同时有旧 item 与新 trigger，展开仍须发生——上游收不到 capsule 前缀、收不到任何 `compaction` 项，却收到上一轮摘要作为可读上下文（`a_second_compaction_expands_the_previous_capsule_before_summarizing`）。这条曾经漏掉，直接导致 issue #416 的 `invalid_encrypted_content`。
 - 空摘要：请求以 400 + `gateway_request_schema_rejected` 失败，不产出 item、不 seal 空 capsule（`an_empty_summary_fails_instead_of_faking_an_item`）。
+- 截断：上游回了 SSE 且以 `response.incomplete` 收尾（部分文本非空）时，整轮以 400 失败、不产出 item、不 seal capsule（`a_truncated_summary_fails_instead_of_sealing_partial_context`）。**这条在修复前真的会 seal**：旧判定只认 Chat / Anthropic 停止原因，Responses 形态判不出来，于是把半截摘要当成完整上下文写了进去。
 
 ### 6.5 回归
 

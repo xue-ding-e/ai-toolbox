@@ -378,6 +378,9 @@ pub(in crate::coding::proxy_gateway::runtime) enum CompactionSummaryError {
 pub(in crate::coding::proxy_gateway::runtime) fn extract_summary_text(
     response: &Value,
 ) -> Result<String, CompactionSummaryError> {
+    if is_failed(response) {
+        return Err(CompactionSummaryError::Failed);
+    }
     if is_truncated(response) {
         return Err(CompactionSummaryError::Truncated);
     }
@@ -394,12 +397,44 @@ pub(in crate::coding::proxy_gateway::runtime) fn extract_summary_text(
     Ok(text)
 }
 
+/// Whether the upstream stopped before the summary was complete.
+///
+/// Two shapes arrive here. A raw Chat / Anthropic body still carries the wire's
+/// own stop reason. A Responses body - the shape conversion produces for every
+/// source protocol, and the shape Codex's own upstreams answer with natively -
+/// carries `status: "incomplete"` instead: `finish_to_responses_status` writes it
+/// for `length` / `max_tokens` from all four protocols, and the forced-stream
+/// aggregator keeps the terminal status. Checking only the wire fields left that
+/// shape unguarded, so a truncated reply that still carried partial text was
+/// sealed as the *entire* conversation history (issue #416 reported the outcome
+/// as an "empty compaction summary", because nothing else was checked).
 fn is_truncated(response: &Value) -> bool {
     let finish_reason = response
         .pointer("/choices/0/finish_reason")
         .and_then(Value::as_str)
         .or_else(|| response.get("stop_reason").and_then(Value::as_str));
     matches!(finish_reason, Some("length") | Some("max_tokens"))
+        || response.get("status").and_then(Value::as_str) == Some("incomplete")
+}
+
+/// Whether the summarization turn itself ended in failure.
+///
+/// A failed or cancelled turn can still carry text, and that draft is a partial
+/// context too. This is reachable on a 2xx body: the forced-stream aggregator
+/// hands back an upstream `response.failed` / `response.cancelled` as JSON, with
+/// the headers that already carried the 200. Non-2xx never gets this far - those
+/// fail the request before the summary is read.
+fn is_failed(response: &Value) -> bool {
+    if matches!(
+        response.get("status").and_then(Value::as_str),
+        Some("failed") | Some("canceled") | Some("cancelled")
+    ) {
+        return true;
+    }
+    response
+        .get("error")
+        .and_then(Value::as_object)
+        .is_some_and(|error| !error.is_empty())
 }
 
 /// Collects the assistant text out of an upstream Responses WebSocket stream.
@@ -954,6 +989,47 @@ mod tests {
                 "choices": [{ "finish_reason": "length", "message": { "content": "half a summ" } }]
             })),
             Err(CompactionSummaryError::Truncated)
+        );
+        // The shape conversion produces for every source protocol, and the shape
+        // Codex's own upstream answers with: partial text that must not be sealed
+        // as a whole summary.
+        assert_eq!(
+            extract_summary_text(&serde_json::json!({
+                "status": "incomplete",
+                "incomplete_details": { "reason": "max_output_tokens" },
+                "output": [{ "type": "message", "role": "assistant",
+                             "content": [{ "type": "output_text", "text": "half a summ" }] }]
+            })),
+            Err(CompactionSummaryError::Truncated)
+        );
+        for status in ["failed", "canceled", "cancelled"] {
+            assert_eq!(
+                extract_summary_text(&serde_json::json!({
+                    "status": status,
+                    "output": [{ "type": "message", "role": "assistant",
+                                 "content": [{ "type": "output_text", "text": "half a summ" }] }]
+                })),
+                Err(CompactionSummaryError::Failed),
+                "{status}"
+            );
+        }
+        assert_eq!(
+            extract_summary_text(&serde_json::json!({
+                "error": { "message": "upstream exploded" },
+                "output": [{ "type": "message", "role": "assistant",
+                             "content": [{ "type": "output_text", "text": "half a summ" }] }]
+            })),
+            Err(CompactionSummaryError::Failed)
+        );
+        // A healthy reported reply carries `error: null`; that is not a failure.
+        assert_eq!(
+            extract_summary_text(&serde_json::json!({
+                "status": "completed",
+                "error": null,
+                "output": [{ "type": "message", "role": "assistant",
+                             "content": [{ "type": "output_text", "text": "a whole summar" }] }]
+            })),
+            Ok("a whole summar".to_string())
         );
         assert_eq!(
             extract_summary_text(&serde_json::json!({

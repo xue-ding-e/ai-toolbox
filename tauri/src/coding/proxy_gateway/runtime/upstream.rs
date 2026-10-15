@@ -5034,12 +5034,10 @@ fn build_remote_compaction_response_body(
         match error {
             CompactionSummaryError::Truncated => "Upstream truncated the compaction summary".to_string(),
             CompactionSummaryError::Empty => "Upstream returned an empty compaction summary".to_string(),
-            // Unreachable: `extract_summary_text` inspects a complete 2xx body,
-            // and only the WebSocket stream summary ever reports a failure (a
-            // non-2xx status fails the request before reaching this point). The
-            // arm exists because the enum is shared, so its message states only
-            // what is true here instead of naming a failure that cannot arrive.
-            CompactionSummaryError::Failed => "Upstream returned an unusable compaction summary".to_string(),
+            // Reachable on a 2xx whose own status says the turn failed: the
+            // forced-stream aggregator hands an upstream `response.failed` back
+            // as a body, by which time the 200 headers are already out.
+            CompactionSummaryError::Failed => "Upstream failed the compaction turn".to_string(),
         }
     })?;
 
