@@ -1,5 +1,6 @@
 mod codex_history;
 mod gemini_shadow;
+mod native_compaction;
 mod responses_cipher;
 
 use std::sync::Arc;
@@ -50,6 +51,7 @@ pub(super) struct GatewaySideStores {
     codex_history: Arc<codex_history::CodexHistoryStore>,
     gemini_shadow: Arc<gemini_shadow::GeminiShadowStore>,
     invalid_responses_ciphers: Arc<responses_cipher::InvalidResponsesCipherStore>,
+    native_compaction_rejections: Arc<native_compaction::NativeCompactionRejectionStore>,
 }
 
 impl GatewaySideStores {
@@ -113,5 +115,24 @@ impl GatewaySideStores {
     ) -> bool {
         self.invalid_responses_ciphers
             .has_entries_for_provider(provider_config_identity)
+    }
+
+    /// Records that this provider configuration answered a bare
+    /// `compaction_trigger` without a `compaction` item, so later turns go
+    /// straight to the Gateway's own summarization.
+    pub(super) fn remember_native_compaction_rejection(
+        &self,
+        provider_config_identity: [u8; 32],
+    ) {
+        self.native_compaction_rejections
+            .remember(provider_config_identity);
+    }
+
+    pub(super) fn has_native_compaction_rejection(
+        &self,
+        provider_config_identity: [u8; 32],
+    ) -> bool {
+        self.native_compaction_rejections
+            .is_remembered(provider_config_identity)
     }
 }

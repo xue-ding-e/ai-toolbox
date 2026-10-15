@@ -261,6 +261,12 @@
         "durationHint": "First-token latency (approximated by the first chunk) / total duration. The first chunk may be an SSE control event. Only total duration is shown when first-chunk timing is unavailable.",
         "effortHint": "Explicit reasoning effort in the final upstream request. Model defaults are not inferred.",
         "serviceTierHint": "OpenAI Fast/Ultrafast service tier: the tier the upstream confirmed wins, falling back to the tier declared in the request body. Whether it costs extra is decided by this provider's billing config (the Fast / Ultrafast multipliers); unset records the standard price.",
+        "compaction": {
+          "native": "Native compact",
+          "fallback": "Fallback compact",
+          "simulated": "Gateway compact",
+          "hint": "Codex remote compaction v2: which side wrote the `compaction` item. Native compact: the upstream answered with its own item. Fallback compact: the trigger was forwarded first, the upstream did not answer with an item, so the gateway summarized the turn itself. Gateway compact: the provider reaches the upstream through a protocol conversion, where a native answer is impossible, so the trigger was never forwarded. The item looks identical on the wire in all three cases."
+        },
         "localSession": "Session",
         "localSessionHint": "From local CLI session logs, without HTTP status or latency. Cost uses the CLI-reported value when available, otherwise model pricing.",
         "importPartialFailure": "Partially synced: {{inserted}} added, {{updated}} updated, {{skipped}} skipped; {{count}} items failed. See the application log for details.",

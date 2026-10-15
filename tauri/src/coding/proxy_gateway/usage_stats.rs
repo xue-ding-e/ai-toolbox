@@ -399,7 +399,7 @@ pub fn record_request_summary(
                 cost_multiplier, pricing_model_source, created_at, data_source, detail_file,
                 detail_offset, route_name, method, path, upstream_status_code,
                 stream_outcome, error_category, attempt_count, total_attempt_count, reasoning_effort, transport, request_kind, usage_request_count,
-                service_tier, service_tier_multiplier
+                service_tier, service_tier_multiplier, compaction_mode
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5,
                 ?6, ?7, ?8, ?9,
@@ -407,7 +407,7 @@ pub fn record_request_summary(
                 ?14, ?15, ?16, ?17,
                 ?18, ?19, ?20, ?21, ?22,
                 ?23, ?24, ?25, 'proxy', ?26, ?27, ?28, ?29, ?30, ?31,
-                ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41
+                ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42
             )"
         );
         let affected_rows = conn
@@ -455,6 +455,7 @@ pub fn record_request_summary(
                     i64::from(summary.request_kind == super::types::GatewayRequestKind::Request),
                     summary.service_tier,
                     summary.service_tier_multiplier,
+                    summary.compaction_mode,
                 ],
             )
             .map_err(|error| format!("Failed to record proxy gateway request summary: {error}"))?;
@@ -731,7 +732,7 @@ pub fn request_logs(
                     status_code, error_message, created_at, is_streaming,
                     route_name, method, path, stream_outcome, reasoning_effort,
                     COALESCE(data_source, 'proxy'), json(usage_metadata), extra_tokens, transport, request_kind,
-                    service_tier
+                    service_tier, compaction_mode
              FROM proxy_request_logs l
              {where_clause}
              ORDER BY created_at DESC
@@ -768,6 +769,7 @@ pub fn request_logs(
                     upstream_model_id: row.get(3)?,
                     reasoning_effort: row.get(21)?,
                     service_tier: row.get(27)?,
+                    compaction_mode: row.get(28)?,
                     requested_model: row.get(4)?,
                     status_code: row.get::<_, i64>(13)?.max(0) as u16,
                     success: {
@@ -2550,7 +2552,7 @@ pub fn request_log_detail_from_summary(
                     route_name, method, path, upstream_status_code,
                     stream_outcome, error_category, attempt_count, total_attempt_count, reasoning_effort,
                     COALESCE(data_source, 'proxy'), json(usage_metadata), extra_tokens, transport, request_kind,
-                    service_tier, service_tier_multiplier
+                    service_tier, service_tier_multiplier, compaction_mode
              FROM proxy_request_logs
              WHERE request_id = ?1",
             [trace_id],
@@ -2614,6 +2616,7 @@ pub fn request_log_detail_from_summary(
                         reasoning_effort: row.get(30)?,
                         service_tier: row.get(36)?,
                         service_tier_multiplier: row.get(37)?,
+                        compaction_mode: row.get(38)?,
                         upstream_url: None,
                         status_code: (!is_session && status_code != 0).then_some(status_code),
                         upstream_status_code: row
@@ -2877,6 +2880,7 @@ mod tests {
                 reasoning_effort: None,
                 service_tier: None,
                 service_tier_multiplier: None,
+                compaction_mode: None,
                 upstream_url: Some("https://example.test/v1/messages".to_string()),
                 status_code: Some(status_code),
                 upstream_status_code: None,
@@ -3266,6 +3270,51 @@ mod tests {
         let (no_tier_cost, no_tier) = record("trace-tier-none", None, None);
         assert_eq!(no_tier_cost, "2.000000");
         assert_eq!(no_tier, None);
+    }
+
+    /// The compaction label survives the SQLite round trip on both the list
+    /// query and the summary fallback, and stays NULL on rows that predate the
+    /// column so an old log reads as "not a compaction turn" rather than a guess.
+    #[test]
+    fn compaction_mode_round_trips_and_defaults_to_absent() {
+        let db = test_db();
+        let settings = ProxyGatewaySettings::default();
+        for (trace_id, mode) in [
+            ("trace-compact-native", Some("native")),
+            ("trace-compact-simulated", Some("simulated")),
+            ("trace-compact-none", None),
+        ] {
+            let mut detail = make_detail_for_cli(GatewayCliKey::Codex, trace_id, "provider-alpha", 200, 1_000, 20);
+            detail.summary.compaction_mode = mode.map(str::to_string);
+            record_request_summary(&db, &settings, &detail).expect("record summary");
+        }
+
+        for (trace_id, expected) in [
+            ("trace-compact-native", Some("native")),
+            ("trace-compact-simulated", Some("simulated")),
+            ("trace-compact-none", None),
+        ] {
+            let stored: Option<String> = db
+                .with_conn(|conn| {
+                    conn.query_row(
+                        "SELECT compaction_mode FROM proxy_request_logs WHERE request_id = ?1",
+                        [trace_id],
+                        |row| row.get::<_, Option<String>>(0),
+                    )
+                    .map_err(|error| error.to_string())
+                })
+                .expect("stored label");
+            assert_eq!(stored.as_deref(), expected, "{trace_id}");
+
+            let fallback = request_log_detail_from_summary(&db, trace_id)
+                .expect("fallback detail")
+                .expect("summary detail exists");
+            assert_eq!(
+                fallback.summary.compaction_mode.as_deref(),
+                expected,
+                "{trace_id} must survive the summary fallback"
+            );
+        }
     }
 
     #[test]

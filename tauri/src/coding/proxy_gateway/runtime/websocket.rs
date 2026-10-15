@@ -4,6 +4,7 @@
 
 use super::compat::codex_remote_compaction::{
     self as codex_remote_compaction, CompactionStreamSummary, RemoteCompactionCompat,
+    COMPACTION_MODE_FALLBACK, COMPACTION_MODE_NATIVE, COMPACTION_MODE_SIMULATED,
 };
 use super::compat::provider_kind::ProviderBodyCompat;
 use super::http_io::{
@@ -720,7 +721,79 @@ struct PendingTurn {
     /// Set when this turn asked the upstream for a continuation summary, in
     /// which case the upstream's own stream is consumed and replaced by a
     /// synthesized `compaction` item.
-    compaction: Option<CompactionStreamSummary>,
+    compaction: Option<CompactionTurn>,
+}
+
+/// A compaction turn in flight, and how far the relay has got with it.
+///
+/// The upstream's frames are consumed rather than forwarded on this path, which
+/// leaves three ways out. A pass-through turn whose upstream streamed its own
+/// `compaction` item has it replayed verbatim — that is the whole point of
+/// forwarding the trigger. One whose upstream answered an ordinary message is
+/// refused once and then asked again as a plain summary, because an ordinary
+/// assistant reply was never written under the summarization instruction. A
+/// summarize turn seals the text into this Gateway's own item.
+#[derive(Debug)]
+struct CompactionTurn {
+    /// Whether this attempt asks for text the Gateway seals itself, as opposed
+    /// to asking the upstream for its own item.
+    summarizing: bool,
+    /// Whether that summarization came from a refused offer of the trigger,
+    /// which is what the request log reports as a fallback rather than as a
+    /// turn a converted target could never have served natively.
+    retried: bool,
+    summary: CompactionStreamSummary,
+    /// Frames of the attempt in flight. Only kept while the upstream may answer
+    /// natively: its own reply has to be replayed byte for byte, and a reply
+    /// that is not one has to be discarded before the retry.
+    attempt_frames: Vec<Vec<u8>>,
+    /// Set between sending a retry and its first frame. The reply that follows
+    /// is a different response, so the relay must adopt its id instead of
+    /// treating it as a stray event from another turn.
+    awaiting_new_response_id: bool,
+}
+
+impl CompactionTurn {
+    fn pass_through() -> Self {
+        Self {
+            summarizing: false,
+            retried: false,
+            summary: CompactionStreamSummary::default(),
+            attempt_frames: Vec::new(),
+            awaiting_new_response_id: false,
+        }
+    }
+
+    fn summarize() -> Self {
+        Self {
+            summarizing: true,
+            ..Self::pass_through()
+        }
+    }
+
+    /// Switches this turn from a refused pass-through attempt to a retry, and
+    /// returns whether the attempt that just ended was the pass-through one.
+    fn begin_summarizing_retry(&mut self) -> bool {
+        if self.summarizing {
+            return false;
+        }
+        self.summarizing = true;
+        self.retried = true;
+        self.summary = CompactionStreamSummary::default();
+        self.attempt_frames.clear();
+        self.awaiting_new_response_id = true;
+        true
+    }
+
+    /// The request-log label this turn's item will be attributed to, once the
+    /// sealing has actually produced one.
+    fn served_mode_label(&self) -> &'static str {
+        if self.retried {
+            COMPACTION_MODE_FALLBACK
+        } else {
+            COMPACTION_MODE_SIMULATED
+        }
+    }
 }
 
 impl PendingTurn {
@@ -939,11 +1012,19 @@ impl PendingTurns {
             .unwrap_or_default();
         let turn = self.lanes.get_mut(&lane)?.front_mut()?;
         if let Some(response_id) = response_id {
-            if turn
-                .metadata
-                .response_id
-                .as_deref()
-                .is_some_and(|current| current != response_id)
+            // A compaction retry is a second response on the same turn, so the
+            // id that follows it is expected to differ from the one just
+            // discarded. Adopt it instead of rejecting it as a stray event.
+            let awaiting_new_response_id = turn
+                .compaction
+                .as_mut()
+                .is_some_and(|compaction| std::mem::take(&mut compaction.awaiting_new_response_id));
+            if !awaiting_new_response_id
+                && turn
+                    .metadata
+                    .response_id
+                    .as_deref()
+                    .is_some_and(|current| current != response_id)
             {
                 return None;
             }
@@ -995,6 +1076,59 @@ fn build_websocket_compaction_response(
         model,
         compaction.usage(),
     ))
+}
+
+/// Builds the summarizing retry for a pass-through compaction attempt the
+/// upstream refused, and remembers the refusal.
+///
+/// The retry replaces the trigger with a plain summarization instruction, so the
+/// upstream finally sees an ordinary turn. Returns `None` when the retry cannot
+/// be prepared, in which case the caller falls back to the upstream's own frames
+/// rather than inventing an answer.
+fn compaction_retry_body(
+    lane: &Option<String>,
+    pending: &mut PendingTurns,
+    provider: &UpstreamProvider,
+    context: &GatewayRuntimeContext,
+) -> Option<Vec<u8>> {
+    let body = lane
+        .as_ref()
+        .and_then(|lane| pending.lanes.get_mut(lane))
+        .and_then(|queue| queue.front_mut())
+        .and_then(|turn| {
+            let model = turn
+                .response
+                .upstream_model_id
+                .clone()
+                .unwrap_or_default();
+            let body = upstream::prepare_websocket_compaction_retry(
+                &turn.request,
+                provider,
+                context,
+                &model,
+            )
+            .ok()?;
+            let body = match turn.response.privacy.as_ref() {
+                Some(privacy) => privacy.prepare(&body, &provider.id).ok()?,
+                None => body,
+            };
+            let compaction = turn.compaction.as_mut()?;
+            if !compaction.begin_summarizing_retry() {
+                return None;
+            }
+            // The log records what was finally asked, matching the HTTP route.
+            // Both attempts' frames still accumulate in the response snapshot,
+            // which is where the refusal stays visible.
+            turn.response.upstream_request_body = Some(body.clone());
+            Some(body)
+        })?;
+    // Remember the refusal so the next compaction goes straight to the summary.
+    // The memory is volatile and keyed by configuration, so a chain that starts
+    // supporting v2 is offered the trigger again after a restart or a change.
+    context
+        .side_stores
+        .remember_native_compaction_rejection(upstream::provider_config_identity(provider));
+    Some(body)
 }
 
 async fn send_message<S: AsyncRead + AsyncWrite + Unpin>(
@@ -1254,8 +1388,16 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin, U: AsyncRead + AsyncWrite + Un
                         };
                         let connection_scope = format!("{}:{}", connection_id, value.get("stream_id").and_then(Value::as_str).unwrap_or_default());
                         let privacy = context.privacy.begin("codex", &request.headers, &request.body, Some(&connection_scope));
+                        // Resolved once and carried by the turn: the relay
+                        // decides how the reply is served from this value, and
+                        // the request half must not disagree with it.
+                        let remote_compaction = RemoteCompactionCompat::resolve_websocket(
+                            Some(&provider),
+                            upstream::should_attempt_native_remote_compaction(context, &provider),
+                            &value,
+                        );
                         let prepared = privacy.as_ref().map_err(Clone::clone).and_then(|privacy| {
-                            upstream::prepare_websocket_request(&request, &provider, context, apply_mapping)
+                            upstream::prepare_websocket_request(&request, &provider, context, apply_mapping, remote_compaction)
                                 .and_then(|(body, model, map)| {
                                     let body = if let Some(privacy) = privacy {
                                         privacy.prepare(&body, &provider.id).inspect_err(|_| privacy.fail())?
@@ -1320,9 +1462,13 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin, U: AsyncRead + AsyncWrite + Un
                             failure_kind: None,
                             restore_map: HashMap::new(),
                             privacy_restorer,
-                            compaction: RemoteCompactionCompat::resolve_websocket(&value)
-                                .is_remote_compaction()
-                                .then(CompactionStreamSummary::default),
+                            compaction: if remote_compaction.is_passthrough() {
+                                Some(CompactionTurn::pass_through())
+                            } else if remote_compaction.is_summarize() {
+                                Some(CompactionTurn::summarize())
+                            } else {
+                                None
+                            },
                         };
                         let prepared = prepared.and_then(|(body, model, map)| {
                             if pending.full(turn.request.body.len().saturating_add(body.len())) {
@@ -1513,8 +1659,25 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin, U: AsyncRead + AsyncWrite + Un
                                     }
                                 });
                             }
-                            if let (Some(compaction), Some(value)) = (&mut turn.compaction, &value) {
-                                compaction.push(value);
+                            if let Some(compaction) = &mut turn.compaction {
+                                if let Some(value) = &value {
+                                    compaction.summary.push(value);
+                                }
+                                if !compaction.summarizing {
+                                    // A pass-through attempt's frames are held
+                                    // back: a native reply has to be replayed
+                                    // byte for byte, and anything else has to be
+                                    // discarded before the summarizing retry.
+                                    // Exactly what would have been forwarded is
+                                    // what gets kept, so a privacy-restored turn
+                                    // replays what the client would have seen.
+                                    match &restored_messages {
+                                        Some(restored) => {
+                                            compaction.attempt_frames.extend(restored.iter().cloned())
+                                        }
+                                        None => compaction.attempt_frames.push(outgoing.clone()),
+                                    }
+                                }
                             }
                         }
                         if connection_error {
@@ -1540,6 +1703,12 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin, U: AsyncRead + AsyncWrite + Un
                         // put the summary on the wire in the clear, defeating the
                         // envelope this path exists to produce.
                         //
+                        // A pass-through attempt is decided here, once its
+                        // terminal has arrived: an upstream that streamed its own
+                        // `compaction` item has it replayed verbatim, and one that
+                        // answered an ordinary message is refused and asked again
+                        // as a plain summary on the same socket.
+                        //
                         // Two cases fall back to the upstream's own frames:
                         // a summary that is not finished yet (nothing to emit),
                         // and one that failed, was truncated, or came back empty.
@@ -1550,6 +1719,8 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin, U: AsyncRead + AsyncWrite + Un
                         enum CompactionOutcome {
                             Consumed,
                             Synthesized(Vec<String>),
+                            ReplayNative(Vec<Vec<u8>>),
+                            Retry(Vec<u8>),
                             Forwarded,
                         }
                         let compaction_outcome = match lane
@@ -1559,8 +1730,30 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin, U: AsyncRead + AsyncWrite + Un
                             .and_then(|turn| turn.compaction.as_ref())
                         {
                             None => CompactionOutcome::Forwarded,
-                            Some(compaction) if !compaction.is_terminal() => {
+                            Some(compaction) if !compaction.summary.is_terminal() => {
                                 CompactionOutcome::Consumed
+                            }
+                            Some(compaction)
+                                if !compaction.summarizing
+                                    && compaction.summary.has_native_item() =>
+                            {
+                                lane.as_ref()
+                                    .and_then(|lane| pending.lanes.get_mut(lane))
+                                    .and_then(|queue| queue.front_mut())
+                                    .and_then(|turn| {
+                                        let compaction = turn.compaction.take()?;
+                                        turn.response.compaction_mode =
+                                            Some(COMPACTION_MODE_NATIVE.to_string());
+                                        Some(CompactionOutcome::ReplayNative(
+                                            compaction.attempt_frames,
+                                        ))
+                                    })
+                                    .unwrap_or(CompactionOutcome::Forwarded)
+                            }
+                            Some(compaction) if !compaction.summarizing => {
+                                compaction_retry_body(&lane, &mut pending, &provider, context)
+                                    .map(CompactionOutcome::Retry)
+                                    .unwrap_or(CompactionOutcome::Forwarded)
                             }
                             Some(_) => lane
                                 .as_ref()
@@ -1573,7 +1766,14 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin, U: AsyncRead + AsyncWrite + Un
                                         .upstream_model_id
                                         .clone()
                                         .unwrap_or_default();
-                                    build_websocket_compaction_response(&compaction, &model)
+                                    let response =
+                                        build_websocket_compaction_response(&compaction.summary, &model)?;
+                                    // Only a sealed item has a side to attribute;
+                                    // a turn that could not produce one stays
+                                    // unlabelled.
+                                    turn.response.compaction_mode =
+                                        Some(compaction.served_mode_label().to_string());
+                                    Some(response)
                                 })
                                 .map(|response| {
                                     CompactionOutcome::Synthesized(
@@ -1582,10 +1782,40 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin, U: AsyncRead + AsyncWrite + Un
                                 })
                                 .unwrap_or(CompactionOutcome::Forwarded),
                         };
-                        if matches!(compaction_outcome, CompactionOutcome::Synthesized(_)) {
-                            // The upstream's own terminal is replaced, so the turn
-                            // is closed by the synthesized `response.completed`.
-                            terminal = Some(SseTerminalKind::Success);
+                        match &compaction_outcome {
+                            CompactionOutcome::Synthesized(_) => {
+                                // The upstream's own terminal is replaced, so the turn
+                                // is closed by the synthesized `response.completed`.
+                                terminal = Some(SseTerminalKind::Success);
+                            }
+                            CompactionOutcome::Retry(body) => {
+                                // The attempt that just ended is discarded and this
+                                // summarizing request takes its place, so the turn
+                                // stays open for the reply it produces.
+                                terminal = None;
+                                if send_message(
+                                    &mut upstream_socket,
+                                    Message::Text(
+                                        String::from_utf8(body.clone())
+                                            .map_err(io_error)?
+                                            .into(),
+                                    ),
+                                )
+                                .await
+                                .is_err()
+                                {
+                                    break (
+                                        GatewayStreamOutcome::Failed,
+                                        "upstream_disconnected",
+                                        "Could not send the compaction retry",
+                                    );
+                                }
+                            }
+                            // A native reply carries the upstream's own terminal,
+                            // which is being forwarded as part of its frames.
+                            CompactionOutcome::Consumed
+                            | CompactionOutcome::ReplayNative(_)
+                            | CompactionOutcome::Forwarded => {}
                         }
                         let mut sent = Ok(());
                         let mut delivered_terminal = None;
@@ -1596,7 +1826,11 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin, U: AsyncRead + AsyncWrite + Un
                                 .into_iter()
                                 .map(|frame| frame.into_bytes())
                                 .collect::<Vec<_>>(),
-                            CompactionOutcome::Consumed => Vec::new(),
+                            // The upstream's own reply, replayed exactly as it
+                            // streamed, which is what forwarding the trigger is
+                            // for.
+                            CompactionOutcome::ReplayNative(frames) => frames,
+                            CompactionOutcome::Consumed | CompactionOutcome::Retry(_) => Vec::new(),
                             CompactionOutcome::Forwarded => {
                                 restored_messages.into_iter().flatten().chain(passthrough).collect()
                             }

@@ -184,6 +184,52 @@ fn v27_migration_preserves_existing_request_logs_and_nullable_service_tier() {
     assert_eq!(service_tier, "fast");
 }
 
+/// v28 adds the compaction label the same way v27 added the service tier: an
+/// additive, nullable column that leaves existing rows untouched and tolerates
+/// a repeated upgrade.
+#[test]
+fn v28_migration_preserves_existing_request_logs_and_nullable_compaction_mode() {
+    let mut conn = test_conn();
+    conn.execute_batch(
+        "ALTER TABLE proxy_request_logs DROP COLUMN compaction_mode;
+         INSERT INTO proxy_request_logs
+             (request_id, provider_id, app_type, model, input_tokens, created_at)
+         VALUES ('legacy-compaction-log', 'provider-a', 'codex', 'gpt-5.6-sol', 120, 1780000000);",
+    )
+    .expect("seed v27 request log schema");
+    migrations::set_user_version(&conn, 27).expect("set v27 schema version");
+
+    migrations::run_all(&mut conn).expect("upgrade v27");
+    migrations::run_all(&mut conn).expect("reopen upgraded schema");
+    assert_eq!(
+        migrations::get_user_version(&conn).unwrap(),
+        TARGET_SCHEMA_VERSION
+    );
+    let legacy: Option<String> = conn
+        .query_row(
+            "SELECT compaction_mode FROM proxy_request_logs WHERE request_id = 'legacy-compaction-log'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read legacy log after upgrade");
+    assert_eq!(legacy, None, "an old row must not claim a compaction mode");
+    conn.execute(
+        "UPDATE proxy_request_logs SET compaction_mode = 'native' WHERE request_id = 'legacy-compaction-log'",
+        [],
+    )
+    .expect("write new compaction metadata");
+    migrations::set_user_version(&conn, 27).unwrap();
+    migrations::run_all(&mut conn).expect("repeat additive migration");
+    let compaction_mode: String = conn
+        .query_row(
+            "SELECT compaction_mode FROM proxy_request_logs WHERE request_id = 'legacy-compaction-log'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(compaction_mode, "native");
+}
+
 #[test]
 fn session_usage_migrations_preserve_rollups_and_ledger_on_repeat() {
     let mut conn = test_conn();

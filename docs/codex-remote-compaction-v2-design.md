@@ -68,11 +68,15 @@ v2 协议形态：
 - 覆盖四种目标协议：OpenAI Responses 直通、OpenAI Chat、Anthropic Messages、Gemini Native。
 - 摘要用**无状态**自识别 envelope 承载（见 §3.5），不引入跨请求状态。
 
+**原生优先，失败才自封装。** 面对一个 Responses 目标，网关**先把 `compaction_trigger` 原样转发出去**——就是官方链路上会发生的事；上游自己回了 `compaction` item 就原样回给 Codex。只有当上游回的不是那个 item（忽略 trigger、回了普通 assistant 文本，或直接 400 拒绝该 item）时，网关才改写这一轮、重发一次、自行封装（见 §3.6）。这是 issue #416 的直接结果：网关此前**无法区分**「链路尽头是真 OpenAI Responses 端点」与「第三方中转站」，对后者一律模拟，等于把原生能力也一起关掉了。
+
 ### 2.2 非目标
 
 - 不修改 `name = "OpenAI"` 默认值（用户决定"先只记录不修改"）。
 - 不实现 `/responses/compact` 端点（Codex 已废弃）。
 - 不伪造 OpenAI 服务端密文语义（不声称能解开真 OpenAI 密文）。
+- **不靠启发式猜「上游原生支持 v2」**（`name == "OpenAI"` 是 Codex 自己的门控、与 `base_url` 指向谁无关）。判据只有两条：目标是 Responses 协议（静态可判），以及这个 provider 配置**此前有没有拒绝过**原生轮次（§3.6 的易失记忆）。
+- **不提供「原生透传」开关**。用户要的是与官方一致的行为，不是又多一个需要自己判断该不该开的旋钮。
 
 ## 3. 核心设计
 
@@ -189,6 +193,62 @@ if profile == CodexCatalogToolProfile::ProxyChat {
 - 原因见 PR review P1：给 Anthropic profile 声明自动压缩阈值，会让 Codex 在 90% 处发起压缩请求，而 Anthropic 路径当时没有 compaction 响应语义 → 长会话失败。
 
 AI Toolbox 的 catalog 生成（`tauri/src/coding/codex/commands.rs`）当前**不写该字段**。若本设计补齐了四种目标协议的 compaction 支持，这个字段才有意义——但**必须与目标协议的实际支持范围严格对齐**，不能无条件写。这条列入实现清单。
+
+### 3.6 原生优先与一次自封装回退
+
+网关对**每一个** Responses 目标的压缩轮次都先试原生：`compaction_trigger` 原样转发，上游若回 `compaction` item 就照原样回给 Codex（含 SSE 生命周期）。上游回的不是那个 item，才回退到网关自己的摘要。这是 Codex 直连官方端点时的行为，也是用户要的默认行为。
+
+**判据（`RemoteCompactionCompat::resolve` / `compaction_turn_mode`）**
+
+| 条件 | 结果 |
+|---|---|
+| 目标是 `OpenAiResponses`，且该 provider 配置尚未拒绝过原生轮次 | `Passthrough`（先试原生） |
+| 目标是 `OpenAiResponses`，但该配置已拒绝过（§下方记忆） | `Summarize` |
+| 目标是 Chat / Anthropic / Gemini | `Summarize` — v2 定义在 Responses 线路上，需协议转换的上游不可能原生实现，探它只是白花一次请求 |
+| 非 Codex CLI / 非压缩轮次 | `None` |
+
+**判失败只有读全回包才做得到。** v1 的失败是显式的（独立端点，不认识就是 404）；v2 的失败是**静默**的——不支持的上游正常回 200 加一条普通 assistant 消息，Codex 只在最后报 `got 0 from 1 output items`。所以首次尝试的响应必须整体读完（SSE 则聚合）再用 `is_native_compaction_response` 校验：**恰好一个** `compaction` 项且 `encrypted_content` 非空。缓冲本身不是新增成本：压缩轮次无论走哪条路，本来就已经在聚合整条 SSE。
+
+| 上游回应 | 判定 | 动作 |
+|---|---|---|
+| 2xx，恰好一个合法 `compaction` 项 | 原生成功 | 原样转发（对 Codex 渲染回 SSE） |
+| 2xx，其它任何形状 | 上游忽略了 trigger | 回退重发 |
+| 400 / 422 | 上游拒绝了未知 item | 回退重发 |
+| 401/403/404/429/5xx、连接/超时 | 与 trigger 无关 | 不回退，走原有错误与故障转移 |
+
+回退的边界刻意划在「上游看过这个 item 并且不要」。限流、鉴权、上游故障重发一遍换个 body 也解决不了，只会用第二个失败盖住真正的错误。
+
+**回退与 Thinking 整流同形。** 结构就是整流器那三步：原样发 → 纯函数判失败 → 换 body 重发一次、不递归。重发这一步直接复用 `build_retry_upstream_body`（整流器共用的那层薄包装），把 `RemoteCompactionCompat` 从 `Passthrough` 换成 `Fallback` 即可——trigger 改写与 capsule 展开本来就由这个值在 `build_upstream_body_for_provider` 里驱动，不需要任何新的改写代码。
+
+**`UpstreamResponse::Buffered`。** 原生成功那一支必须把已经读进内存的回包交回 `build_gateway_response`，才能原样复用它的全部既有语义（side store、pipeline 出站钩子、用量统计、末尾对 Codex 的 SSE 重渲染）。为此给 `UpstreamResponse` 加了一个 `Buffered { status, headers, body }` 变体，headers 归一成 `application/json` 并剥掉 content-encoding/content-length（body 已解码），这样下游不会把一个完整 JSON 体当成 SSE 再聚合一次。
+
+**易失记忆：拒绝过就不再试。** 不记的话，中转站用户**每一次**压缩都要先把整段会话发出去一次注定失败的请求，再发一次摘要请求。所以 `NativeCompactionRejectionStore`（`side_stores/native_compaction.rs`）记下「这个 provider 配置回过一个不是 compaction item 的应答」：
+
+- **纯内存**，`Mutex<HashSet<[u8; 32]>>`，从不落库 → 网关重启即清空。中转站过一阵子支持了 v2，下一次压缩就会重新被探测，而不是被永久判死。
+- **按 provider 配置指纹分区**（`provider_config_identity` = SHA256(cli_key, id, base_url, is_full_url, provider_type, api_format, profile.*, api_key)）→ 换 base_url、换 key、换 profile 立刻重新探测，连重启都不用。
+- key 空间就是「provider 配置」，天然有界，不需要 LRU 淘汰。
+
+写入点是回退那一刻；读取点是 `should_attempt_native_remote_compaction`，由 HTTP 与 WS 两条 resolve 路径共同调用。
+
+**capsule 展开照旧。** `expands_capsules()` 对 `Passthrough` 与 `Fallback` 同样为真：历史里可能还留着网关写的 capsule，上游解不开，必须先在出站 body 里展开成可读上下文。
+
+**WebSocket 与 HTTP 的差异。** WS relay 本来就会**消费**压缩轮次的上游帧（客户端在终局前什么也看不到），所以它做原生优先反而更自然，只是要多付出「扣住帧」这一步：
+
+- 透传轮次的帧改为**缓存**（原本是丢弃），同时扫 `output_item.added/done` 与 `response.completed.response.output[]` 找原生 `compaction` 项。
+- 终局时**有原生项 → 把缓存的帧原样转发**（缓存的正是「本来会被转发的那份」，privacy 开启时即 privacy 还原后的帧）。
+- **没有 → 记下拒绝，用摘要 body 在同一条 WebSocket 上再发一个 `response.create`，继续消费**，由第二个终局决定封装。两个坑：`event_lane` 按 `response.id` 归属，第二轮是新 response，必须让 turn 处于「等待新 id」状态而不是把它的帧判成跨轮次泄漏；`compaction_outcome` 要有一个「重发中」形态——转发为空、清掉 terminal、不 pop。
+- 到重试上限仍然只一次（`CompactionTurn` 的 `begin_summarizing_retry` 保证）。
+
+**日志标注（`summary.compaction_mode`）。** 三种方式的 item 在线路上形状完全一致，用户此前只能靠翻中转站日志判断自己有没有真的走原生，所以持久化一个可读标记：
+
+| 值 | 含义 |
+|---|---|
+| `native` | 上游自己写了那个 `compaction` 项 |
+| `fallback` | 先转发了 trigger、被拒，网关改用摘要重发一次并自行封装 |
+| `simulated` | 转换目标或已记住拒绝，trigger 根本没转发出去 |
+| `NULL` | 非压缩轮次、或该轮次失败（没写出任何 item，没有「哪一侧」可报） |
+
+第三值不是凑数：`fallback` 与 `simulated` 都表示「网关写的」，但前者说明链路曾经有过原生机会、后者说明协议上从来不可能——这正是 issue #416 里被问的那个问题。写入点在 `upstream.rs` 两条响应路径（聚合分支与常规非流分支），由纯函数 `compaction_mode_label` 产出（`RemoteCompactionCompat::Fallback` → `fallback`）；WS 侧在**封装成功那一刻**标（`CompactionTurn::served_mode_label`）或在原生回放那一刻标 `native`。存储走 v28 迁移（`proxy_request_logs.compaction_mode TEXT`，仿 v27 的 `service_tier`），前端在请求日志的列表与明细里各渲染一个徽章。
 
 ## 4. 四目标协议差异
 

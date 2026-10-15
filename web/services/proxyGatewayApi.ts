@@ -316,6 +316,14 @@ export interface GatewayRequestLogItem {
   reasoning_effort: string | null;
   /** Billed premium service tier ('fast' / 'ultrafast'), else null. */
   service_tier: string | null;
+  /**
+   * On a Codex remote compaction v2 turn: `native` when the upstream wrote the
+   * `compaction` item, `fallback` when a pass-through attempt was refused and
+   * the gateway summarized instead, `simulated` when the target protocol could
+   * never serve the turn natively in the first place. Null on every other
+   * request.
+   */
+  compaction_mode: string | null;
   status_code: number;
   success: boolean;
   error_message: string | null;
@@ -405,6 +413,8 @@ export interface GatewayRequestLogSummary {
   reasoning_effort?: string | null;
   /** Billed premium service tier ('fast' / 'ultrafast'), else null. */
   service_tier?: string | null;
+  /** `native` / `fallback` / `simulated` on a Codex remote compaction v2 turn, else null. */
+  compaction_mode?: string | null;
   upstream_url: string | null;
   status_code: number | null;
   upstream_status_code: number | null;

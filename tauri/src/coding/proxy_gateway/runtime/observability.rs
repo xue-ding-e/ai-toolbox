@@ -230,6 +230,7 @@ pub(super) fn record_gateway_observability_with_transport(
                 reasoning_effort: final_upstream_reasoning_effort(response),
                 service_tier: billed_service_tier,
                 service_tier_multiplier,
+                compaction_mode: response.compaction_mode.clone(),
                 upstream_url: response.upstream_url.clone(),
                 status_code: (transport == super::super::types::GatewayRequestTransport::Http
                     || request_kind == super::super::types::GatewayRequestKind::WebsocketHandshake)

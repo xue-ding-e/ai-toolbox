@@ -261,6 +261,12 @@
         "durationHint": "首字时间（近似首包）/总耗时。首包可能是 SSE 控制事件；未记录首包时仅显示总耗时。",
         "effortHint": "最终上游请求中明确设置的思考强度；未设置时不推断模型默认值。",
         "serviceTierHint": "OpenAI 的 Fast/Ultrafast 服务档：优先取上游响应确认的档位，上游未确认时回退请求体声明的档位。是否额外计费由该供应商的计费配置（Fast / Ultrafast 倍率）决定，未配置时按标准价记账。",
+        "compaction": {
+          "native": "原生压缩",
+          "fallback": "回退压缩",
+          "simulated": "网关压缩",
+          "hint": "Codex 远程压缩 v2：这条 `compaction` 项由哪一侧写出。「原生压缩」＝上游自己回了该项；「回退压缩」＝先把 trigger 原样转发过，上游没有回该项，网关改为自行摘要并封装；「网关压缩」＝该供应商要经协议转换才能到达上游，原生不可能实现，因此没有转发过 trigger。三者在线路上的形状完全一致。"
+        },
         "localSession": "Session",
         "localSessionHint": "来自 CLI 本地会话日志，不包含 HTTP 状态和耗时。成本优先使用 CLI 上报值，缺失时按模型价格估算。",
         "importPartialFailure": "部分完成：新增 {{inserted}}，更新 {{updated}}，跳过 {{skipped}}；{{count}} 项未能同步，详情见应用日志。",

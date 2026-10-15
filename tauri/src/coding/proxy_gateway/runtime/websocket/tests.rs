@@ -162,6 +162,69 @@ async fn send_json<S: AsyncRead + AsyncWrite + Unpin>(
         .unwrap();
 }
 
+/// Serves the native attempt every Responses-target compaction turn makes first,
+/// and returns the summarizing retry the relay sends on the same socket.
+///
+/// The relay offers the trigger before it summarizes, so a non-native upstream
+/// sees a compaction turn twice: once as Codex wrote it, and once as a plain
+/// summary. This answers the first the way such an upstream does — with an
+/// ordinary assistant message, which the relay refuses and discards — and hands
+/// back the second request for the caller to inspect and answer.
+async fn refuse_native_compaction_attempt<S>(socket: &mut WebSocketStream<S>) -> Value
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let offered = receive_json(socket).await;
+    assert_eq!(
+        offered["type"], "response.create",
+        "the first frame must be the offered compaction turn: {offered}"
+    );
+    assert!(
+        offered["input"]
+            .as_array()
+            .is_some_and(|input| input.iter().any(|item| item["type"] == "compaction_trigger")),
+        "the offer must carry the trigger: {offered}"
+    );
+
+    send_json(
+        socket,
+        json!({"type":"response.created","response":{"id":"resp_refused","output":[]}}),
+    )
+    .await;
+    send_json(
+        socket,
+        json!({"type":"response.output_item.added","output_index":0,
+               "item":{"type":"message","role":"assistant"}}),
+    )
+    .await;
+    send_json(
+        socket,
+        json!({"type":"response.output_text.delta","delta":"An ordinary assistant reply"}),
+    )
+    .await;
+    send_json(
+        socket,
+        json!({"type":"response.completed","response":{
+            "id":"resp_refused",
+            "output":[{"type":"message","role":"assistant",
+                       "content":[{"type":"output_text","text":"An ordinary assistant reply"}]}]}}),
+    )
+    .await;
+
+    let retry = receive_json(socket).await;
+    assert_eq!(
+        retry["type"], "response.create",
+        "the refused attempt must be followed by a summarizing retry: {retry}"
+    );
+    assert!(
+        retry["input"]
+            .as_array()
+            .is_some_and(|input| input.iter().all(|item| item["type"] != "compaction_trigger")),
+        "the retry must not offer the trigger again: {retry}"
+    );
+    retry
+}
+
 async fn start_gateway(
     context: GatewayRuntimeContext,
     connections: usize,
@@ -444,9 +507,9 @@ async fn websocket_compaction_turn_is_summarized_and_replaced() {
     let upstream = tokio::spawn(async move {
         let (socket, _) = listener.accept().await.unwrap();
         let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
-        let request = receive_json(&mut socket).await;
-        // The private control item must not reach the upstream, and the tool
-        // inventory is irrelevant to summarizing.
+        let request = refuse_native_compaction_attempt(&mut socket).await;
+        // The retry is a plain summarization turn: the private control item is
+        // gone, and so is the tool inventory that is irrelevant to summarizing.
         let input = request["input"].as_array().cloned().unwrap_or_default();
         assert!(
             !input.iter().any(|item| item["type"] == "compaction_trigger"),
@@ -540,8 +603,124 @@ async fn websocket_compaction_turn_is_summarized_and_replaced() {
         "the summary must not travel in plaintext: {sealed}"
     );
 
-    // The turn is billed like any other request.
+    // The turn is billed like any other request, and the log says the trigger
+    // was offered and refused rather than never tried.
     let detail = recorded_details(&context).pop().unwrap();
+    assert_eq!(detail.summary.total_attempt_count, 1);
+    assert_eq!(
+        detail.summary.compaction_mode.as_deref(),
+        Some("fallback"),
+        "a refused offer must be recorded as a fallback, not as a simulation"
+    );
+}
+
+/// An upstream that answers the offered trigger with its own `compaction` item
+/// has that reply replayed verbatim — the relay holds the frames back, sees the
+/// item among them, and forwards what the upstream wrote.
+///
+/// Nothing is synthesized, nothing is sealed, and no second `response.create` is
+/// sent: this is the behaviour a chain ending at a real Responses endpoint has
+/// when Codex talks to it directly.
+#[tokio::test]
+async fn websocket_native_compaction_item_is_replayed_verbatim() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let (_directory, context, _) = test_context(
+        &format!("http://{}/v1", listener.local_addr().unwrap()),
+        "openai_responses",
+        true,
+    );
+    let upstream = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
+        let offered = receive_json(&mut socket).await;
+        assert!(
+            offered["input"]
+                .as_array()
+                .is_some_and(|input| input.iter().any(|item| item["type"] == "compaction_trigger")),
+            "the trigger must be offered: {offered}"
+        );
+
+        let item = json!({
+            "id": "cmp_upstream_1", "type": "compaction",
+            "encrypted_content": "gAAAAABq-upstream-cipher"
+        });
+        send_json(&mut socket, json!({"type":"response.created","response":{"id":"resp_native","output":[]}})).await;
+        send_json(&mut socket, json!({"type":"response.output_item.added","output_index":0,"item":item})).await;
+        send_json(&mut socket, json!({"type":"response.output_item.done","output_index":0,"item":item})).await;
+        send_json(&mut socket, json!({"type":"response.completed","response":{
+            "id":"resp_native","status":"completed","output":[item],
+            "usage":{"input_tokens":40,"output_tokens":5}}})).await;
+
+        // A native reply answers the turn outright. The socket stays open for
+        // later turns, so the only thing that may arrive is the client's own
+        // close — never a second `response.create`.
+        if let Ok(Some(Ok(Message::Text(text)))) =
+            timeout(Duration::from_millis(500), socket.next()).await
+        {
+            assert!(
+                !text.contains("response.create"),
+                "a native reply must not be followed by a summarizing retry: {text}"
+            );
+        }
+    });
+
+    let (mut client, gateway) = gateway_connection(context.clone()).await;
+    send_json(
+        &mut client,
+        json!({
+            "type": "response.create",
+            "model": "test-model",
+            "input": [
+                { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "fix the bug" }] },
+                { "type": "compaction_trigger" },
+            ],
+        }),
+    )
+    .await;
+
+    let mut frames = Vec::new();
+    loop {
+        let frame = receive_json(&mut client).await;
+        let terminal = frame["type"] == "response.completed";
+        frames.push(frame);
+        if terminal {
+            break;
+        }
+    }
+    let _ = client.close(None).await;
+    gateway.await.unwrap();
+    upstream.await.unwrap();
+
+    let items: Vec<&Value> = frames
+        .iter()
+        .filter_map(|frame| (frame["type"] == "response.output_item.done").then(|| &frame["item"]))
+        .collect();
+    assert_eq!(items.len(), 1, "expected exactly one done item: {frames:?}");
+    assert_eq!(
+        items[0]["encrypted_content"], "gAAAAABq-upstream-cipher",
+        "the upstream's own ciphertext must be relayed: {frames:?}"
+    );
+    assert!(
+        frames
+            .iter()
+            .all(|frame| !frame.to_string().contains("ai-toolbox-compact-v1:")),
+        "a native turn must not be sealed by the Gateway: {frames:?}"
+    );
+    assert_eq!(
+        frames
+            .iter()
+            .filter(|frame| frame["type"] == "response.completed")
+            .count(),
+        1,
+        "exactly one terminal must reach Codex: {frames:?}"
+    );
+
+    let detail = recorded_details(&context).pop().unwrap();
+    assert_eq!(
+        detail.summary.compaction_mode.as_deref(),
+        Some("native"),
+        "the log must say the upstream wrote the item"
+    );
     assert_eq!(detail.summary.total_attempt_count, 1);
 }
 
@@ -570,6 +749,42 @@ async fn websocket_second_compaction_expands_the_previous_capsule() {
     let upstream = tokio::spawn(async move {
         let (socket, _) = listener.accept().await.unwrap();
         let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
+        // The offered attempt expands the previous capsule too, not just the
+        // retry: an upstream that answers natively must still not receive a
+        // ciphertext it cannot open.
+        let offered = receive_json(&mut socket).await;
+        assert!(
+            !offered.to_string().contains("ai-toolbox-compact-v1:"),
+            "the capsule prefix leaked upstream: {offered}"
+        );
+        assert!(
+            offered["input"].as_array().is_some_and(|input| input
+                .iter()
+                .any(|item| item["content"][0]["text"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("Goal: the first summary")))),
+            "the previous summary must reach the offered turn as context: {offered}"
+        );
+        send_json(
+            &mut socket,
+            json!({"type":"response.created","response":{"id":"resp_refused","output":[]}}),
+        )
+        .await;
+        send_json(
+            &mut socket,
+            json!({"type":"response.output_item.added","output_index":0,
+                   "item":{"type":"message","role":"assistant"}}),
+        )
+        .await;
+        send_json(
+            &mut socket,
+            json!({"type":"response.completed","response":{
+                "id":"resp_refused",
+                "output":[{"type":"message","role":"assistant",
+                           "content":[{"type":"output_text","text":"An ordinary assistant reply"}]}]}}),
+        )
+        .await;
+
         let request = receive_json(&mut socket).await;
         let input = request["input"].as_array().cloned().unwrap_or_default();
 
@@ -665,7 +880,7 @@ async fn websocket_compaction_turn_keeps_an_incremental_delta() {
     let upstream = tokio::spawn(async move {
         let (socket, _) = listener.accept().await.unwrap();
         let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
-        let request = receive_json(&mut socket).await;
+        let request = refuse_native_compaction_attempt(&mut socket).await;
         assert_eq!(request["previous_response_id"], "resp_prev");
         let input = request["input"].as_array().cloned().unwrap_or_default();
         assert!(
@@ -725,7 +940,7 @@ async fn websocket_compaction_failure_is_forwarded_not_synthesized() {
     let upstream = tokio::spawn(async move {
         let (socket, _) = listener.accept().await.unwrap();
         let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
-        receive_json(&mut socket).await;
+        refuse_native_compaction_attempt(&mut socket).await;
         // Summarization fails after partial output: the deltas must not leak,
         // and the error must survive.
         send_json(&mut socket, json!({"type":"response.output_text.delta","delta":"partial summary that must not leak"})).await;
@@ -810,7 +1025,7 @@ async fn websocket_empty_summary_forwards_the_upstream_terminal() {
     let upstream = tokio::spawn(async move {
         let (socket, _) = listener.accept().await.unwrap();
         let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
-        receive_json(&mut socket).await;
+        refuse_native_compaction_attempt(&mut socket).await;
         send_json(&mut socket, json!({
             "type": "response.output_item.done",
             "item": {
@@ -898,7 +1113,7 @@ async fn websocket_truncated_summary_forwards_the_upstream_terminal() {
     let upstream = tokio::spawn(async move {
         let (socket, _) = listener.accept().await.unwrap();
         let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
-        receive_json(&mut socket).await;
+        refuse_native_compaction_attempt(&mut socket).await;
         // A half-written summary that must never reach the client.
         send_json(
             &mut socket,

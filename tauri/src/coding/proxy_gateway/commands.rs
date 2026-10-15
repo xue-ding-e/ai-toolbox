@@ -1293,6 +1293,7 @@ mod tests {
                 reasoning_effort: None,
                 service_tier: None,
                 service_tier_multiplier: None,
+                compaction_mode: None,
                 upstream_url: Some(
                     "https://generativelanguage.googleapis.com/v1beta/models?key=secret&api-key=hyphen"
                         .to_string(),

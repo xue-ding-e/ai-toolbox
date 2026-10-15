@@ -1060,6 +1060,10 @@ pub struct GatewayRequestLogItem {
     /// on a premium OpenAI service tier, else `None`.
     #[serde(default)]
     pub service_tier: Option<String>,
+    /// `native` / `fallback` / `simulated` on a Codex remote compaction v2 turn,
+    /// else `None`.
+    #[serde(default)]
+    pub compaction_mode: Option<String>,
     pub status_code: u16,
     pub success: bool,
     pub error_message: Option<String>,
@@ -1190,6 +1194,14 @@ pub struct GatewayRequestLogSummary {
     /// on rows with no premium tier.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service_tier_multiplier: Option<String>,
+    /// Which side wrote the `compaction` item on a Codex remote compaction v2
+    /// turn: `native` when the upstream answered with its own item, `fallback`
+    /// when the trigger was offered first and refused, `simulated` when the
+    /// target protocol could never have served it natively. `None` on every
+    /// other turn. Recorded so a user can tell them apart without reading the
+    /// wire — the item itself looks the same in all three cases.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction_mode: Option<String>,
     pub upstream_url: Option<String>,
     pub status_code: Option<u16>,
     /// Original HTTP status the upstream returned before the gateway rewrote a

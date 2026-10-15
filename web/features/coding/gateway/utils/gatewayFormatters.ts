@@ -105,6 +105,27 @@ export const serviceTierLabel = (serviceTier?: string | null) => {
   return null;
 };
 
+/**
+ * i18n key for the compaction badge on a Codex remote compaction v2 turn.
+ *
+ * All three values describe which side wrote the `compaction` item — the wire
+ * looks identical either way, so this badge is the only place a user can tell
+ * them apart without reading the upstream response.
+ */
+export const compactionModeKey = (compactionMode?: string | null): string | null => {
+  const mode = compactionMode?.trim().toLowerCase();
+  if (mode === 'native') {
+    return 'gateway.page.requests.compaction.native';
+  }
+  if (mode === 'fallback') {
+    return 'gateway.page.requests.compaction.fallback';
+  }
+  if (mode === 'simulated') {
+    return 'gateway.page.requests.compaction.simulated';
+  }
+  return null;
+};
+
 export const formatCacheHitRate = (rate?: number | null) =>
   rate != null && Number.isFinite(rate) ? `${(rate * 100).toFixed(1)}%` : '-';
 

@@ -25,6 +25,8 @@ use crate::coding::proxy_gateway::types::GatewayCliKey;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
+use super::super::providers::UpstreamProvider;
+use crate::coding::proxy_gateway::transformer::AiProtocol;
 use ring::rand::{SecureRandom, SystemRandom};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -129,6 +131,15 @@ pub(super) fn is_compaction_capsule(encrypted_content: &str) -> bool {
     encrypted_content.starts_with(COMPACTION_CAPSULE_PREFIX)
 }
 
+/// Log label: the upstream itself answered the compaction turn with an item.
+pub(in crate::coding::proxy_gateway::runtime) const COMPACTION_MODE_NATIVE: &str = "native";
+/// Log label: the trigger was forwarded, the upstream did not answer with an
+/// item, and the Gateway summarized the turn instead.
+pub(in crate::coding::proxy_gateway::runtime) const COMPACTION_MODE_FALLBACK: &str = "fallback";
+/// Log label: the target protocol could never serve the turn natively, so the
+/// trigger was never forwarded at all.
+pub(in crate::coding::proxy_gateway::runtime) const COMPACTION_MODE_SIMULATED: &str = "simulated";
+
 /// How the current Codex request relates to remote compaction.
 ///
 /// Resolved once per request from the route and the inbound body, then carried
@@ -140,6 +151,19 @@ pub(in crate::coding::proxy_gateway::runtime) enum RemoteCompactionCompat {
     /// The upstream is being asked for a summary; the reply is rewritten into a
     /// `compaction` item instead of being passed through.
     Summarize,
+    /// The `compaction_trigger` is forwarded unchanged so an upstream that
+    /// natively implements v2 answers with its own `compaction` item. This is
+    /// the mode tried first for every Responses-speaking target; a reply that
+    /// is not a native item makes the caller fall back to
+    /// [`Self::Summarize`] with a second request.
+    Passthrough,
+    /// The upstream was offered the trigger and refused it, so the turn is being
+    /// summarized instead. Every wire-visible behaviour matches
+    /// [`Self::Summarize`]; the distinction exists because "the Gateway
+    /// summarized" and "the Gateway summarized *because* a native attempt
+    /// failed" are different answers to the only question a user has about a
+    /// compaction turn — whether their chain really served it.
+    Fallback,
     /// An ordinary turn that replays a previous compaction item, which must be
     /// expanded back into readable context before forwarding.
     ReplayCapsules,
@@ -157,11 +181,19 @@ impl RemoteCompactionCompat {
     /// Compaction only ever originates from Codex, so every other CLI short
     /// circuits before the body is inspected.
     ///
+    /// `native_first` is the caller's answer to "should this turn be offered to
+    /// the upstream as a native v2 turn?". It is `false` only once this exact
+    /// provider configuration has already refused one (see
+    /// `NativeCompactionRejectionStore`); a converted target is rejected by
+    /// [`compaction_turn_mode`] regardless of what the caller passes.
+    ///
     /// The legacy `/responses/compact` endpoint is deliberately left to
     /// [`CodexResponsesCompactCompat`], which already owns it; claiming it here
     /// too would rewrite the same request twice.
     pub(in crate::coding::proxy_gateway::runtime) fn resolve(
         route: &GatewayRoute,
+        provider: Option<&UpstreamProvider>,
+        native_first: bool,
         body: &[u8],
     ) -> Self {
         if route.cli_key != GatewayCliKey::Codex {
@@ -171,7 +203,7 @@ impl RemoteCompactionCompat {
             return Self::None;
         };
         if is_remote_compaction_v2_request(&value) {
-            return Self::Summarize;
+            return compaction_turn_mode(provider, native_first);
         }
         if carries_gateway_compaction_capsule(&value) {
             return Self::ReplayCapsules;
@@ -184,9 +216,18 @@ impl RemoteCompactionCompat {
     /// The frame is a Responses request in a WebSocket envelope, so the same
     /// signals apply. Unlike HTTP there is no route to check: the upgrade was
     /// only accepted for a Codex Responses route to begin with.
-    pub(in crate::coding::proxy_gateway::runtime) fn resolve_websocket(body: &Value) -> Self {
+    ///
+    /// `native_first` carries the same meaning as in [`Self::resolve`]. The
+    /// relay buffers a pass-through turn's frames rather than dropping them, so
+    /// a native item can be replayed and anything else can be discarded before
+    /// the synthesizing retry.
+    pub(in crate::coding::proxy_gateway::runtime) fn resolve_websocket(
+        provider: Option<&UpstreamProvider>,
+        native_first: bool,
+        body: &Value,
+    ) -> Self {
         if is_remote_compaction_v2_request(body) {
-            return Self::Summarize;
+            return compaction_turn_mode(provider, native_first);
         }
         if carries_gateway_compaction_capsule(body) {
             return Self::ReplayCapsules;
@@ -194,18 +235,84 @@ impl RemoteCompactionCompat {
         Self::None
     }
 
-    pub(in crate::coding::proxy_gateway::runtime) fn is_remote_compaction(self) -> bool {
-        self == Self::Summarize
+    /// Whether this turn is a compaction turn of either kind, which is what the
+    /// request log records so a user can tell a native pass-through from the
+    /// Gateway's own simulation without reading the wire.
+    pub(in crate::coding::proxy_gateway::runtime) fn is_compaction_turn(self) -> bool {
+        matches!(self, Self::Summarize | Self::Fallback | Self::Passthrough)
     }
 
-    pub(in crate::coding::proxy_gateway::runtime) fn may_replay_capsules(self) -> bool {
-        self == Self::ReplayCapsules
+    /// Whether the upstream is asked for a summary and the Gateway therefore
+    /// writes the `compaction` item itself.
+    pub(in crate::coding::proxy_gateway::runtime) fn is_summarize(self) -> bool {
+        matches!(self, Self::Summarize | Self::Fallback)
     }
 
-    /// The completion Codex expects for a compaction turn.
-    pub(in crate::coding::proxy_gateway::runtime) fn is_compaction_response(self) -> bool {
-        self == Self::Summarize
+    /// Whether the `compaction_trigger` travels to the upstream unchanged and
+    /// the upstream's own `compaction` item is forwarded back as-is.
+    pub(in crate::coding::proxy_gateway::runtime) fn is_passthrough(self) -> bool {
+        self == Self::Passthrough
     }
+
+    /// Whether the input can carry capsules this Gateway wrote, which no
+    /// upstream can read. Every compaction-related turn expands them — including
+    /// a pass-through turn, whose history may still hold capsules from a time
+    /// when the provider was simulated.
+    pub(in crate::coding::proxy_gateway::runtime) fn expands_capsules(self) -> bool {
+        !matches!(self, Self::None)
+    }
+}
+
+/// How a `compaction_trigger` turn is served for this provider.
+///
+/// A Responses target is offered the trigger first, exactly as Codex's own
+/// upstream would be: the upstream that implements v2 turns it into its own
+/// `compaction` item, and the caller relays that item untouched. Whether the
+/// upstream really understands the trigger is not knowable in advance — an
+/// upstream speaking the Responses protocol at the right path may still answer
+/// an ordinary assistant message, which Codex rejects with `got 0 from 1 output
+/// items` — so the caller falls back to [`RemoteCompactionCompat::Summarize`]
+/// with a second request instead of trusting the answer. That is why
+/// `native_first` is only ever cleared by a recorded refusal, never by a guess.
+///
+/// A converted target cannot be served natively at all: v2 is defined in terms
+/// of the Responses wire, so an upstream reached through a protocol conversion
+/// has no way to implement it and the trigger is never forwarded there.
+fn compaction_turn_mode(
+    provider: Option<&UpstreamProvider>,
+    native_first: bool,
+) -> RemoteCompactionCompat {
+    let forwardable = provider
+        .is_some_and(|provider| provider.target_protocol == AiProtocol::OpenAiResponses);
+    if forwardable && native_first {
+        RemoteCompactionCompat::Passthrough
+    } else {
+        RemoteCompactionCompat::Summarize
+    }
+}
+
+/// Whether a reply is the native v2 answer Codex accepts: exactly one
+/// `compaction` output item carrying ciphertext.
+///
+/// A pass-through turn is only allowed to reach Codex when this holds. Anything
+/// else — an ordinary assistant message, an empty reply, two compaction items —
+/// is what an upstream that does not really implement v2 returns, and Codex
+/// would fail the turn on it. The caller falls back to sealing its own item.
+pub(in crate::coding::proxy_gateway::runtime) fn is_native_compaction_response(body: &[u8]) -> bool {
+    let Ok(value) = serde_json::from_slice::<Value>(body) else {
+        return false;
+    };
+    let Some(output) = value.get("output").and_then(Value::as_array) else {
+        return false;
+    };
+    if output.len() != 1 {
+        return false;
+    }
+    output[0].get("type").and_then(Value::as_str) == Some("compaction")
+        && output[0]
+            .get("encrypted_content")
+            .and_then(Value::as_str)
+            .is_some_and(|content| !content.trim().is_empty())
 }
 
 /// The instruction that turns a normal turn into a summarization turn.
@@ -448,6 +555,13 @@ pub(in crate::coding::proxy_gateway::runtime) struct CompactionStreamSummary {
     /// Final text of an `output_item.done` message, used when the upstream
     /// omitted the deltas.
     completed: Option<String>,
+    /// Set when the upstream streamed its own `compaction` item.
+    ///
+    /// This is the only signal that separates an upstream which implements v2
+    /// from one that merely ignored the trigger and answered an ordinary
+    /// message: both are a successful stream of a `message` item, and only one
+    /// of them carries an item Codex will accept.
+    native_item: bool,
     truncated: bool,
     failed: bool,
     terminal: bool,
@@ -462,7 +576,10 @@ impl CompactionStreamSummary {
                     self.deltas.push_str(delta);
                 }
             }
-            Some("response.output_item.done") => {
+            Some("response.output_item.added") | Some("response.output_item.done") => {
+                if let Some(item) = event.get("item") {
+                    self.note_native_item(item);
+                }
                 if let Some(text) = event.pointer("/item").and_then(responses_output_text) {
                     self.completed = Some(text);
                 }
@@ -472,6 +589,11 @@ impl CompactionStreamSummary {
                 if let Some(response) = event.get("response") {
                     if let Some(usage) = response.get("usage") {
                         self.usage = usage.clone();
+                    }
+                    if let Some(output) = response.get("output").and_then(Value::as_array) {
+                        for item in output {
+                            self.note_native_item(item);
+                        }
                     }
                     if let Some(text) = responses_output_text(response) {
                         self.completed = Some(text);
@@ -492,6 +614,22 @@ impl CompactionStreamSummary {
 
     pub(in crate::coding::proxy_gateway::runtime) fn is_terminal(&self) -> bool {
         self.terminal
+    }
+
+    /// Whether the upstream streamed its own `compaction` item.
+    pub(in crate::coding::proxy_gateway::runtime) fn has_native_item(&self) -> bool {
+        self.native_item
+    }
+
+    /// Records an upstream output item that counts as a native v2 answer.
+    ///
+    /// `response.output_item.added` is enough on its own: an upstream that
+    /// announces the item will finish it, and one that only ever announces a
+    /// `message` has already shown what it understood the turn to be.
+    fn note_native_item(&mut self, item: &Value) {
+        if item.get("type").and_then(Value::as_str) == Some("compaction") {
+            self.native_item = true;
+        }
     }
 
     /// The summary text, or why it cannot be used.
@@ -758,7 +896,9 @@ fn compaction_events(response: &Value) -> Vec<(&'static str, Value)> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::super::providers::{ProviderAuthStrategy, UpstreamProvider};
     use super::*;
+    use crate::coding::proxy_gateway::types::ProviderGatewayMeta;
 
     #[test]
     fn a_sealed_summary_round_trips() {
@@ -1151,6 +1291,55 @@ mod tests {
         assert_eq!(summary.finish().unwrap(), "Summary from the item.");
     }
 
+    /// A pass-through turn is decided from what the upstream streamed: its own
+    /// `compaction` item, or anything else.
+    #[test]
+    fn an_upstream_compaction_item_is_told_apart_from_an_ordinary_message() {
+        let mut relay = CompactionStreamSummary::default();
+        relay.push(&serde_json::json!({
+            "type": "response.output_item.added",
+            "item": { "type": "message", "role": "assistant" },
+        }));
+        relay.push(&serde_json::json!({
+            "type": "response.output_text.delta",
+            "delta": "Here is a summary",
+        }));
+        relay.push(&serde_json::json!({
+            "type": "response.completed",
+            "response": {
+                "id": "resp_1",
+                "output": [{
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{ "type": "output_text", "text": "Here is a summary" }],
+                }],
+            },
+        }));
+        assert!(relay.is_terminal());
+        assert!(!relay.has_native_item());
+
+        // The announcement alone is enough: an upstream that says it is writing
+        // the item is not about to write an ordinary message instead.
+        let mut announced = CompactionStreamSummary::default();
+        announced.push(&serde_json::json!({
+            "type": "response.output_item.added",
+            "item": { "type": "compaction" },
+        }));
+        assert!(announced.has_native_item());
+
+        // Some upstreams skip the per-item events and only report the finished
+        // item in the terminal.
+        let mut terminal_only = CompactionStreamSummary::default();
+        terminal_only.push(&serde_json::json!({
+            "type": "response.completed",
+            "response": {
+                "id": "resp_1",
+                "output": [{ "type": "compaction", "encrypted_content": "gAAAAABq-cipher" }],
+            },
+        }));
+        assert!(terminal_only.has_native_item());
+    }
+
     /// An unusable summary must never become an item. Codex installs the item as
     /// the entire conversation history, so a placeholder would discard the
     /// context instead of surfacing the failure; the caller forwards the
@@ -1194,7 +1383,7 @@ mod tests {
     fn a_compaction_request_round_trips_through_a_later_turn() {
         let request_body = serde_json::to_vec(&compaction_request()).unwrap();
         assert_eq!(
-            RemoteCompactionCompat::resolve(&route("/v1/responses"), &request_body),
+            RemoteCompactionCompat::resolve(&route("/v1/responses"), None, true, &request_body),
             RemoteCompactionCompat::Summarize
         );
 
@@ -1230,7 +1419,7 @@ mod tests {
         });
         let next_turn_body = serde_json::to_vec(&next_turn).unwrap();
         assert_eq!(
-            RemoteCompactionCompat::resolve(&route("/v1/responses"), &next_turn_body),
+            RemoteCompactionCompat::resolve(&route("/v1/responses"), None, true, &next_turn_body),
             RemoteCompactionCompat::ReplayCapsules
         );
 
@@ -1242,6 +1431,131 @@ mod tests {
         assert_eq!(input[1]["role"], "user");
     }
 
+    fn responses_provider() -> UpstreamProvider {
+        UpstreamProvider {
+            cli_key: GatewayCliKey::Codex,
+            id: "provider-1".to_string(),
+            name: "Native upstream".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            api_key: "sk-test".to_string(),
+            target_protocol: AiProtocol::OpenAiResponses,
+            supports_websockets: None,
+            auth_strategy: ProviderAuthStrategy::Bearer,
+            is_full_url: false,
+            sort_index: None,
+            meta: ProviderGatewayMeta::default(),
+            model_mapping: Default::default(),
+        }
+    }
+
+    /// A Responses target is offered the trigger first, exactly as Codex's own
+    /// upstream would be; that is the default, with nothing to switch on.
+    #[test]
+    fn a_responses_target_is_offered_the_trigger_first() {
+        let body = serde_json::to_vec(&compaction_request()).unwrap();
+        let route = route("/v1/responses");
+
+        let provider = responses_provider();
+        assert_eq!(
+            RemoteCompactionCompat::resolve(&route, Some(&provider), true, &body),
+            RemoteCompactionCompat::Passthrough
+        );
+
+        // A configuration that already refused one goes straight to the
+        // Gateway's own summary.
+        assert_eq!(
+            RemoteCompactionCompat::resolve(&route, Some(&provider), false, &body),
+            RemoteCompactionCompat::Summarize
+        );
+
+        // No provider resolved at all (a route with nothing to forward to) still
+        // defaults to the Gateway answering.
+        assert_eq!(
+            RemoteCompactionCompat::resolve(&route, None, true, &body),
+            RemoteCompactionCompat::Summarize
+        );
+    }
+
+    /// v2 is defined on the Responses wire, so a provider reached through a
+    /// protocol conversion cannot implement it natively. Offering it the trigger
+    /// would spend a request on an answer it cannot give.
+    #[test]
+    fn a_converted_provider_never_passes_the_trigger_through() {
+        let mut provider = responses_provider();
+        provider.target_protocol = AiProtocol::OpenAiChat;
+        let body = serde_json::to_vec(&compaction_request()).unwrap();
+        assert_eq!(
+            RemoteCompactionCompat::resolve(&route("/v1/responses"), Some(&provider), true, &body),
+            RemoteCompactionCompat::Summarize
+        );
+    }
+
+    /// The relay buffers a pass-through turn's frames, so it can offer the
+    /// trigger too and still decide afterwards.
+    #[test]
+    fn the_websocket_relay_is_offered_the_trigger_too() {
+        let provider = responses_provider();
+        assert_eq!(
+            RemoteCompactionCompat::resolve_websocket(Some(&provider), true, &compaction_request()),
+            RemoteCompactionCompat::Passthrough
+        );
+        assert_eq!(
+            RemoteCompactionCompat::resolve_websocket(Some(&provider), false, &compaction_request()),
+            RemoteCompactionCompat::Summarize
+        );
+    }
+
+    /// Only an upstream that really implements v2 may reach Codex through the
+    /// pass-through branch. Everything an unimplementing upstream returns — an
+    /// ordinary assistant message, an empty or doubled reply — is rejected, and
+    /// the caller falls back to sealing its own item.
+    #[test]
+    fn only_one_ciphertext_compaction_item_counts_as_native() {
+        let native = serde_json::to_vec(&serde_json::json!({
+            "id": "resp_1",
+            "output": [{ "type": "compaction", "encrypted_content": "gAAAAABq-cipher" }],
+        }))
+        .unwrap();
+        assert!(is_native_compaction_response(&native));
+
+        let cases = [
+            // A relay that ignored the trigger and answered normally.
+            serde_json::json!({
+                "id": "resp_1",
+                "output": [{
+                    "type": "message",
+                    "content": [{ "type": "output_text", "text": "Here is a summary" }],
+                }],
+            }),
+            serde_json::json!({ "id": "resp_1", "output": [] }),
+            serde_json::json!({
+                "id": "resp_1",
+                "output": [
+                    { "type": "compaction", "encrypted_content": "cipher-a" },
+                    { "type": "compaction", "encrypted_content": "cipher-b" },
+                ],
+            }),
+            // A compaction item with nothing to replay.
+            serde_json::json!({
+                "id": "resp_1",
+                "output": [{ "type": "compaction", "encrypted_content": "   " }],
+            }),
+            serde_json::json!({
+                "id": "resp_1",
+                "output": [{ "type": "compaction" }],
+            }),
+            serde_json::json!({ "id": "resp_1" }),
+        ];
+        for case in cases {
+            let body = serde_json::to_vec(&case).unwrap();
+            assert!(
+                !is_native_compaction_response(&body),
+                "must not accept {case}"
+            );
+        }
+        assert!(!is_native_compaction_response(b"not json"));
+    }
+
     /// A non-Codex CLI must never enter the compaction path, even if its body
     /// happens to contain a lookalike item.
     #[test]
@@ -1250,7 +1564,7 @@ mod tests {
         claude_route.cli_key = GatewayCliKey::Claude;
         let body = serde_json::to_vec(&compaction_request()).unwrap();
         assert_eq!(
-            RemoteCompactionCompat::resolve(&claude_route, &body),
+            RemoteCompactionCompat::resolve(&claude_route, None, true, &body),
             RemoteCompactionCompat::None
         );
     }
@@ -1261,7 +1575,7 @@ mod tests {
     fn the_legacy_compact_endpoint_is_not_claimed() {
         let body = serde_json::to_vec(&serde_json::json!({ "input": [] })).unwrap();
         assert_eq!(
-            RemoteCompactionCompat::resolve(&route("/v1/responses/compact"), &body),
+            RemoteCompactionCompat::resolve(&route("/v1/responses/compact"), None, true, &body),
             RemoteCompactionCompat::None
         );
     }

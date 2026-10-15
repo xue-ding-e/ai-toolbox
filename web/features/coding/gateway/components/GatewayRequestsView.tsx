@@ -43,6 +43,7 @@ import {
   formatInteger,
   formatModelQualifiers,
   formatTps,
+  compactionModeKey,
   serviceTierLabel,
   formatUsd,
   GATEWAY_USAGE_RANGE_PRESETS,
@@ -547,6 +548,9 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
       const attemptCounts = normalizeAttemptCounts(detail);
       const providerAttempts = detail.provider_attempts ?? [];
       const websocketStatusKey = gatewayWebSocketStatusKey(detail);
+      // Only the native/simulated split is user-visible; the item itself looks
+      // the same on the wire either way.
+      const compactionModeLabel = compactionModeKey(detail.compaction_mode);
       const handshakeAttemptsText = detail.websocket?.handshake_attempts?.map((attempt) =>
         `${attempt.provider_name ?? attempt.provider_id ?? '-'}: ${attempt.status_code ?? '-'}`).join(' → ');
       const requestDisplay = deriveGatewayRequestDisplay(detail);
@@ -607,6 +611,7 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
             ? formatModelQualifiers(requestDisplay.modelText, [
                 detail.reasoning_effort,
                 serviceTierLabel(detail.service_tier),
+                compactionModeLabel ? t(compactionModeLabel) : null,
               ])
             : detail.data_source === 'session'
               ? t('gateway.page.statistics.modelUnavailable')
@@ -798,6 +803,7 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
               ? t('gateway.page.requests.localSession')
               : requestDisplay.titleKey ? t(requestDisplay.titleKey) : requestDisplay.modelText;
             const tierLabel = serviceTierLabel(record.service_tier);
+            const compactionLabelKey = compactionModeKey(record.compaction_mode);
             return (
               <>
                 <div className={styles.modelTitle} title={formatModelQualifiers(requestDisplayTitle, [record.reasoning_effort, tierLabel])}>
@@ -810,6 +816,11 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
                   {requestDisplay.modelApplicable && tierLabel ? (
                     <span className={styles.modelTier} title={t('gateway.page.requests.serviceTierHint')}>
                       {tierLabel}
+                    </span>
+                  ) : null}
+                  {compactionLabelKey ? (
+                    <span className={styles.modelTier} title={t('gateway.page.requests.compaction.hint')}>
+                      {t(compactionLabelKey)}
                     </span>
                   ) : null}
                 </div>

@@ -12,6 +12,7 @@ import {
   formatModelQualifiers,
   formatTps,
   formatUsd,
+  compactionModeKey,
   gatewayRequestDisplayKind,
   gatewayWebSocketStatusKey,
   getGatewayRequestsPerMinute,
@@ -134,6 +135,19 @@ test('service tier labels only recognize the canonical Fast/Ultrafast ids', () =
   assert.equal(serviceTierLabel('ULTRAFAST'), 'Ultrafast');
   for (const tier of ['priority', 'default', 'auto', 'flex', '', null, undefined]) {
     assert.equal(serviceTierLabel(tier), null);
+  }
+});
+
+test('compaction badges name the side that wrote the item', () => {
+  // The wire looks identical whichever side answered, so this badge is the only
+  // place a user can tell a native upstream from the gateway's own summary.
+  assert.equal(compactionModeKey('native'), 'gateway.page.requests.compaction.native');
+  assert.equal(compactionModeKey(' Native '), 'gateway.page.requests.compaction.native');
+  assert.equal(compactionModeKey('fallback'), 'gateway.page.requests.compaction.fallback');
+  assert.equal(compactionModeKey('simulated'), 'gateway.page.requests.compaction.simulated');
+  // An ordinary turn, and any value the backend stops sending, stays unlabelled.
+  for (const mode of [null, undefined, '', '  ', 'unknown']) {
+    assert.equal(compactionModeKey(mode), null);
   }
 });
 

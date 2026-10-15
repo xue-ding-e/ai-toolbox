@@ -273,6 +273,13 @@ pub(super) struct DebugHttpResponse {
     /// its own response envelope. `None` when the upstream never confirmed a
     /// premium tier, so billing falls back to the requested tier.
     pub(super) served_service_tier: Option<String>,
+    /// Which side wrote the `compaction` item on a Codex remote compaction v2
+    /// turn: `native` when the upstream answered with its own item, `fallback`
+    /// when the trigger was offered and refused before the Gateway summarized,
+    /// `simulated` when the target protocol could never have served it natively.
+    /// `None` on every other turn, and on a compaction turn that failed before
+    /// either side wrote anything.
+    pub(super) compaction_mode: Option<String>,
     pub(super) upstream_request_body: Option<Vec<u8>>,
     /// Protocol of the final upstream attempt, independent of the client protocol.
     pub(super) target_protocol: Option<AiProtocol>,
@@ -472,6 +479,7 @@ pub(super) fn json_response(
         requested_model: None,
         upstream_model_id: None,
         served_service_tier: None,
+        compaction_mode: None,
         fast_cost_multiplier: None,
         ultrafast_cost_multiplier: None,
         upstream_request_body: None,
@@ -519,6 +527,7 @@ pub(super) fn empty_response(
         requested_model: None,
         upstream_model_id: None,
         served_service_tier: None,
+        compaction_mode: None,
         fast_cost_multiplier: None,
         ultrafast_cost_multiplier: None,
         upstream_request_body: None,
@@ -1104,6 +1113,7 @@ mod tests {
             requested_model: None,
             upstream_model_id: None,
             served_service_tier: None,
+            compaction_mode: None,
             fast_cost_multiplier: None,
             ultrafast_cost_multiplier: None,
             upstream_request_body: None,

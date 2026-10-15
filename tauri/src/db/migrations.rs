@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 use super::schema::{sql_string_literal, DbTable, JsonFieldPath, ALL_TABLES};
 
-pub const TARGET_SCHEMA_VERSION: i32 = 27;
+pub const TARGET_SCHEMA_VERSION: i32 = 28;
 const FUTURE_SCHEMA_ERROR_PREFIX: &str = "AI_TOOLBOX_SQLITE_SCHEMA_TOO_NEW";
 
 pub fn run_all(conn: &mut Connection) -> Result<(), String> {
@@ -88,6 +88,9 @@ pub fn run_all(conn: &mut Connection) -> Result<(), String> {
     }
     if current_version < 27 {
         run_migration_step(conn, 27, migrate_v27)?;
+    }
+    if current_version < 28 {
+        run_migration_step(conn, 28, migrate_v28)?;
     }
 
     Ok(())
@@ -562,6 +565,10 @@ fn migrate_v26(conn: &Connection) -> Result<(), String> {
 fn migrate_v27(conn: &Connection) -> Result<(), String> {
     add_column_if_missing(conn, "proxy_request_logs", "service_tier", "TEXT")?;
     add_column_if_missing(conn, "proxy_request_logs", "service_tier_multiplier", "TEXT")
+}
+
+fn migrate_v28(conn: &Connection) -> Result<(), String> {
+    add_column_if_missing(conn, "proxy_request_logs", "compaction_mode", "TEXT")
 }
 
 fn create_jsonb_table(conn: &Connection, table: DbTable) -> Result<(), String> {

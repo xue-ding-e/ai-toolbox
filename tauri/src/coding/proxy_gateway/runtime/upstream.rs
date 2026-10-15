@@ -1,5 +1,6 @@
 use super::compat::codex_remote_compaction::{
-    self as codex_remote_compaction, RemoteCompactionCompat,
+    self as codex_remote_compaction, RemoteCompactionCompat, COMPACTION_MODE_FALLBACK,
+    COMPACTION_MODE_NATIVE, COMPACTION_MODE_SIMULATED,
 };
 use super::compat::codex_responses_compact::{
     CodexResponsesCompactCompat, CODEX_RESPONSES_COMPACT_COMPAT_HEADER,
@@ -60,8 +61,8 @@ use futures_util::StreamExt;
 use http_body_util::BodyExt;
 use reqwest::header::{
     HeaderMap, HeaderName, HeaderValue, ACCEPT, ACCEPT_ENCODING, AUTHORIZATION, CONNECTION,
-    CONTENT_LENGTH, CONTENT_TYPE, HOST, PROXY_AUTHENTICATE, PROXY_AUTHORIZATION, TE, TRAILER,
-    TRANSFER_ENCODING, UPGRADE,
+    CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, HOST, PROXY_AUTHENTICATE, PROXY_AUTHORIZATION, TE,
+    TRAILER, TRANSFER_ENCODING, UPGRADE,
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -192,6 +193,19 @@ enum UpstreamResponse {
     Reqwest(reqwest::Response),
     HeaderPreserving(HeaderPreservingResponse),
     Hyper(hyper::Response<hyper::body::Incoming>),
+    /// A reply whose body was already read and reassembled in memory.
+    ///
+    /// Used when a turn has to be inspected before it can be trusted — a
+    /// pass-through compaction turn must tell a native `compaction` item apart
+    /// from an ordinary assistant message — and the decision was to relay it
+    /// after all. The caller normalizes the headers to match the reassembled
+    /// body (`application/json`, no content encoding) so downstream response
+    /// handling treats it exactly like an upstream that answered in one piece.
+    Buffered {
+        status: reqwest::StatusCode,
+        headers: HeaderMap,
+        body: Vec<u8>,
+    },
 }
 
 impl UpstreamResponse {
@@ -200,6 +214,7 @@ impl UpstreamResponse {
             Self::Reqwest(response) => response.status(),
             Self::HeaderPreserving(response) => response.status(),
             Self::Hyper(response) => response.status(),
+            Self::Buffered { status, .. } => *status,
         }
     }
 
@@ -208,6 +223,7 @@ impl UpstreamResponse {
             Self::Reqwest(response) => response.headers(),
             Self::HeaderPreserving(response) => response.headers(),
             Self::Hyper(response) => response.headers(),
+            Self::Buffered { headers, .. } => headers,
         }
     }
 
@@ -216,6 +232,8 @@ impl UpstreamResponse {
         timeout: Option<Duration>,
     ) -> Result<Vec<u8>, GatewayForwardError> {
         match self {
+            // Already in memory; there is nothing left to time out on.
+            Self::Buffered { body, .. } => Ok(body),
             Self::Reqwest(response) => {
                 let future = response.bytes();
                 let result = if let Some(timeout) = timeout {
@@ -304,6 +322,10 @@ impl UpstreamResponse {
 
     fn bytes_stream(self) -> super::http_io::DebugBodyStream {
         match self {
+            // One chunk, exactly as the body was reassembled.
+            Self::Buffered { body, .. } => Box::pin(futures_util::stream::once(async move {
+                Ok(body)
+            })),
             Self::Reqwest(response) => {
                 let body_stream = response.bytes_stream().map(|chunk| {
                     chunk
@@ -1561,7 +1583,12 @@ async fn send_upstream_request(
     privacy: Option<&PrivacyRequest>,
 ) -> Result<DebugHttpResponse, GatewayForwardError> {
     let compact_compat = CodexResponsesCompactCompat::new(route, provider);
-    let remote_compaction = RemoteCompactionCompat::resolve(route, &request.body);
+    let remote_compaction = RemoteCompactionCompat::resolve(
+        route,
+        Some(provider),
+        should_attempt_native_remote_compaction(context, provider),
+        &request.body,
+    );
     let source_protocol = source_protocol_from_route(route);
     let conversion_route = compact_compat.conversion_route().or_else(|| {
         source_protocol.and_then(|source_protocol| conversion_route(source_protocol, provider))
@@ -1678,6 +1705,198 @@ async fn send_upstream_request(
     })?;
 
     let status = response.status();
+
+    // Codex remote compaction v2 is served natively first and summarized only
+    // when the upstream refuses it.
+    //
+    // `compaction_trigger` is an uncommon input item, and an upstream reached
+    // through a Responses route is free to ignore it and answer an ordinary
+    // assistant message — which Codex rejects with `got 0 from 1 output items`,
+    // and which was never written under the summarization instruction anyway.
+    // The reply therefore cannot be relayed on trust, and one that is not
+    // exactly one `compaction` item is dropped in favour of a second,
+    // summarizing request. Same shape as the rectifiers below: at most one
+    // retry, never recursive.
+    if remote_compaction.is_passthrough()
+        && should_read_pass_through_compaction_reply(status.as_u16())
+    {
+        let status_code = status.as_u16();
+        let response_is_sse_body =
+            response_is_sse(response.headers()) && (200..400).contains(&status_code);
+        // Headers for the relay case, taken before the body is consumed. The
+        // reassembled body is decoded JSON, so it must not advertise an SSE or
+        // encoded entity: both would send downstream handling looking for a
+        // stream or a compression layer that is no longer there.
+        let mut relay_headers = response.headers().clone();
+        relay_headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        relay_headers.remove(CONTENT_ENCODING);
+        relay_headers.remove(CONTENT_LENGTH);
+        let body = if response_is_sse_body {
+            // A native item may arrive as SSE: Codex always asks for streaming
+            // and the trigger rides along in that same request. Reassemble it
+            // into the one-piece JSON the native check reads.
+            let (_, aggregated) = aggregate_sse_stream_for_non_streaming_client(
+                SseAggregateKind::from_protocol(provider.target_protocol),
+                response.bytes_stream(),
+                upstream_response_snapshot_limit,
+            )
+            .await
+            .map_err(|mut error| {
+                error.upstream_request_body = Some(upstream_body_snapshot.clone());
+                error
+            })?;
+            aggregated
+        } else {
+            let encoding = get_content_encoding_from_header_map(response.headers());
+            let raw_body = response
+                .bytes_with_timeout(Some(Duration::from_secs(
+                    non_streaming_timeout_secs.max(1),
+                )))
+                .await
+                .map_err(|mut error| {
+                    error.upstream_request_body = Some(upstream_body_snapshot.clone());
+                    error
+                })?;
+            match maybe_decompress_encoded_body(
+                encoding.as_deref(),
+                raw_body,
+                MAX_DECOMPRESSED_BODY_BYTES,
+            ) {
+                Ok((body, _)) => body,
+                Err(error) => {
+                    return Err(GatewayForwardError {
+                        message: format!("Failed to decompress upstream response body: {error}"),
+                        kind: GatewayFailureKind::GatewayParse,
+                        upstream_request_body: Some(upstream_body_snapshot.clone()),
+                        upstream_response_body: None,
+                        upstream_response_body_bytes: 0,
+                    });
+                }
+            }
+        };
+
+        if codex_remote_compaction::is_native_compaction_response(&body) {
+            // The upstream implements v2 itself. Hand the reassembled reply back
+            // as if it had arrived in one piece, so every downstream step
+            // (pipelines, side stores, usage, the SSE re-render Codex waits on)
+            // runs exactly as it does on any other Responses turn. The logged
+            // upstream body is therefore the reassembled JSON rather than the
+            // SSE it came in as — the same content, in the shape the rest of the
+            // gateway reasons about.
+            return build_gateway_response(
+                request,
+                route,
+                provider,
+                UpstreamResponse::Buffered {
+                    status,
+                    headers: relay_headers,
+                    body,
+                },
+                upstream_body_snapshot,
+                upstream_url.to_string(),
+                conversion_route,
+                Some(conversion_context.clone()),
+                lossy_warnings.clone(),
+                pipeline.clone(),
+                pipeline_context.clone(),
+                upstream_response_snapshot_limit,
+                non_streaming_timeout_secs.max(1),
+                Some(context),
+                compact_compat,
+                remote_compaction,
+                xai_namespace_restore_map.clone(),
+            )
+            .await;
+        }
+
+        // The upstream does not understand the trigger. Remember that so the
+        // second request is paid once instead of on every compaction; the
+        // memory is volatile and keyed by configuration, so a chain that starts
+        // supporting v2 is picked up again after a restart or a config change.
+        context
+            .side_stores
+            .remember_native_compaction_rejection(provider_config_identity(provider));
+        let retried = build_retry_upstream_body(
+            request,
+            requested_model,
+            upstream_model_id,
+            false,
+            cache_injection_enabled,
+            route,
+            source_protocol,
+            provider.target_protocol,
+            conversion_route,
+            Some(&provider.meta),
+            Some(context),
+            Some(provider),
+            route_declares_streaming(route),
+            compact_compat,
+            RemoteCompactionCompat::Fallback,
+            &upstream_body_snapshot,
+        )?;
+        // Unreachable for a v2 turn — the trigger is always rewritten — but a
+        // retry that would resend the same request is not a retry.
+        let Some(retried) = retried else {
+            let upstream_response_body_bytes = body.len() as u64;
+            return Err(GatewayForwardError {
+                message:
+                    "Codex remote compaction v2: could not rewrite the trigger into a summarization request"
+                        .to_string(),
+                kind: GatewayFailureKind::EmptyResponse,
+                upstream_request_body: Some(upstream_body_snapshot.clone()),
+                upstream_response_body: Some(body),
+                upstream_response_body_bytes,
+            });
+        };
+        let retried_body = match privacy {
+            Some(privacy) => privacy
+                .prepare(&retried.body, &provider.id)
+                .map_err(|message| {
+                    privacy.fail();
+                    GatewayForwardError::new(message, GatewayFailureKind::RequestSchema)
+                })?,
+            None => retried.body,
+        };
+        let response = send_request_once(
+            &client,
+            method.clone(),
+            &upstream_url,
+            headers.clone(),
+            retried_body.clone(),
+            non_streaming_timeout_secs.max(1),
+            streaming_idle_timeout_secs.max(1),
+            header_preserving_proxy.clone(),
+        )
+        .await
+        .map_err(|mut error| {
+            error.upstream_request_body = Some(retried_body.clone());
+            error
+        })?;
+        return build_gateway_response(
+            request,
+            route,
+            provider,
+            response,
+            retried_body,
+            upstream_url.to_string(),
+            conversion_route,
+            Some(retried.conversion_context),
+            retried.lossy_warnings,
+            retried.pipeline,
+            retried.pipeline_context,
+            upstream_response_snapshot_limit,
+            non_streaming_timeout_secs.max(1),
+            Some(context),
+            compact_compat,
+            // The summarization happened only because the trigger was refused,
+            // which is what separates this turn from a provider that could
+            // never have served it natively.
+            RemoteCompactionCompat::Fallback,
+            xai_namespace_restore_map.clone(),
+        )
+        .await;
+    }
+
     let should_attempt_thinking_signature_rectifier = should_attempt_thinking_signature_rectifier(
         thinking_rectifier_enabled,
         request,
@@ -1744,10 +1963,11 @@ async fn send_upstream_request(
         if should_attempt_thinking_signature_rectifier
             && should_rectify_thinking_signature(status_code, &body)
         {
-            if let Some(rectified) = build_thinking_signature_rectified_upstream_body(
+            if let Some(rectified) = build_retry_upstream_body(
                 request,
                 requested_model,
                 upstream_model_id,
+                true,
                 cache_injection_enabled,
                 route,
                 source_protocol,
@@ -1819,7 +2039,7 @@ async fn send_upstream_request(
                 detect_responses_encrypted_content_error(status_code, &body);
             if let Some(encrypted_content_error) = encrypted_content_error {
                 context.side_stores.remember_rejected_responses_ciphers(
-                    responses_cipher_provider_config_identity(provider),
+                    provider_config_identity(provider),
                     &upstream_body_snapshot,
                     encrypted_content_error
                         .message
@@ -1975,6 +2195,10 @@ async fn send_upstream_request(
             upstream_body_snapshot,
             stored_upstream_response_body,
             upstream_url.to_string(),
+            // This branch is the buffered *error* body: no `compaction` item was
+            // written by either side, so the label stays absent. The turn is
+            // still identifiable as a compaction turn by its path and category.
+            None,
         ));
     }
 
@@ -2220,23 +2444,32 @@ async fn build_gateway_response(
                     upstream_response_body_bytes,
                 })?;
         }
-        if remote_compaction.is_compaction_response() {
-            // The upstream answered with an ordinary summary, streamed or not.
-            // Codex needs exactly one `compaction` item instead. Usage is read
-            // from the aggregated body (the provider's own protocol shape) —
-            // the raw bytes above are SSE text and carry no `usage` to find.
-            body = build_remote_compaction_response_body(&body, &target_response_body)
-            .map_err(|message| GatewayForwardError {
-                // A 2xx whose summary cannot be sealed is an upstream failure, not
-                // a client schema rejection. `GatewayParse` would answer 400 and
-                // throw away the retry Codex classifies from the error; this class
-                // retries the same provider, then fails over, and reports 502.
-                message,
-                kind: GatewayFailureKind::EmptyResponse,
-                upstream_request_body: Some(upstream_body_snapshot.clone()),
-                upstream_response_body: Some(upstream_response_body.clone()),
-                upstream_response_body_bytes,
-            })?;
+        // A pass-through turn whose upstream really implements v2 already
+        // answered with the item Codex wants; anything else (an ordinary
+        // assistant message, an empty or doubled reply) is what an upstream that
+        // does not implement it returns, so the Gateway seals its own. Recorded
+        // either way, so the log says which side wrote the item.
+        let native_compaction = remote_compaction.is_passthrough()
+            && codex_remote_compaction::is_native_compaction_response(&body);
+        let compaction_mode = compaction_mode_label(remote_compaction, native_compaction);
+        if remote_compaction.is_compaction_turn() {
+            if !native_compaction {
+                // Usage is read from the aggregated body (the provider's own
+                // protocol shape) — the raw bytes above are SSE text and carry
+                // no `usage` to find.
+                body = build_remote_compaction_response_body(&body, &target_response_body)
+                .map_err(|message| GatewayForwardError {
+                    // A 2xx whose summary cannot be sealed is an upstream failure, not
+                    // a client schema rejection. `GatewayParse` would answer 400 and
+                    // throw away the retry Codex classifies from the error; this class
+                    // retries the same provider, then fails over, and reports 502.
+                    message,
+                    kind: GatewayFailureKind::EmptyResponse,
+                    upstream_request_body: Some(upstream_body_snapshot.clone()),
+                    upstream_response_body: Some(upstream_response_body.clone()),
+                    upstream_response_body_bytes,
+                })?;
+            }
         }
         if should_restore_xai_namespaces {
             body = restore_xai_namespace_json_body(&body, &xai_namespace_restore_map);
@@ -2297,6 +2530,7 @@ async fn build_gateway_response(
             requested_model: None,
             upstream_model_id: None,
             served_service_tier: served_tier,
+            compaction_mode,
             fast_cost_multiplier: provider.meta.fast_cost_multiplier.clone(),
             ultrafast_cost_multiplier: provider.meta.ultrafast_cost_multiplier.clone(),
             upstream_request_body: Some(upstream_body_snapshot),
@@ -2400,6 +2634,7 @@ async fn build_gateway_response(
             requested_model: None,
             upstream_model_id: None,
             served_service_tier: None,
+            compaction_mode: None,
             fast_cost_multiplier: provider.meta.fast_cost_multiplier.clone(),
             ultrafast_cost_multiplier: provider.meta.ultrafast_cost_multiplier.clone(),
             upstream_request_body: Some(upstream_body_snapshot),
@@ -2506,20 +2741,31 @@ async fn build_gateway_response(
             }
         }
     }
-    if remote_compaction.is_compaction_response() && (200..400).contains(&status.as_u16()) {
-        // The upstream answered with an ordinary summary. Codex needs exactly
-        // one `compaction` item instead, carrying the summary in a capsule this
-        // Gateway can read back on later turns.
-        body = build_remote_compaction_response_body(&body, &upstream_response_body)
-        .map_err(|message| GatewayForwardError {
-            // Same class as the aggregated path above: the upstream answered, but
-            // not with a summary this Gateway can hand to Codex.
-            message,
-            kind: GatewayFailureKind::EmptyResponse,
-            upstream_request_body: Some(upstream_body_snapshot.clone()),
-            upstream_response_body: Some(upstream_response_body.clone()),
-            upstream_response_body_bytes,
-        })?;
+    // See the aggregated branch above: a native answer is already the item Codex
+    // installs, anything else is sealed into one this Gateway can read back on
+    // later turns.
+    let served = (200..400).contains(&status.as_u16());
+    let native_compaction = remote_compaction.is_passthrough()
+        && served
+        && codex_remote_compaction::is_native_compaction_response(&body);
+    // A turn that failed produced no item at all, so there is no side to
+    // report and the label stays absent.
+    let compaction_mode = served
+        .then(|| compaction_mode_label(remote_compaction, native_compaction))
+        .flatten();
+    if remote_compaction.is_compaction_turn() && served {
+        if !native_compaction {
+            body = build_remote_compaction_response_body(&body, &upstream_response_body)
+            .map_err(|message| GatewayForwardError {
+                // Same class as the aggregated path above: the upstream answered, but
+                // not with a summary this Gateway can hand to Codex.
+                message,
+                kind: GatewayFailureKind::EmptyResponse,
+                upstream_request_body: Some(upstream_body_snapshot.clone()),
+                upstream_response_body: Some(upstream_response_body.clone()),
+                upstream_response_body_bytes,
+            })?;
+        }
         set_response_content_type(&mut response_headers, "application/json");
     }
     if should_restore_xai_namespaces {
@@ -2592,6 +2838,7 @@ async fn build_gateway_response(
         requested_model: None,
         upstream_model_id: None,
         served_service_tier: served_tier,
+        compaction_mode,
         fast_cost_multiplier: provider.meta.fast_cost_multiplier.clone(),
         ultrafast_cost_multiplier: provider.meta.ultrafast_cost_multiplier.clone(),
         upstream_request_body: Some(upstream_body_snapshot),
@@ -2675,13 +2922,56 @@ fn sse_aggregation_kind_for_non_streaming_client(
 /// [`sse_aggregation_kind_for_non_streaming_client`], the client's own `stream`
 /// flag does not matter here — Codex always sets it, and buffering is the only
 /// way to satisfy the contract either way.
+/// The request-log label for a compaction turn, or `None` on every other turn.
+///
+/// The three values answer the only question a user has about a compaction
+/// turn: which side wrote the `compaction` item. The wire looks identical
+/// whichever it is, so this label is where the difference becomes visible.
+fn compaction_mode_label(
+    remote_compaction: RemoteCompactionCompat,
+    native: bool,
+) -> Option<String> {
+    match remote_compaction {
+        // Only a pass-through turn can be native. Reaching here without one
+        // means the upstream was offered the trigger but the Gateway sealed its
+        // own item from that very reply — the shape the retry below replaces.
+        RemoteCompactionCompat::Passthrough => Some(
+            if native {
+                COMPACTION_MODE_NATIVE
+            } else {
+                COMPACTION_MODE_SIMULATED
+            }
+            .to_string(),
+        ),
+        RemoteCompactionCompat::Summarize => Some(COMPACTION_MODE_SIMULATED.to_string()),
+        RemoteCompactionCompat::Fallback => Some(COMPACTION_MODE_FALLBACK.to_string()),
+        RemoteCompactionCompat::None | RemoteCompactionCompat::ReplayCapsules => None,
+    }
+}
+
+/// Whether a pass-through compaction turn's reply has to be read and decided on.
+///
+/// Two shapes qualify. A 2xx may or may not carry a `compaction` item, and the
+/// difference is invisible from the status alone. A 400/422 is the other way an
+/// upstream says "I do not understand this item": for a turn whose only unusual
+/// feature is the trigger, a request-level rejection is far more likely to be
+/// about that item than about anything else, and refusing to retry it would
+/// leave a relay unusable for compaction.
+///
+/// Rate limits, auth failures, missing routes and upstream faults are
+/// deliberately excluded. Retrying those with a different body would not
+/// address them, and would replace the real error with a second failure.
+fn should_read_pass_through_compaction_reply(status_code: u16) -> bool {
+    (200..400).contains(&status_code) || matches!(status_code, 400 | 422)
+}
+
 fn compaction_sse_aggregation_kind(
     remote_compaction: RemoteCompactionCompat,
     provider: &UpstreamProvider,
     headers: &HeaderMap,
     status_code: u16,
 ) -> Option<SseAggregateKind> {
-    if !remote_compaction.is_compaction_response()
+    if !remote_compaction.is_compaction_turn()
         || !(200..400).contains(&status_code)
         || !response_is_sse(headers)
     {
@@ -4641,6 +4931,7 @@ fn buffered_gateway_response(
     upstream_body_snapshot: Vec<u8>,
     upstream_response_body: Option<Vec<u8>>,
     upstream_url: String,
+    compaction_mode: Option<String>,
 ) -> DebugHttpResponse {
     let token_usage = from_response_body_with_provider_type(
         provider.cli_key,
@@ -4673,6 +4964,7 @@ fn buffered_gateway_response(
         requested_model: None,
         upstream_model_id: None,
         served_service_tier: served_tier,
+        compaction_mode,
         fast_cost_multiplier: provider.meta.fast_cost_multiplier.clone(),
         ultrafast_cost_multiplier: provider.meta.ultrafast_cost_multiplier.clone(),
         upstream_request_body: Some(upstream_body_snapshot),
@@ -5000,7 +5292,7 @@ fn render_compaction_sse_if_streaming(
     status_code: u16,
     response_headers: &mut Vec<(String, String)>,
 ) -> (Vec<u8>, Option<DebugBodyStream>, bool) {
-    let stream = if remote_compaction.is_compaction_response()
+    let stream = if remote_compaction.is_compaction_turn()
         && (200..400).contains(&status_code)
         && request_declares_streaming(request)
     {
@@ -5060,6 +5352,21 @@ fn build_remote_compaction_response_body(
 
     serde_json::to_vec(&response)
         .map_err(|error| format!("Failed to serialize compaction response: {error}"))
+}
+
+/// Whether a native remote-compaction v2 attempt is still worth making for this
+/// provider, i.e. this exact configuration has not already refused one.
+///
+/// The memory behind this is volatile and keyed by configuration, so a chain
+/// that starts implementing v2 — or an operator who fixes it — is re-probed
+/// after a restart or any change to the provider's identity.
+pub(super) fn should_attempt_native_remote_compaction(
+    context: &GatewayRuntimeContext,
+    provider: &UpstreamProvider,
+) -> bool {
+    !context
+        .side_stores
+        .has_native_compaction_rejection(provider_config_identity(provider))
 }
 
 fn should_filter_known_invalid_responses_ciphers(
@@ -5168,7 +5475,7 @@ fn strip_known_invalid_responses_ciphers(
     provider: &UpstreamProvider,
     body: &mut Vec<u8>,
 ) -> Result<usize, GatewayForwardError> {
-    let provider_config_identity = responses_cipher_provider_config_identity(provider);
+    let provider_config_identity = provider_config_identity(provider);
     if !context
         .side_stores
         .has_known_invalid_responses_ciphers(provider_config_identity)
@@ -5196,7 +5503,13 @@ fn strip_known_invalid_responses_ciphers(
     Ok(removed)
 }
 
-fn responses_cipher_provider_config_identity(provider: &UpstreamProvider) -> [u8; 32] {
+/// Identifies "the same upstream, as the user has configured it".
+///
+/// Every volatile side-store memory that must be invalidated by a configuration
+/// change keys on this: rewriting the base URL, rotating the API key, switching
+/// the profile or the provider id all produce a different digest, so a stale
+/// conclusion cannot outlive the configuration that produced it.
+pub(super) fn provider_config_identity(provider: &UpstreamProvider) -> [u8; 32] {
     fn update_component(hasher: &mut Sha256, value: &str) {
         hasher.update(value.len().to_le_bytes());
         hasher.update(value.as_bytes());
@@ -6071,6 +6384,7 @@ pub(super) fn prepare_websocket_request(
     provider: &UpstreamProvider,
     context: &GatewayRuntimeContext,
     apply_failover_model_mapping: bool,
+    remote_compaction: RemoteCompactionCompat,
 ) -> Result<(Vec<u8>, String, HashMap<String, NamespacedName>), String> {
     let original: Value =
         serde_json::from_slice(&request.body).map_err(|error| error.to_string())?;
@@ -6085,7 +6399,37 @@ pub(super) fn prepare_websocket_request(
         apply_failover_model_mapping,
         true,
     );
-    prepare_websocket_request_with_model(request, provider, context, upstream_model)
+    prepare_websocket_request_with_model(
+        request,
+        provider,
+        context,
+        upstream_model,
+        remote_compaction,
+    )
+}
+
+/// Rebuilds a `response.create` frame as a plain summarization turn.
+///
+/// The relay offers a `compaction_trigger` to the upstream first; this is what
+/// it sends instead once that upstream is known to answer an ordinary message
+/// rather than a `compaction` item. The frame keeps its envelope (`stream_id`,
+/// `event_id`, …) so the reply still binds to the same turn, and the model is
+/// the one the first attempt already resolved — a pinned WebSocket must not
+/// resolve it a second time.
+pub(super) fn prepare_websocket_compaction_retry(
+    request: &DebugHttpRequest,
+    provider: &UpstreamProvider,
+    context: &GatewayRuntimeContext,
+    upstream_model: &str,
+) -> Result<Vec<u8>, String> {
+    prepare_websocket_request_with_model(
+        request,
+        provider,
+        context,
+        upstream_model.to_string(),
+        RemoteCompactionCompat::Fallback,
+    )
+    .map(|(body, _, _)| body)
 }
 
 fn prepare_websocket_request_with_model(
@@ -6093,6 +6437,7 @@ fn prepare_websocket_request_with_model(
     provider: &UpstreamProvider,
     context: &GatewayRuntimeContext,
     upstream_model: String,
+    remote_compaction: RemoteCompactionCompat,
 ) -> Result<(Vec<u8>, String, HashMap<String, NamespacedName>), String> {
     let original: Value =
         serde_json::from_slice(&request.body).map_err(|error| error.to_string())?;
@@ -6100,9 +6445,6 @@ fn prepare_websocket_request_with_model(
     if requested_model.trim().is_empty() {
         return Err("response.create requires a model".to_string());
     }
-    // A `response.create` frame is a Responses request in a WebSocket envelope,
-    // so compaction is recognized and rewritten the same way as over HTTP.
-    let remote_compaction = RemoteCompactionCompat::resolve_websocket(&original);
     let prepared = build_upstream_body_for_provider(
         request,
         requested_model,
@@ -6287,10 +6629,10 @@ fn build_upstream_body_for_provider(
     // `invalid_encrypted_content` from an upstream that validates it, and
     // meaningless context for one that does not. Items written by anyone else
     // are left untouched.
-    if remote_compaction.is_remote_compaction() || remote_compaction.may_replay_capsules() {
+    if remote_compaction.expands_capsules() {
         codex_remote_compaction::expand_compaction_capsules(&mut value);
     }
-    if remote_compaction.is_remote_compaction() {
+    if remote_compaction.is_summarize() {
         // The upstream must see a plain summarization turn: Codex's
         // `compaction_trigger` is a private control item no third-party provider
         // understands, and its base instructions would otherwise make the model
@@ -9341,10 +9683,19 @@ fn anthropic_tool_choice_forces_tool_use(value: Option<&Value>) -> bool {
     )
 }
 
-fn build_thinking_signature_rectified_upstream_body(
+/// Rebuilds a request that has already been sent once, with one policy changed.
+///
+/// This is the shared half of every rectifier: the retry differs from the first
+/// attempt only in how the body is prepared (a stripped thinking block, a
+/// summarized compaction turn), and `remote_compaction` / the flags carry that
+/// difference. `None` means the change did not alter the body at all, so
+/// re-sending it would fail the same way and the caller must not retry.
+#[allow(clippy::too_many_arguments)]
+fn build_retry_upstream_body(
     request: &DebugHttpRequest,
     requested_model: &str,
     upstream_model_id: &str,
+    strip_thinking_for_retry: bool,
     cache_injection_enabled: bool,
     route: &GatewayRoute,
     source_protocol: Option<AiProtocol>,
@@ -9362,7 +9713,7 @@ fn build_thinking_signature_rectified_upstream_body(
         request,
         requested_model,
         upstream_model_id,
-        true,
+        strip_thinking_for_retry,
         cache_injection_enabled,
         route.cli_key,
         source_protocol,
@@ -14597,6 +14948,7 @@ data: {data}\r\n\r\n"
             requested_model: None,
             upstream_model_id: None,
             served_service_tier: None,
+            compaction_mode: None,
             fast_cost_multiplier: None,
             ultrafast_cost_multiplier: None,
             upstream_request_body: None,
@@ -17076,6 +17428,7 @@ data: {data}\r\n\r\n"
             requested_model: None,
             upstream_model_id: None,
             served_service_tier: None,
+            compaction_mode: None,
             fast_cost_multiplier: None,
             ultrafast_cost_multiplier: None,
             upstream_request_body: None,
@@ -17441,6 +17794,7 @@ data: {data}\r\n\r\n"
             requested_model: None,
             upstream_model_id: None,
             served_service_tier: None,
+            compaction_mode: None,
             fast_cost_multiplier: None,
             ultrafast_cost_multiplier: None,
             upstream_request_body: None,
@@ -19191,10 +19545,11 @@ data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"qwen3","choic
             false,
         )
         .unwrap();
-        let rectified_body = build_thinking_signature_rectified_upstream_body(
+        let rectified_body = build_retry_upstream_body(
             &request,
             "gpt-5",
             "gpt-5",
+            true,
             false,
             &route,
             Some(AiProtocol::AnthropicMessages),
@@ -19356,7 +19711,7 @@ data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"qwen3","choic
         }))
         .unwrap();
         context.side_stores.remember_rejected_responses_ciphers(
-            responses_cipher_provider_config_identity(&provider),
+            provider_config_identity(&provider),
             &rejected_body,
             "encrypted_content could not be decrypted",
         );
@@ -19402,6 +19757,80 @@ data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"qwen3","choic
             .unwrap(),
             0
         );
+    }
+
+    /// The log label is the only place a user can tell which side wrote the
+    /// `compaction` item, so each way of serving a compaction turn has to map to
+    /// exactly one value.
+    #[test]
+    fn every_compaction_mode_reports_which_side_wrote_the_item() {
+        use RemoteCompactionCompat::{Fallback, Passthrough, ReplayCapsules, Summarize};
+
+        assert_eq!(
+            compaction_mode_label(Passthrough, true).as_deref(),
+            Some(COMPACTION_MODE_NATIVE)
+        );
+        assert_eq!(
+            compaction_mode_label(Fallback, false).as_deref(),
+            Some(COMPACTION_MODE_FALLBACK)
+        );
+        // A converted target that was never offered the trigger.
+        assert_eq!(
+            compaction_mode_label(Summarize, false).as_deref(),
+            Some(COMPACTION_MODE_SIMULATED)
+        );
+        // An ordinary turn, and a replay, carry no label at all.
+        assert_eq!(
+            compaction_mode_label(RemoteCompactionCompat::None, false),
+            None
+        );
+        assert_eq!(compaction_mode_label(ReplayCapsules, false), None);
+    }
+
+    /// A configuration that refused a native turn is not offered one again in
+    /// this process, so the wasted request is paid once instead of always. The
+    /// memory is keyed by configuration, so a different provider — or the same
+    /// provider moved to another base URL — keeps being probed.
+    #[test]
+    fn a_refused_native_compaction_is_remembered_per_provider_configuration() {
+        let context = GatewayRuntimeContext::new(ProxyGatewaySettings::default(), None, None);
+        let provider = provider_for_cli(GatewayCliKey::Codex);
+        assert!(should_attempt_native_remote_compaction(&context, &provider));
+
+        context
+            .side_stores
+            .remember_native_compaction_rejection(provider_config_identity(&provider));
+        assert!(!should_attempt_native_remote_compaction(&context, &provider));
+
+        let mut other_provider = provider.clone();
+        other_provider.id = "provider-b".to_string();
+        assert!(should_attempt_native_remote_compaction(
+            &context,
+            &other_provider
+        ));
+
+        let mut reconfigured = provider.clone();
+        reconfigured.base_url = "https://other.example.com/v1".to_string();
+        assert!(should_attempt_native_remote_compaction(&context, &reconfigured));
+    }
+
+    /// A rate limit or an upstream fault is not an answer about the trigger, so
+    /// re-sending the same turn as a summary would only hide the real error
+    /// behind a second failure.
+    #[test]
+    fn only_replies_about_the_turn_itself_are_read_and_decided_on() {
+        for answerable in [200, 201, 204, 400, 422] {
+            assert!(
+                should_read_pass_through_compaction_reply(answerable),
+                "{answerable} says something about the trigger"
+            );
+        }
+        for untouched in [401, 403, 404, 429, 500, 502] {
+            assert!(
+                !should_read_pass_through_compaction_reply(untouched),
+                "{untouched} is not about the trigger"
+            );
+        }
     }
 
     #[test]
