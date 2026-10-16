@@ -200,6 +200,24 @@
   min-height: 32px;
 }
 
+/**
+ * Read-only stand-in for the display-name column on rows whose Claude Code
+ * binding has no `_NAME` variable. Matches `.modelRoleLabel`'s box so the row
+ * keeps its 32px rhythm next to real inputs, but drops the weight — this is an
+ * explanation, not a control label.
+ */
+.modelNoDisplayName {
+  display: flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-bg-container);
+  color: var(--color-text-tertiary);
+  font-size: 12px;
+}
+
 .fallbackModel {
   display: grid;
   grid-template-columns: 120px minmax(0, 1fr);

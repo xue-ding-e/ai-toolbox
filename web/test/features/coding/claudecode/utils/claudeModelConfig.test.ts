@@ -3,10 +3,12 @@ import test from 'node:test';
 
 import {
   CLAUDE_CARD_ROLE_LABELS,
+  CLAUDE_DETAIL_BINDING_LABELS,
   getClaudeConfiguredModelIds,
   getClaudeProviderModelConfig,
   hasClaudeOneMMarker,
   resolveClaudeCardSubtitles,
+  resolveClaudeDetailBindings,
   setClaudeOneMMarker,
   stripClaudeOneMMarker,
 } from '../../../../../features/coding/claudecode/utils/claudeModelConfig.ts';
@@ -97,6 +99,61 @@ test('getClaudeConfiguredModelIds can strip 1M markers and dedupe ids', () => {
   assert.deepEqual(modelIds, ['env-sonnet', 'env-opus', 'env-fable']);
 });
 
+test('getClaudeProviderModelConfig reads the subagent binding without a display name', () => {
+  const config = getClaudeProviderModelConfig({
+    env: {
+      CLAUDE_CODE_SUBAGENT_MODEL: 'subagent-model[1M]',
+    },
+  });
+
+  assert.equal(config.roles.subagent.model, 'subagent-model[1M]');
+  assert.equal(config.roles.subagent.supportsOneM, true);
+  // Claude Code has no `CLAUDE_CODE_SUBAGENT_MODEL_NAME`, so this role carries
+  // no display name — the form renders a read-only placeholder for that column
+  // rather than an input that would write a variable nothing reads.
+  assert.equal(config.roles.subagent.hasDisplayName, false);
+  assert.equal(config.roles.subagent.displayName, '');
+});
+
+test('getClaudeProviderModelConfig reads the custom model option and its label', () => {
+  const config = getClaudeProviderModelConfig({
+    env: {
+      ANTHROPIC_CUSTOM_MODEL_OPTION: 'my-gateway/deepseek-v4-pro[1M]',
+      ANTHROPIC_CUSTOM_MODEL_OPTION_NAME: 'DeepSeek via gateway',
+    },
+  });
+
+  assert.equal(config.roles.custom.model, 'my-gateway/deepseek-v4-pro[1M]');
+  assert.equal(config.roles.custom.displayName, 'DeepSeek via gateway');
+  assert.equal(config.roles.custom.supportsOneM, true);
+  assert.equal(config.roles.custom.hasDisplayName, true);
+});
+
+test('the four tiers and the custom option carry a display name while subagent does not', () => {
+  const config = getClaudeProviderModelConfig({ env: {} });
+
+  for (const role of ['sonnet', 'opus', 'fable', 'haiku', 'custom'] as const) {
+    assert.equal(config.roles[role].hasDisplayName, true, role);
+  }
+  assert.equal(config.roles.subagent.hasDisplayName, false);
+});
+
+test('getClaudeConfiguredModelIds collects the subagent and custom bindings', () => {
+  const modelIds = getClaudeConfiguredModelIds({
+    env: {
+      ANTHROPIC_MODEL: 'fallback',
+      CLAUDE_CODE_SUBAGENT_MODEL: 'subagent-model[1M]',
+      ANTHROPIC_CUSTOM_MODEL_OPTION: 'custom-model',
+    },
+  }, {
+    stripOneMMarker: true,
+  });
+
+  // Both are shareable provider state, so the deep-link payload must carry them
+  // alongside the tiers.
+  assert.deepEqual(modelIds, ['fallback', 'subagent-model', 'custom-model']);
+});
+
 test('resolveClaudeCardSubtitles lists the configured roles in tier order', () => {
   const config = getClaudeProviderModelConfig({
     env: {
@@ -176,5 +233,60 @@ test('every card role has a label key', () => {
   for (const entry of resolveClaudeCardSubtitles(config)) {
     assert.equal(typeof CLAUDE_CARD_ROLE_LABELS[entry.role], 'string');
     assert.ok(CLAUDE_CARD_ROLE_LABELS[entry.role].startsWith('claudecode.model.role'));
+  }
+});
+
+test('resolveClaudeDetailBindings lists every configured binding including subagent and custom', () => {
+  const config = getClaudeProviderModelConfig({
+    env: {
+      // Out of order on purpose: the result follows the declared order, not the
+      // config's key order.
+      ANTHROPIC_DEFAULT_FABLE_MODEL: 'fable-model[1M]',
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: 'haiku-model',
+      CLAUDE_CODE_SUBAGENT_MODEL: 'subagent-model',
+      ANTHROPIC_CUSTOM_MODEL_OPTION: 'my-gateway/deepseek-v4-pro',
+      // Neither of these is a binding this list states.
+      ANTHROPIC_MODEL: 'fallback-model',
+      ANTHROPIC_REASONING_MODEL: 'reasoning-model',
+    },
+  });
+
+  assert.deepEqual(resolveClaudeDetailBindings(config), [
+    { role: 'haiku', model: 'haiku-model' },
+    { role: 'fable', model: 'fable-model[1M]' },
+    { role: 'subagent', model: 'subagent-model' },
+    { role: 'custom', model: 'my-gateway/deepseek-v4-pro' },
+  ]);
+});
+
+test('resolveClaudeDetailBindings keeps the 1M marker and skips unconfigured bindings', () => {
+  const config = getClaudeProviderModelConfig({
+    env: { CLAUDE_CODE_SUBAGENT_MODEL: 'subagent-model[1M]' },
+  });
+
+  // The marker is part of the stored value and these surfaces exist so a user
+  // can check it is set, so it stays on.
+  assert.deepEqual(resolveClaudeDetailBindings(config), [
+    { role: 'subagent', model: 'subagent-model[1M]' },
+  ]);
+});
+
+test('every detail binding has a label key', () => {
+  const config = getClaudeProviderModelConfig({
+    env: {
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: 'haiku-model',
+      ANTHROPIC_DEFAULT_SONNET_MODEL: 'sonnet-model',
+      ANTHROPIC_DEFAULT_OPUS_MODEL: 'opus-model',
+      ANTHROPIC_DEFAULT_FABLE_MODEL: 'fable-model',
+      CLAUDE_CODE_SUBAGENT_MODEL: 'subagent-model',
+      ANTHROPIC_CUSTOM_MODEL_OPTION: 'custom-model',
+    },
+  });
+
+  // A total map over every `ClaudeModelRole`, so adding a role without a label
+  // fails here rather than rendering a bare key in the sidebar.
+  for (const entry of resolveClaudeDetailBindings(config)) {
+    assert.equal(typeof CLAUDE_DETAIL_BINDING_LABELS[entry.role], 'string');
+    assert.ok(CLAUDE_DETAIL_BINDING_LABELS[entry.role].startsWith('claudecode.model.role'));
   }
 });

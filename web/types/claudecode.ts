@@ -62,6 +62,9 @@ export interface ClaudeSettingsConfig {
     ANTHROPIC_DEFAULT_OPUS_MODEL_NAME?: string;
     ANTHROPIC_DEFAULT_FABLE_MODEL?: string;
     ANTHROPIC_DEFAULT_FABLE_MODEL_NAME?: string;
+    CLAUDE_CODE_SUBAGENT_MODEL?: string;
+    ANTHROPIC_CUSTOM_MODEL_OPTION?: string;
+    ANTHROPIC_CUSTOM_MODEL_OPTION_NAME?: string;
     ANTHROPIC_REASONING_MODEL?: string;
   };
   // Legacy model configurations. New writes should use env.ANTHROPIC_* fields.
@@ -131,6 +134,9 @@ export interface ClaudeSettings {
     ANTHROPIC_DEFAULT_OPUS_MODEL_NAME?: string;
     ANTHROPIC_DEFAULT_FABLE_MODEL?: string;
     ANTHROPIC_DEFAULT_FABLE_MODEL_NAME?: string;
+    CLAUDE_CODE_SUBAGENT_MODEL?: string;
+    ANTHROPIC_CUSTOM_MODEL_OPTION?: string;
+    ANTHROPIC_CUSTOM_MODEL_OPTION_NAME?: string;
     ANTHROPIC_REASONING_MODEL?: string;
   };
   // Common config fields (flattened at top level)
@@ -157,6 +163,9 @@ export interface ClaudeProviderFormValues {
   opusModelName?: string;
   fableModel?: string;
   fableModelName?: string;
+  subagentModel?: string;
+  customModel?: string;
+  customModelName?: string;
   reasoningModel?: string; // Legacy only; new provider form no longer writes it.
   extraSettingsConfig?: string;
   extraSettingsMergeStrategy?: ClaudeSettingsMergeStrategy;

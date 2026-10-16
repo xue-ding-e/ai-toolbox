@@ -13,11 +13,20 @@ const PROVIDER_MODEL_FIELD_MAPPINGS: [(&str, &str); 5] = [
     ("fableModel", "ANTHROPIC_DEFAULT_FABLE_MODEL"),
 ];
 
-const PROVIDER_MODEL_NAME_ENV_FIELDS: [&str; 4] = [
+const PROVIDER_MODEL_NAME_ENV_FIELDS: [&str; 5] = [
     "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
     "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
     "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
     "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME",
+    "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME",
+];
+
+/// Env-only model bindings. These have no legacy top-level spelling — both
+/// arrived after the form moved to writing `env` — so they are absent from
+/// `PROVIDER_MODEL_FIELD_MAPPINGS` and listed here instead.
+const PROVIDER_MODEL_ENV_ONLY_FIELDS: [&str; 2] = [
+    "CLAUDE_CODE_SUBAGENT_MODEL",
+    "ANTHROPIC_CUSTOM_MODEL_OPTION",
 ];
 
 fn is_provider_model_field(field_key: &str) -> bool {
@@ -32,9 +41,10 @@ fn is_provider_model_env_field(field_key: &str) -> bool {
         .iter()
         .any(|(_, env_field)| env_field == &field_key)
         || PROVIDER_MODEL_NAME_ENV_FIELDS.contains(&field_key)
+        || PROVIDER_MODEL_ENV_ONLY_FIELDS.contains(&field_key)
 }
 
-pub const KNOWN_ENV_FIELDS: [&str; 13] = [
+pub const KNOWN_ENV_FIELDS: [&str; 16] = [
     "ANTHROPIC_AUTH_TOKEN",
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_BASE_URL",
@@ -47,6 +57,9 @@ pub const KNOWN_ENV_FIELDS: [&str; 13] = [
     "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
     "ANTHROPIC_DEFAULT_FABLE_MODEL",
     "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME",
+    "CLAUDE_CODE_SUBAGENT_MODEL",
+    "ANTHROPIC_CUSTOM_MODEL_OPTION",
+    "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME",
     "ANTHROPIC_REASONING_MODEL",
 ];
 
@@ -646,6 +659,11 @@ pub fn split_settings_into_provider_and_common(
         }
     }
     for env_field in PROVIDER_MODEL_NAME_ENV_FIELDS {
+        if let Some(field_value) = provider_env.get(env_field) {
+            provider_settings_env.insert(env_field.to_string(), field_value.clone());
+        }
+    }
+    for env_field in PROVIDER_MODEL_ENV_ONLY_FIELDS {
         if let Some(field_value) = provider_env.get(env_field) {
             provider_settings_env.insert(env_field.to_string(), field_value.clone());
         }

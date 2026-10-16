@@ -50,10 +50,12 @@ import type { ProviderViewMode } from '@/features/coding/shared/providerList';
 import { useSettingsStore } from '@/stores/settingsStore';
 import {
   CLAUDE_CARD_ROLE_LABELS,
+  CLAUDE_DETAIL_BINDING_LABELS,
   getClaudeConfiguredModelIds,
   getClaudeProviderModelConfig,
   parseClaudeSettingsConfig,
   resolveClaudeCardSubtitles,
+  resolveClaudeDetailBindings,
 } from '../utils/claudeModelConfig';
 import { LOCAL_CONFIG_ID } from '../../shared/localConfig';
 
@@ -374,10 +376,11 @@ const ClaudeProviderCard: React.FC<ClaudeProviderCardProps> = ({
     };
 
     push(t('claudecode.model.defaultLabel'), modelConfig.fallbackModel);
-    push('Haiku', modelConfig.roles.haiku.model);
-    push('Sonnet', modelConfig.roles.sonnet.model);
-    push('Opus', modelConfig.roles.opus.model);
-    push('Fable', modelConfig.roles.fable.model);
+    // Every configured binding, not just the four tiers: the line has room for
+    // all of them, and a subagent or picker entry the user set is worth naming.
+    for (const { role, model } of resolveClaudeDetailBindings(modelConfig)) {
+      push(t(CLAUDE_DETAIL_BINDING_LABELS[role]), model);
+    }
     push(t('claudecode.model.reasoningLabel'), modelConfig.legacyReasoningModel);
 
     if (!entries.length && provider.notes) {
@@ -388,13 +391,8 @@ const ClaudeProviderCard: React.FC<ClaudeProviderCardProps> = ({
 
   const hasConfiguredModels =
     Boolean(modelConfig.fallbackModel) ||
-    Boolean(
-      modelConfig.roles.haiku.model ||
-        modelConfig.roles.sonnet.model ||
-        modelConfig.roles.opus.model ||
-        modelConfig.roles.fable.model ||
-        modelConfig.legacyReasoningModel,
-    );
+    resolveClaudeDetailBindings(modelConfig).length > 0 ||
+    Boolean(modelConfig.legacyReasoningModel);
 
   /**
    * The detail sidebar's content: the connection facts, every configured role
@@ -413,10 +411,11 @@ const ClaudeProviderCard: React.FC<ClaudeProviderCardProps> = ({
     };
 
     push('fallback', t('claudecode.model.defaultLabel'), modelConfig.fallbackModel);
-    push('haiku', 'Haiku', modelConfig.roles.haiku.model);
-    push('sonnet', 'Sonnet', modelConfig.roles.sonnet.model);
-    push('opus', 'Opus', modelConfig.roles.opus.model);
-    push('fable', 'Fable', modelConfig.roles.fable.model);
+    // Same list as the list card's meta line, so the two surfaces never
+    // disagree about which bindings this provider has.
+    for (const { role, model } of resolveClaudeDetailBindings(modelConfig)) {
+      push(role, t(CLAUDE_DETAIL_BINDING_LABELS[role]), model);
+    }
     push('reasoning', t('claudecode.model.reasoningLabel'), modelConfig.legacyReasoningModel);
 
     const sections: ProviderDetailSection[] = [{

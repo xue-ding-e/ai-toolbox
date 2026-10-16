@@ -720,3 +720,123 @@ fn merge_writes_env_model_names_and_drops_legacy_reasoning_model() {
         .pointer("/env/ANTHROPIC_REASONING_MODEL")
         .is_none());
 }
+
+#[test]
+fn split_keeps_subagent_and_custom_model_fields_out_of_common_config() {
+    // Both bindings are provider state, not shared config: the split has to
+    // hand them to the provider side and leave nothing behind in common, or a
+    // channel switch would keep routing subagents through the old channel.
+    let settings_value = json!({
+        "env": {
+            "ANTHROPIC_AUTH_TOKEN": "token",
+            "ANTHROPIC_BASE_URL": "https://example.com",
+            "CLAUDE_CODE_SUBAGENT_MODEL": "subagent-model[1M]",
+            "ANTHROPIC_CUSTOM_MODEL_OPTION": "my-gateway/deepseek-v4-pro",
+            "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME": "DeepSeek via gateway"
+        },
+        "skipWebFetchPreflight": true
+    });
+
+    let (provider_settings, common_settings) =
+        split_settings_into_provider_and_common(&settings_value, &KNOWN_ENV_FIELDS)
+            .expect("split should succeed");
+
+    assert_eq!(
+        provider_settings.pointer("/env/CLAUDE_CODE_SUBAGENT_MODEL"),
+        Some(&json!("subagent-model[1M]"))
+    );
+    assert_eq!(
+        provider_settings.pointer("/env/ANTHROPIC_CUSTOM_MODEL_OPTION"),
+        Some(&json!("my-gateway/deepseek-v4-pro"))
+    );
+    assert_eq!(
+        provider_settings.pointer("/env/ANTHROPIC_CUSTOM_MODEL_OPTION_NAME"),
+        Some(&json!("DeepSeek via gateway"))
+    );
+    assert_eq!(
+        common_settings.get("skipWebFetchPreflight"),
+        Some(&json!(true))
+    );
+}
+
+#[test]
+fn merge_clears_the_previous_channels_subagent_and_custom_bindings() {
+    // The disk still holds the channel we are leaving. Its subagent pin and
+    // picker entry describe models only that channel has, so carrying them into
+    // the next one would be wrong; the next channel's own values replace them.
+    let current_disk_settings = json!({
+        "env": {
+            "CLAUDE_CODE_SUBAGENT_MODEL": "stale-subagent",
+            "ANTHROPIC_CUSTOM_MODEL_OPTION": "stale-custom",
+            "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME": "Stale custom",
+            "CUSTOM_ENV": "keep"
+        }
+    });
+    let provider_config = json!({
+        "env": {
+            "ANTHROPIC_AUTH_TOKEN": "token",
+            "ANTHROPIC_BASE_URL": "https://example.com",
+            "CLAUDE_CODE_SUBAGENT_MODEL": "subagent-model[1M]",
+            "ANTHROPIC_CUSTOM_MODEL_OPTION": "my-gateway/deepseek-v4-pro",
+            "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME": "DeepSeek via gateway"
+        }
+    });
+
+    let merged = merge_claude_settings_for_provider(
+        Some(&current_disk_settings),
+        None,
+        &json!({}),
+        None,
+        None,
+        &provider_config,
+        &KNOWN_ENV_FIELDS,
+    )
+    .expect("merge should succeed");
+
+    assert_eq!(
+        merged.pointer("/env/CLAUDE_CODE_SUBAGENT_MODEL"),
+        Some(&json!("subagent-model[1M]"))
+    );
+    assert_eq!(
+        merged.pointer("/env/ANTHROPIC_CUSTOM_MODEL_OPTION"),
+        Some(&json!("my-gateway/deepseek-v4-pro"))
+    );
+    assert_eq!(
+        merged.pointer("/env/ANTHROPIC_CUSTOM_MODEL_OPTION_NAME"),
+        Some(&json!("DeepSeek via gateway"))
+    );
+    // Untouched runtime-owned env survives the channel switch.
+    assert_eq!(merged.pointer("/env/CUSTOM_ENV"), Some(&json!("keep")));
+}
+
+#[test]
+fn extra_settings_cannot_smuggle_in_the_subagent_or_custom_bindings() {
+    // `extra_settings_config` is provider-private, but these three are derived
+    // from the form. Letting extra settings carry them would make the form and
+    // the file disagree on which model subagents run.
+    let extra_settings = json!({
+        "env": {
+            "CLAUDE_CODE_SUBAGENT_MODEL": "smuggled-subagent",
+            "ANTHROPIC_CUSTOM_MODEL_OPTION": "smuggled-custom",
+            "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME": "Smuggled custom",
+            "KEEP_ME": "keep"
+        }
+    });
+
+    let merged = merge_with_strategy(
+        &json!({}),
+        None,
+        &json!({}),
+        None,
+        None,
+        Some(&extra_settings),
+        ClaudeSettingsMergeStrategy::ProviderOverridesCommon,
+    );
+
+    assert!(merged.pointer("/env/CLAUDE_CODE_SUBAGENT_MODEL").is_none());
+    assert!(merged.pointer("/env/ANTHROPIC_CUSTOM_MODEL_OPTION").is_none());
+    assert!(merged
+        .pointer("/env/ANTHROPIC_CUSTOM_MODEL_OPTION_NAME")
+        .is_none());
+    assert_eq!(merged.pointer("/env/KEEP_ME"), Some(&json!("keep")));
+}

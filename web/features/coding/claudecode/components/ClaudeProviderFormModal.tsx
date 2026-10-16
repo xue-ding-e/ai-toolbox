@@ -104,6 +104,9 @@ function hasNonEmptyExtraSettingsObject(rawConfig?: string): boolean {
 const DEFAULT_CLAUDE_API_FORMAT: ClaudeApiFormat = 'anthropic';
 const OFFICIAL_PROVIDER_ENDPOINT_KEY = '__official__:';
 
+/** The tier rows "一键设置" writes to. See `handleQuickSetModels`. */
+const CLAUDE_QUICK_SET_ROLES: ClaudeModelRole[] = ['sonnet', 'opus', 'fable', 'haiku'];
+
 function normalizeClaudeApiFormat(value?: string): ClaudeApiFormat {
   if (value === 'openai_chat' || value === 'openai_responses' || value === 'gemini_native') {
     return value;
@@ -149,13 +152,33 @@ interface FetchModelsResponse {
   total: number;
 }
 
+type ModelRoleValueField =
+  | 'sonnetModel'
+  | 'opusModel'
+  | 'fableModel'
+  | 'haikuModel'
+  | 'subagentModel'
+  | 'customModel';
+
+type ModelRoleDisplayNameField =
+  | 'sonnetModelName'
+  | 'opusModelName'
+  | 'fableModelName'
+  | 'haikuModelName'
+  | 'customModelName';
+
 interface ModelRoleRow {
   role: ClaudeModelRole;
   label: string;
   model: string;
+  /**
+   * Empty for roles whose binding has no display-name variable. Those rows
+   * render a read-only placeholder in the column instead of an input.
+   */
   displayName: string;
-  modelField: 'sonnetModel' | 'opusModel' | 'fableModel' | 'haikuModel';
-  displayNameField: 'sonnetModelName' | 'opusModelName' | 'fableModelName' | 'haikuModelName';
+  modelField: ModelRoleValueField;
+  /** `null` for Subagent — Claude Code has no `CLAUDE_CODE_SUBAGENT_MODEL_NAME`. */
+  displayNameField: ModelRoleDisplayNameField | null;
   supportsOneM: boolean;
 }
 
@@ -261,6 +284,9 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
   const fableModelName = Form.useWatch('fableModelName', watchOptions) || '';
   const haikuModel = Form.useWatch('haikuModel', watchOptions) || '';
   const haikuModelName = Form.useWatch('haikuModelName', watchOptions) || '';
+  const subagentModel = Form.useWatch('subagentModel', watchOptions) || '';
+  const customModel = Form.useWatch('customModel', watchOptions) || '';
+  const customModelName = Form.useWatch('customModelName', watchOptions) || '';
 
   const modelRoleRows: ModelRoleRow[] = React.useMemo(() => [
     {
@@ -299,7 +325,29 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
       displayNameField: 'haikuModelName',
       supportsOneM: true,
     },
-  ], [fableModel, fableModelName, haikuModel, haikuModelName, opusModel, opusModelName, sonnetModel, sonnetModelName, t]);
+    {
+      // Subagent has no `_NAME` companion, so this row's display-name column
+      // renders a read-only placeholder (see `displayNameField: null`).
+      role: 'subagent',
+      label: t('claudecode.model.roleSubagent'),
+      model: subagentModel,
+      displayName: '',
+      modelField: 'subagentModel',
+      displayNameField: null,
+      supportsOneM: true,
+    },
+    {
+      // The one binding whose model ID Claude Code does not validate: it lands
+      // in the `/model` picker as an extra entry alongside the built-in rows.
+      role: 'custom',
+      label: t('claudecode.model.roleCustom'),
+      model: customModel,
+      displayName: customModelName,
+      modelField: 'customModel',
+      displayNameField: 'customModelName',
+      supportsOneM: true,
+    },
+  ], [customModel, customModelName, fableModel, fableModelName, haikuModel, haikuModelName, opusModel, opusModelName, sonnetModel, sonnetModelName, subagentModel, t]);
 
   const extraSettingsHintKey = React.useMemo(() => {
     switch (selectedSettingsMergeStrategy) {
@@ -475,6 +523,9 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
         opusModelName: modelConfig.roles.opus.displayName,
         fableModel: modelConfig.roles.fable.model,
         fableModelName: modelConfig.roles.fable.displayName,
+        subagentModel: modelConfig.roles.subagent.model,
+        customModel: modelConfig.roles.custom.model,
+        customModelName: modelConfig.roles.custom.displayName,
         extraSettingsMergeStrategy:
           provider.extraSettingsMergeStrategy || DEFAULT_CLAUDE_SETTINGS_MERGE_STRATEGY,
         notes: provider.notes,
@@ -694,8 +745,8 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
     try {
       // 只验证当前模式需要的字段
       const fieldsToValidate = mode === 'import'
-        ? ['sourceProvider', 'name', 'baseUrl', 'apiKey', 'apiFormat', 'model', 'haikuModel', 'haikuModelName', 'sonnetModel', 'sonnetModelName', 'opusModel', 'opusModelName', 'fableModel', 'fableModelName', 'notes']
-        : [...(canSelectProviderCategory ? ['category'] : []), 'name', ...(!isOfficialMode ? ['providerEndpointKey', 'baseUrl', 'apiKey', 'apiFormat'] : []), 'model', 'haikuModel', 'haikuModelName', 'sonnetModel', 'sonnetModelName', 'opusModel', 'opusModelName', 'fableModel', 'fableModelName', 'notes'];
+        ? ['sourceProvider', 'name', 'baseUrl', 'apiKey', 'apiFormat', 'model', 'haikuModel', 'haikuModelName', 'sonnetModel', 'sonnetModelName', 'opusModel', 'opusModelName', 'fableModel', 'fableModelName', 'subagentModel', 'customModel', 'customModelName', 'notes']
+        : [...(canSelectProviderCategory ? ['category'] : []), 'name', ...(!isOfficialMode ? ['providerEndpointKey', 'baseUrl', 'apiKey', 'apiFormat'] : []), 'model', 'haikuModel', 'haikuModelName', 'sonnetModel', 'sonnetModelName', 'opusModel', 'opusModelName', 'fableModel', 'fableModelName', 'subagentModel', 'customModel', 'customModelName', 'notes'];
       
       const values = await form.validateFields(fieldsToValidate);
       const submittedValues = {
@@ -763,6 +814,9 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
         opusModelName: submittedValues.opusModelName,
         fableModel: submittedValues.fableModel,
         fableModelName: submittedValues.fableModelName,
+        subagentModel: submittedValues.subagentModel,
+        customModel: submittedValues.customModel,
+        customModelName: submittedValues.customModelName,
         extraSettingsConfig,
         extraSettingsMergeStrategy: selectedCategory === 'official'
           ? undefined
@@ -884,12 +938,15 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
     const previousModelBase = stripClaudeOneMMarker(row.model).trim();
     const nextModel = setClaudeOneMMarker(row.model, enabled);
     const nextModelBase = stripClaudeOneMMarker(nextModel).trim();
-    const shouldSyncDisplayName =
-      !row.displayName.trim() || row.displayName.trim() === previousModelBase;
+    const displayNameField = row.displayNameField;
+    const shouldSyncDisplayName = displayNameField !== null &&
+      (!row.displayName.trim() || row.displayName.trim() === previousModelBase);
 
     form.setFieldsValue({
       [row.modelField]: nextModel,
-      ...(shouldSyncDisplayName ? { [row.displayNameField]: nextModelBase } : {}),
+      ...(shouldSyncDisplayName && displayNameField !== null
+        ? { [displayNameField]: nextModelBase }
+        : {}),
     });
   }, [form]);
 
@@ -909,13 +966,20 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
     }
 
     const nextValues: Record<string, string> = {};
-    modelRoleRows.forEach((row) => {
-      const nextModel = row.supportsOneM
-        ? setClaudeOneMMarker(sourceModel, hasClaudeOneMMarker(sourceModel))
-        : sourceModelBase;
-      nextValues[row.modelField] = nextModel;
-      nextValues[row.displayNameField] = stripClaudeOneMMarker(nextModel).trim();
-    });
+    modelRoleRows
+      // Only the four tiers. Subagent has its own reason to differ, and Custom
+      // exists precisely to hold a gateway-specific ID the other rows cannot
+      // express — overwriting either would defeat the point of the row.
+      .filter((row) => CLAUDE_QUICK_SET_ROLES.includes(row.role))
+      .forEach((row) => {
+        const nextModel = row.supportsOneM
+          ? setClaudeOneMMarker(sourceModel, hasClaudeOneMMarker(sourceModel))
+          : sourceModelBase;
+        nextValues[row.modelField] = nextModel;
+        if (row.displayNameField) {
+          nextValues[row.displayNameField] = stripClaudeOneMMarker(nextModel).trim();
+        }
+      });
     form.setFieldsValue(nextValues);
     message.success(t('claudecode.model.quickSetSuccess'));
   }, [fableModel, fallbackModel, form, haikuModel, modelRoleRows, opusModel, sonnetModel, t]);
@@ -946,7 +1010,7 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
             <div className={styles.modelMappingHint}>{t('claudecode.model.mappingHint')}</div>
           </div>
           <div className={styles.modelMappingActions}>
-            <Tooltip title={t('claudecode.model.quickSetTooltip')}>
+            <Tooltip title={t('claudecode.model.quickSetTooltipTiers')}>
               <Button
                 size="small"
                 icon={<ThunderboltOutlined />}
@@ -999,11 +1063,19 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
             return (
               <div key={row.role} className={styles.modelRow}>
                 <div className={styles.modelRoleLabel}>{row.label}</div>
-                <Form.Item name={row.displayNameField} noStyle>
-                  <Input
-                    placeholder={modelBase || t('claudecode.model.displayNamePlaceholder')}
-                  />
-                </Form.Item>
+                {row.displayNameField ? (
+                  <Form.Item name={row.displayNameField} noStyle>
+                    <Input
+                      placeholder={modelBase || t('claudecode.model.displayNamePlaceholder')}
+                    />
+                  </Form.Item>
+                ) : (
+                  // Claude Code reads no display-name variable for this binding,
+                  // so the column states that instead of offering a dead input.
+                  <div className={styles.modelNoDisplayName}>
+                    {t('claudecode.model.noDisplayName')}
+                  </div>
+                )}
                 <Form.Item
                   name={row.modelField}
                   noStyle
@@ -1017,14 +1089,15 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
                     const nextModel = row.supportsOneM
                       ? setClaudeOneMMarker(nextModelBase, hasClaudeOneMMarker(row.model))
                       : nextModelBase;
-                    const shouldSyncDisplayName =
-                      !row.displayName.trim() || row.displayName.trim() === previousModelBase;
+                    const displayNameField = row.displayNameField;
+                    const shouldSyncDisplayName = displayNameField !== null &&
+                      (!row.displayName.trim() || row.displayName.trim() === previousModelBase);
 
-                    if (shouldSyncDisplayName) {
+                    if (displayNameField !== null && shouldSyncDisplayName) {
                       // 使用 setTimeout 确保在下一个事件循环中更新，避免干扰当前输入
                       setTimeout(() => {
                         form.setFieldsValue({
-                          [row.displayNameField]: nextModelBase,
+                          [displayNameField]: nextModelBase,
                         });
                       }, 0);
                     }

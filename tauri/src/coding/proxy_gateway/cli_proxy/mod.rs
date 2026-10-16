@@ -75,7 +75,7 @@ const DESKTOP_META_MANAGED_FIELDS: [&str; 2] = ["appliedId", "entries"];
 /// profile remains syntactically complete; the local gateway does not require it.
 const DESKTOP_GATEWAY_API_KEY: &str = GATEWAY_API_KEY;
 
-const CLAUDE_MANAGED_FIELDS: [&str; 12] = [
+const CLAUDE_MANAGED_FIELDS: [&str; 15] = [
     "env.ANTHROPIC_BASE_URL",
     "env.ANTHROPIC_AUTH_TOKEN",
     "env.ANTHROPIC_API_KEY",
@@ -88,9 +88,12 @@ const CLAUDE_MANAGED_FIELDS: [&str; 12] = [
     "env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
     "env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
     "env.ANTHROPIC_DEFAULT_FABLE_MODEL_NAME",
+    "env.CLAUDE_CODE_SUBAGENT_MODEL",
+    "env.ANTHROPIC_CUSTOM_MODEL_OPTION",
+    "env.ANTHROPIC_CUSTOM_MODEL_OPTION_NAME",
 ];
 
-const CLAUDE_MODEL_FIELD_POINTERS: [&str; 9] = [
+const CLAUDE_MODEL_FIELD_POINTERS: [&str; 12] = [
     "/env/ANTHROPIC_MODEL",
     "/env/ANTHROPIC_DEFAULT_HAIKU_MODEL",
     "/env/ANTHROPIC_DEFAULT_SONNET_MODEL",
@@ -100,6 +103,9 @@ const CLAUDE_MODEL_FIELD_POINTERS: [&str; 9] = [
     "/env/ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
     "/env/ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
     "/env/ANTHROPIC_DEFAULT_FABLE_MODEL_NAME",
+    "/env/CLAUDE_CODE_SUBAGENT_MODEL",
+    "/env/ANTHROPIC_CUSTOM_MODEL_OPTION",
+    "/env/ANTHROPIC_CUSTOM_MODEL_OPTION_NAME",
 ];
 
 const CLAUDE_LEGACY_REASONING_MODEL_POINTER: &str = "/env/ANTHROPIC_REASONING_MODEL";
@@ -3124,6 +3130,12 @@ fn patch_claude_settings(
         env.remove("ANTHROPIC_DEFAULT_SONNET_MODEL_NAME");
         env.remove("ANTHROPIC_DEFAULT_OPUS_MODEL_NAME");
         env.remove("ANTHROPIC_DEFAULT_FABLE_MODEL_NAME");
+        // These three describe a *specific* channel's models, so leaving them in
+        // place would pin subagents and the picker entry to the old channel while
+        // the gateway routes everything else. The backup holds them for restore.
+        env.remove("CLAUDE_CODE_SUBAGENT_MODEL");
+        env.remove("ANTHROPIC_CUSTOM_MODEL_OPTION");
+        env.remove("ANTHROPIC_CUSTOM_MODEL_OPTION_NAME");
         if let Some(model_name) = provider_model_name(
             primary_provider.model_mapping.haiku_model.as_deref(),
             primary_provider.model_mapping.default_model.as_deref(),
@@ -3206,6 +3218,9 @@ fn restore_claude_settings(path: &Path, backup_content: Option<&str>) -> Result<
             "/env/ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
             "/env/ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
             "/env/ANTHROPIC_DEFAULT_FABLE_MODEL_NAME",
+            "/env/CLAUDE_CODE_SUBAGENT_MODEL",
+            "/env/ANTHROPIC_CUSTOM_MODEL_OPTION",
+            "/env/ANTHROPIC_CUSTOM_MODEL_OPTION_NAME",
         ],
     );
     // Older gateway takeovers wrote reasoning model as a managed field.
@@ -4113,7 +4128,13 @@ mod tests {
                 "env": {
                     "CLAUDE_CODE_ENABLE_TELEMETRY": false,
                     "ANTHROPIC_BASE_URL": "https://old.example.com",
-                    "ANTHROPIC_AUTH_TOKEN": "old-token"
+                    "ANTHROPIC_AUTH_TOKEN": "old-token",
+                    // These two name models only the pre-takeover channel has.
+                    // The gateway must drop them while it is in charge, then put
+                    // them back on restore — see the takeover/restore assertions.
+                    "CLAUDE_CODE_SUBAGENT_MODEL": "old-subagent",
+                    "ANTHROPIC_CUSTOM_MODEL_OPTION": "old-custom",
+                    "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME": "Old custom"
                 },
                 "hooks": {"keep": true}
             }),
@@ -4192,6 +4213,13 @@ mod tests {
                 .and_then(Value::as_bool),
             Some(false)
         );
+        // Left in place they would pin subagents and one picker row to the
+        // channel the gateway just took over from.
+        assert!(patched.pointer("/env/CLAUDE_CODE_SUBAGENT_MODEL").is_none());
+        assert!(patched.pointer("/env/ANTHROPIC_CUSTOM_MODEL_OPTION").is_none());
+        assert!(patched
+            .pointer("/env/ANTHROPIC_CUSTOM_MODEL_OPTION_NAME")
+            .is_none());
         assert_eq!(
             patched.pointer("/hooks/keep").and_then(Value::as_bool),
             Some(true)
@@ -4224,6 +4252,26 @@ mod tests {
                 .pointer("/env/CLAUDE_CODE_ENABLE_TELEMETRY")
                 .and_then(Value::as_bool),
             Some(false)
+        );
+        // Restore is exact: the channel the user returns to gets its own
+        // subagent pin and picker entry back.
+        assert_eq!(
+            restored
+                .pointer("/env/CLAUDE_CODE_SUBAGENT_MODEL")
+                .and_then(Value::as_str),
+            Some("old-subagent")
+        );
+        assert_eq!(
+            restored
+                .pointer("/env/ANTHROPIC_CUSTOM_MODEL_OPTION")
+                .and_then(Value::as_str),
+            Some("old-custom")
+        );
+        assert_eq!(
+            restored
+                .pointer("/env/ANTHROPIC_CUSTOM_MODEL_OPTION_NAME")
+                .and_then(Value::as_str),
+            Some("Old custom")
         );
     }
 

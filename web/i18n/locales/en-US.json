@@ -2813,7 +2813,11 @@
       "tierAliasLabel": "Tier",
       "tierAliasNone": "None",
       "roleMythos": "Mythos",
-      "quickSetTooltip": "Apply the first filled model (fallback first) to all roles; the 1M marker follows the source"
+      "quickSetTooltip": "Apply the first filled model (fallback first) to all roles; the 1M marker follows the source",
+      "roleSubagent": "Subagent",
+      "roleCustom": "Custom",
+      "noDisplayName": "Not shown in the /model picker",
+      "quickSetTooltipTiers": "Apply the first filled model (fallback first) to the Sonnet/Opus/Fable/Haiku tiers; the 1M marker follows the source"
     },
     "import": {
       "title": "Import from OpenCode",

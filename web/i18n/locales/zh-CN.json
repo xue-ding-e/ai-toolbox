@@ -2810,7 +2810,11 @@
       "tierAliasLabel": "Tier",
       "tierAliasNone": "无",
       "roleMythos": "Mythos",
-      "quickSetTooltip": "把第一个已填写的模型（兜底模型优先）应用到全部角色，1M 声明跟随源模型"
+      "quickSetTooltip": "把第一个已填写的模型（兜底模型优先）应用到全部角色，1M 声明跟随源模型",
+      "roleSubagent": "Subagent",
+      "roleCustom": "Custom",
+      "noDisplayName": "不显示在 /model 菜单",
+      "quickSetTooltipTiers": "把第一个已填写的模型（兜底模型优先）应用到 Sonnet/Opus/Fable/Haiku 四档，1M 声明跟随源模型"
     },
     "import": {
       "title": "从 OpenCode 导入",

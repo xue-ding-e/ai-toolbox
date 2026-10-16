@@ -211,6 +211,16 @@ function buildClaudeProviderSettingsConfig(values: ClaudeProviderFormValues): st
   if (values.fableModelName?.trim()) {
     envConfig.ANTHROPIC_DEFAULT_FABLE_MODEL_NAME = values.fableModelName.trim();
   }
+  if (values.subagentModel?.trim()) {
+    // No `_NAME` companion exists for this one; Claude Code reads the ID alone.
+    envConfig.CLAUDE_CODE_SUBAGENT_MODEL = values.subagentModel.trim();
+  }
+  if (values.customModel?.trim()) {
+    envConfig.ANTHROPIC_CUSTOM_MODEL_OPTION = values.customModel.trim();
+  }
+  if (values.customModelName?.trim()) {
+    envConfig.ANTHROPIC_CUSTOM_MODEL_OPTION_NAME = values.customModelName.trim();
+  }
 
   if (Object.keys(envConfig).length > 0) {
     settingsConfigObj.env = envConfig;
