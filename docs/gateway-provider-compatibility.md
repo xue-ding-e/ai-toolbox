@@ -98,7 +98,7 @@ v2 与 legacy `/responses/compact` 是两代不同协议，识别边界刻意互
 
 | 环节 | 行为 |
 |---|---|
-| 服务顺序 | **原生优先，失败才自封装**（issue #416）：Responses 目标先把 `compaction_trigger` 原样转发——上游自己回了 `compaction` 项就原样回给 Codex；回的不是（普通 assistant 消息，或 400/422 拒绝该 item）才改写这一轮、重发一次、自行封装。判据是「目标是 Responses 协议」且「该 provider 配置此前没拒绝过」，没有开关。回退轮次记在易失的、按 provider 配置指纹分区的记忆里（重启或改配置即重新探测），避免每次压缩都先把整段会话发出去一次注定失败 |
+| 服务顺序 | **原生优先，失败才自封装**（issue #416）：Responses 目标先把 `compaction_trigger` 原样转发——上游自己回了 `compaction` 项就原样回给 Codex；回的不是（普通 assistant 消息，或 400/422 拒绝该 item）才改写这一轮、重发一次、自行封装。判据是「目标是 Responses 协议」且「该 provider 配置此前没拒绝过」，并受默认开启的 `codex_compaction_native_passthrough_enabled` 控制（旧配置缺字段仍开启）；关闭后 HTTP/WS 均直接模拟。只有普通回复/明确拒绝才记在易失的、按 provider 配置指纹分区的记忆里（重启或改配置即重新探测），避免每次压缩都先把整段会话发出去一次注定失败。HTTP 与 WS 的 failed/incomplete 仍可走一次摘要重试，但不得记为不支持原生；WS 在重试重置 summary 前保留该判定 |
 | 触发信号 | `input[]` 含 `{"type":"compaction_trigger"}`。**不是** `x-codex-turn-metadata.request_kind == "compaction"`——本地 checkpoint 压缩也带该元数据，其响应必须保持普通 assistant 摘要 |
 | 摘要请求 | 剥离 trigger 与 `tools`/`tool_choice`/`parallel_tool_calls`/`response_format`/`stop`/`previous_response_id`，替换 `instructions` 为专用摘要指令，末尾追加产出指令，HTTP 侧再置 `stream:false` |
 | 摘要抽取 | HTTP 按结构识别四种目标协议（Responses / Chat / Anthropic / Gemini），不依赖声明的 target protocol；WS 从上游 delta 事件重组 |
@@ -137,7 +137,7 @@ Codex 侧门控：只有 `name == "OpenAI"`（或 Azure）的 provider 默认启
 6. 写入或改写最终上游 `model`：先查 provider 精确模型改写规则（2.6），未命中再走各 CLI family/default 映射，最终剥离 `[1M]` / `[1m]`。
 7. Gemini source 转非 Gemini target 且 route streaming 时写 `stream=true`。
 8. thinking rectifier 重试路径才执行 `strip_thinking_blocks`；该 rectifier 按**入站 CLI=Claude** 门控，不是按 target protocol 判断；正常请求不会预先删除 thinking。
-9. `/responses/compact` 走 compact 专项 compat；Codex remote compaction v2 的 `compaction_trigger` 轮次在此前已改写为普通摘要请求（见 §1.6.1），不走 compact facade；普通跨协议请求调用 `convert_request_body_with_context()`；同协议请求直通当前 body。
+9. `/responses/compact` 走 compact 专项 compat；Codex remote compaction v2 的 `compaction_trigger` 轮次按原生开关/协议/拒绝记忆决定原样探测或改写摘要（见 §1.6.1），不走 compact facade；普通跨协议请求调用 `convert_request_body_with_context()`；同协议请求直通当前 body。
 10. target Gemini 时可由 `GeminiShadowStore` 回放上一轮带 `thoughtSignature` 的 model functionCall。
 11. target OpenAI Responses 时执行 `prompt_cache_key` fallback。
 12. target OpenAI Chat 时先缓存被 strip 前的 `prompt_cache_key`，再跑 provider pipeline。

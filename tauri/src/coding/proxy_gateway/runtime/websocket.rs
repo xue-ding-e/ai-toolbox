@@ -3,7 +3,8 @@
 //! downstream WebSocket handshake.
 
 use super::compat::codex_remote_compaction::{
-    self as codex_remote_compaction, CompactionStreamSummary, RemoteCompactionCompat,
+    self as codex_remote_compaction, CompactionStreamSummary, CompactionSummaryError,
+    RemoteCompactionCompat,
     COMPACTION_MODE_FALLBACK, COMPACTION_MODE_NATIVE, COMPACTION_MODE_SIMULATED,
 };
 use super::compat::provider_kind::ProviderBodyCompat;
@@ -1079,7 +1080,7 @@ fn build_websocket_compaction_response(
 }
 
 /// Builds the summarizing retry for a pass-through compaction attempt the
-/// upstream refused, and remembers the refusal.
+/// upstream did not answer natively, remembering only non-transient refusals.
 ///
 /// The retry replaces the trigger with a plain summarization instruction, so the
 /// upstream finally sees an ordinary turn. Returns `None` when the retry cannot
@@ -1091,7 +1092,7 @@ fn compaction_retry_body(
     provider: &UpstreamProvider,
     context: &GatewayRuntimeContext,
 ) -> Option<Vec<u8>> {
-    let body = lane
+    let (body, remember_refusal) = lane
         .as_ref()
         .and_then(|lane| pending.lanes.get_mut(lane))
         .and_then(|queue| queue.front_mut())
@@ -1113,6 +1114,13 @@ fn compaction_retry_body(
                 None => body,
             };
             let compaction = turn.compaction.as_mut()?;
+            // Capture the native attempt's verdict before the retry resets it.
+            // Empty/ordinary replies are refusals; failed/truncated turns are
+            // transient and must not suppress the next native offer.
+            let remember_refusal = !matches!(
+                compaction.summary.finish(),
+                Err(CompactionSummaryError::Failed | CompactionSummaryError::Truncated)
+            );
             if !compaction.begin_summarizing_retry() {
                 return None;
             }
@@ -1120,14 +1128,16 @@ fn compaction_retry_body(
             // Both attempts' frames still accumulate in the response snapshot,
             // which is where the refusal stays visible.
             turn.response.upstream_request_body = Some(body.clone());
-            Some(body)
+            Some((body, remember_refusal))
         })?;
     // Remember the refusal so the next compaction goes straight to the summary.
     // The memory is volatile and keyed by configuration, so a chain that starts
     // supporting v2 is offered the trigger again after a restart or a change.
-    context
-        .side_stores
-        .remember_native_compaction_rejection(upstream::provider_config_identity(provider));
+    if remember_refusal {
+        context
+            .side_stores
+            .remember_native_compaction_rejection(upstream::provider_config_identity(provider));
+    }
     Some(body)
 }
 

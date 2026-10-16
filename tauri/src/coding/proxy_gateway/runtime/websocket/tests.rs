@@ -724,6 +724,134 @@ async fn websocket_native_compaction_item_is_replayed_verbatim() {
     assert_eq!(detail.summary.total_attempt_count, 1);
 }
 
+/// A transient native attempt may still use the existing one-shot summarizing
+/// retry, but must not disable native offers for later turns of this provider.
+/// The ordinary assistant-reply control must retain refusal memory.
+async fn assert_websocket_compaction_refusal_memory(first_terminal: Value, expect_probe: bool) {
+    timeout(Duration::from_secs(30), async {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let (_directory, context, _) = test_context(
+            &format!("http://{}/v1", listener.local_addr().unwrap()),
+            "openai_responses",
+            true,
+        );
+        let upstream = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
+            let offered = receive_json(&mut socket).await;
+            assert!(offered["input"].as_array().unwrap().iter()
+                .any(|item| item["type"] == "compaction_trigger"));
+            send_json(&mut socket, json!({"type":"response.created","response":{
+                "id":"resp_probe_first","output":[]}})).await;
+            send_json(&mut socket, first_terminal).await;
+            let retry = receive_json(&mut socket).await;
+            assert_eq!(retry["type"], "response.create");
+            assert!(retry["input"].as_array().unwrap().iter()
+                .all(|item| item["type"] != "compaction_trigger"));
+            send_json(&mut socket, json!({"type":"response.output_text.delta",
+                "delta":"First complete summary"})).await;
+            send_json(&mut socket, json!({"type":"response.completed","response":{
+                "id":"resp_summary_first","status":"completed"}})).await;
+
+            let second = receive_json(&mut socket).await;
+            let probed = second["input"].as_array().unwrap().iter()
+                .any(|item| item["type"] == "compaction_trigger");
+            // Answer either actual request shape so the negative case fails at the
+            // assertion below, rather than hanging waiting for an upstream reply.
+            if probed {
+                let item = json!({"id":"cmp_native_second","type":"compaction",
+                    "encrypted_content":"gAAAAABq-upstream-cipher"});
+                send_json(&mut socket, json!({"type":"response.created","response":{
+                    "id":"resp_native_second","output":[]}})).await;
+                send_json(&mut socket, json!({"type":"response.output_item.done",
+                    "output_index":0,"item":item})).await;
+                send_json(&mut socket, json!({"type":"response.completed","response":{
+                    "id":"resp_native_second","status":"completed","output":[item]}})).await;
+            } else {
+                send_json(&mut socket, json!({"type":"response.output_text.delta",
+                    "delta":"Second complete summary"})).await;
+                send_json(&mut socket, json!({"type":"response.completed","response":{
+                    "id":"resp_summary_second","status":"completed"}})).await;
+            }
+            // A completed second turn must not cause another summarizing request.
+            if let Ok(Some(Ok(Message::Text(text)))) =
+                timeout(Duration::from_millis(500), socket.next()).await
+            {
+                assert!(!text.contains("response.create"), "unexpected retry: {text}");
+            }
+            probed
+        });
+        let (mut client, gateway) = gateway_connection(context.clone()).await;
+        let mut outputs = Vec::new();
+        for turn in 0..2 {
+            send_json(&mut client, json!({"type":"response.create","model":"test-model",
+                "input":[{"type":"message","role":"user","content":[{
+                    "type":"input_text","text":format!("turn {turn}")}]},
+                    {"type":"compaction_trigger"}]})).await;
+            loop {
+                let frame = receive_json(&mut client).await;
+                if frame["type"] == "response.completed" {
+                    outputs.push(frame["response"]["output"].clone());
+                    break;
+                }
+            }
+        }
+        let _ = client.close(None).await;
+        gateway.await.unwrap();
+        let probed = upstream.await.unwrap();
+        assert_eq!(probed, expect_probe,
+            "only an ordinary refusal may suppress the next native compaction offer");
+        assert_eq!(outputs[0].as_array().unwrap().len(), 1);
+        assert_eq!(outputs[0][0]["type"], "compaction");
+        assert!(outputs[0][0]["encrypted_content"].as_str().unwrap()
+            .starts_with("ai-toolbox-compact-v1:"));
+        assert_eq!(outputs[1].as_array().unwrap().len(), 1);
+        assert_eq!(outputs[1][0]["type"], "compaction");
+        if expect_probe {
+            assert_eq!(outputs[1][0]["encrypted_content"], "gAAAAABq-upstream-cipher");
+        } else {
+            assert!(outputs[1][0]["encrypted_content"].as_str().unwrap()
+                .starts_with("ai-toolbox-compact-v1:"));
+        }
+    })
+    .await
+    .expect("two-turn compaction regression must finish within 30 seconds");
+}
+
+#[tokio::test]
+async fn websocket_compaction_refusal_memory_ignores_failed_event() {
+    assert_websocket_compaction_refusal_memory(json!({"type":"response.failed",
+        "response":{"id":"resp_probe_first","status":"failed",
+            "error":{"code":"server_error","message":"transient fixture"}}}), true).await;
+}
+
+#[tokio::test]
+async fn websocket_compaction_refusal_memory_ignores_incomplete_event() {
+    assert_websocket_compaction_refusal_memory(json!({"type":"response.incomplete",
+        "response":{"id":"resp_probe_first","status":"incomplete"}}), true).await;
+}
+
+#[tokio::test]
+async fn websocket_compaction_refusal_memory_ignores_failed_snapshot() {
+    assert_websocket_compaction_refusal_memory(json!({"type":"response.completed",
+        "response":{"id":"resp_probe_first","status":"failed",
+            "error":{"code":"server_error","message":"transient fixture"}}}), true).await;
+}
+
+#[tokio::test]
+async fn websocket_compaction_refusal_memory_ignores_incomplete_snapshot() {
+    assert_websocket_compaction_refusal_memory(json!({"type":"response.completed",
+        "response":{"id":"resp_probe_first","status":"incomplete"}}), true).await;
+}
+
+#[tokio::test]
+async fn websocket_compaction_refusal_memory_keeps_ordinary_refusal() {
+    assert_websocket_compaction_refusal_memory(json!({"type":"response.completed",
+        "response":{"id":"resp_probe_first","status":"completed","output":[{
+            "type":"message","role":"assistant","content":[{
+                "type":"output_text","text":"An ordinary assistant reply"}]}]}}), false).await;
+}
+
 /// Codex keeps the compaction item at the head of its history, so a session
 /// that compacts a second time sends that item *and* a fresh
 /// `compaction_trigger` in the same turn.
