@@ -1306,6 +1306,7 @@ async fn forward_to_upstream(
                 settings.responses_encrypted_content_rectifier_enabled,
                 settings.thinking_budget_rectifier_enabled,
                 settings.cache_injection_enabled,
+                settings.codex_compaction_native_passthrough_enabled,
                 app_config.non_streaming_timeout_secs,
                 app_config.streaming_idle_timeout_secs,
                 upstream_response_snapshot_limit,
@@ -1577,6 +1578,7 @@ async fn send_upstream_request(
     responses_encrypted_content_rectifier_enabled: bool,
     thinking_budget_rectifier_enabled: bool,
     cache_injection_enabled: bool,
+    codex_compaction_native_passthrough_enabled: bool,
     non_streaming_timeout_secs: u64,
     streaming_idle_timeout_secs: u64,
     upstream_response_snapshot_limit: Option<usize>,
@@ -1586,7 +1588,8 @@ async fn send_upstream_request(
     let remote_compaction = RemoteCompactionCompat::resolve(
         route,
         Some(provider),
-        should_attempt_native_remote_compaction(context, provider),
+        codex_compaction_native_passthrough_enabled
+            && should_attempt_native_remote_compaction(context, provider),
         &request.body,
     );
     let source_protocol = source_protocol_from_route(route);
@@ -1813,9 +1816,16 @@ async fn send_upstream_request(
         // second request is paid once instead of on every compaction; the
         // memory is volatile and keyed by configuration, so a chain that starts
         // supporting v2 is picked up again after a restart or a config change.
-        context
-            .side_stores
-            .remember_native_compaction_rejection(provider_config_identity(provider));
+        //
+        // A reply that reports a failed or truncated turn is not a refusal:
+        // the upstream processed the request but could not finish it, so the
+        // next compaction probes natively again instead of being remembered as
+        // unsupported by a transient failure.
+        if !codex_remote_compaction::is_failed_or_truncated_response(&body) {
+            context
+                .side_stores
+                .remember_native_compaction_rejection(provider_config_identity(provider));
+        }
         let retried = build_retry_upstream_body(
             request,
             requested_model,
@@ -2960,9 +2970,11 @@ fn compaction_mode_label(
 ///
 /// Rate limits, auth failures, missing routes and upstream faults are
 /// deliberately excluded. Retrying those with a different body would not
-/// address them, and would replace the real error with a second failure.
+/// address them, and would replace the real error with a second failure. So
+/// are redirects: a 3xx is not the upstream answering the trigger, and
+/// recording it as a refusal would poison the provider until a restart.
 fn should_read_pass_through_compaction_reply(status_code: u16) -> bool {
-    (200..400).contains(&status_code) || matches!(status_code, 400 | 422)
+    (200..300).contains(&status_code) || matches!(status_code, 400 | 422)
 }
 
 fn compaction_sse_aggregation_kind(
@@ -19825,7 +19837,7 @@ data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"qwen3","choic
                 "{answerable} says something about the trigger"
             );
         }
-        for untouched in [401, 403, 404, 429, 500, 502] {
+        for untouched in [300, 301, 302, 307, 308, 401, 403, 404, 429, 500, 502] {
             assert!(
                 !should_read_pass_through_compaction_reply(untouched),
                 "{untouched} is not about the trigger"

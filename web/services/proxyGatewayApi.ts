@@ -136,6 +136,12 @@ export interface ProxyGatewaySettings {
   enabled_cli_keys: GatewayCliKey[];
   /** Opt in to Codex Responses WebSocket; defaults to false for existing settings. */
   codex_websocket_enabled: boolean;
+  /**
+   * Offer Codex remote-compaction v2 turns to the upstream natively first.
+   * Defaults to true for existing settings; when off, the Gateway summarizes
+   * every compaction turn itself without probing the upstream.
+   */
+  codex_compaction_native_passthrough_enabled: boolean;
   request_log_enabled: boolean;
   request_log_level: string;
   metrics_enabled: boolean;

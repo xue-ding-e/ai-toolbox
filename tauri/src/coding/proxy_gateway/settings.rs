@@ -209,6 +209,7 @@ mod tests {
         assert!(settings.session_usage_enabled);
         assert!(!settings.enabled_on_startup);
         assert!(!settings.codex_websocket_enabled);
+        assert!(settings.codex_compaction_native_passthrough_enabled);
         assert_eq!(settings.per_provider_retry_count, 0);
         assert_eq!(settings.max_retry_count, 8);
         assert_eq!(settings.retry_interval_secs, 1);
@@ -246,6 +247,15 @@ mod tests {
         .unwrap();
 
         assert!(settings.enabled_on_startup);
+    }
+
+    #[test]
+    fn codex_compaction_native_passthrough_round_trips_explicit_false() {
+        let settings = settings_from_value(json!({
+            "codex_compaction_native_passthrough_enabled": false,
+        }))
+        .unwrap();
+        assert!(!settings.codex_compaction_native_passthrough_enabled);
     }
 
     #[test]

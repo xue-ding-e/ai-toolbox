@@ -594,6 +594,20 @@ const GatewaySettingsPanel: React.FC<GatewaySettingsPanelProps> = ({
                     onChange={(checked) => updateDraftAndSave('codex_websocket_enabled', checked)}
                   />
                 </FieldRow>
+                <FieldRow
+                  label={t('settings.gateway.fields.codexCompactionNativePassthrough')}
+                  description={t('settings.gateway.hints.codexCompactionNativePassthroughDefault')}
+                  help={t('settings.gateway.hints.codexCompactionNativePassthrough')}
+                  wide
+                >
+                  <SwitchControl
+                    checked={draftSettings.codex_compaction_native_passthrough_enabled}
+                    disabled={busyAction !== null}
+                    ariaLabel={t('settings.gateway.fields.codexCompactionNativePassthrough')}
+                    label={draftSettings.codex_compaction_native_passthrough_enabled ? t('common.enabled') : t('common.disabled')}
+                    onChange={(checked) => updateDraftAndSave('codex_compaction_native_passthrough_enabled', checked)}
+                  />
+                </FieldRow>
               </div>
               <div className={styles.subGroup}>
                 <div className={styles.subGroupLabel}>{t('settings.gateway.subGroups.rectifier')}</div>

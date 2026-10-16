@@ -1069,3 +1069,172 @@ async fn a_refused_native_attempt_is_not_offered_again() {
 
     upstream.await.unwrap();
 }
+
+/// A failed or truncated turn is not a refusal of the trigger: the upstream
+/// processed the request but could not finish it, so the turn is summarized
+/// once and the *next* compaction probes natively again instead of being
+/// remembered as unsupported by a transient failure.
+#[tokio::test]
+async fn a_failed_native_attempt_is_not_remembered_as_a_refusal() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let upstream_url = format!("http://{}", listener.local_addr().unwrap());
+    let upstream = tokio::spawn(async move {
+        // First attempt: offered the trigger, answered 200 with a failed turn.
+        let mut first = accept_upstream(&listener).await;
+        let body = read_mock_request(&mut first, "/v1/responses ").await;
+        assert!(
+            body["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["type"] == "compaction_trigger"),
+            "the first attempt must offer the trigger: {body}"
+        );
+        reply_with(
+            &mut first,
+            &json!({
+                "id": "resp_failed", "object": "response", "status": "failed",
+                "error": { "code": "server_error", "message": "transient" },
+            }),
+        )
+        .await;
+        drop(first);
+
+        // The turn is still rescued by the summarizing retry.
+        let mut retry = accept_upstream(&listener).await;
+        let retry_body = read_mock_request(&mut retry, "/v1/responses ").await;
+        assert!(
+            !retry_body["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["type"] == "compaction_trigger"),
+            "the retry must not offer the trigger again: {retry_body}"
+        );
+        reply_with(&mut retry, &responses_reply(SUMMARY_TEXT)).await;
+        drop(retry);
+
+        // A transient failure is not remembered: the next compaction offers the
+        // trigger again, and this time the upstream answers it natively.
+        let mut second = accept_upstream(&listener).await;
+        let body = read_mock_request(&mut second, "/v1/responses ").await;
+        assert!(
+            body["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["type"] == "compaction_trigger"),
+            "the trigger must be offered again after a transient failure: {body}"
+        );
+        write_mock_reply(&mut second, 200, &native_compaction_stream(), true).await;
+        assert_no_further_upstream_request(
+            &listener,
+            "a native reply must not be followed by a summarizing retry",
+        )
+        .await;
+    });
+
+    let gateway = compaction_gateway(&upstream_url);
+    let client = http_client::create_client_no_proxy(10).unwrap();
+
+    let first = client
+        .post(&gateway.url)
+        .json(&compaction_turn(true))
+        .send()
+        .await
+        .unwrap();
+    let status = first.status();
+    let bytes = first.bytes().await.unwrap();
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&bytes));
+    let completed = completed_response(&sse_events(&bytes));
+    let item = completed["output"][0].clone();
+    assert_eq!(item["type"], "compaction");
+    assert!(
+        item["encrypted_content"]
+            .as_str()
+            .unwrap()
+            .starts_with(CAPSULE_PREFIX),
+        "the failed attempt must fall back to the Gateway's own item: {completed}"
+    );
+
+    let second = client
+        .post(&gateway.url)
+        .json(&compaction_turn(true))
+        .send()
+        .await
+        .unwrap();
+    let status = second.status();
+    let bytes = second.bytes().await.unwrap();
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&bytes));
+    let completed = completed_response(&sse_events(&bytes));
+    assert_eq!(
+        completed["output"][0]["encrypted_content"], "gAAAAABq-upstream-cipher",
+        "the second compaction must be served natively, not remembered as refused: {completed}"
+    );
+
+    upstream.await.unwrap();
+}
+
+/// The native-first offer is a setting (`codex_compaction_native_passthrough_enabled`,
+/// on by default). When it is off, a compaction turn goes straight to the
+/// Gateway's own summarization: the trigger never reaches the upstream and no
+/// probing request is paid.
+#[tokio::test]
+async fn a_disabled_passthrough_never_offers_the_trigger() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let upstream_url = format!("http://{}", listener.local_addr().unwrap());
+    let upstream = tokio::spawn(async move {
+        let mut socket = accept_upstream(&listener).await;
+        let body = read_mock_request(&mut socket, "/v1/responses ").await;
+        assert!(
+            !body["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["type"] == "compaction_trigger"),
+            "the trigger must not reach the upstream while passthrough is off: {body}"
+        );
+        assert_eq!(
+            body["stream"],
+            json!(false),
+            "the summary must be fetched in one piece: {body}"
+        );
+        assert!(body.get("tools").is_none(), "tools leaked upstream: {body}");
+        reply_with(&mut socket, &responses_reply(SUMMARY_TEXT)).await;
+        assert_no_further_upstream_request(
+            &listener,
+            "a simulated turn must not probe the upstream",
+        )
+        .await;
+    });
+
+    let gateway = RunningGateway::new_for_api_format_configured(
+        &upstream_url,
+        "custom",
+        BodyLogging::Disabled,
+        "openai_responses",
+        |settings| settings.codex_compaction_native_passthrough_enabled = false,
+    );
+    let client = http_client::create_client_no_proxy(10).unwrap();
+    let response = client
+        .post(&gateway.url)
+        .json(&compaction_turn(true))
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = response.bytes().await.unwrap();
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&bytes));
+    let completed = completed_response(&sse_events(&bytes));
+    let item = completed["output"][0].clone();
+    assert_eq!(item["type"], "compaction");
+    assert!(
+        item["encrypted_content"]
+            .as_str()
+            .unwrap()
+            .starts_with(CAPSULE_PREFIX),
+        "the Gateway must seal its own item: {completed}"
+    );
+
+    upstream.await.unwrap();
+}

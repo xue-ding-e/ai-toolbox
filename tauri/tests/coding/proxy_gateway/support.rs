@@ -40,6 +40,24 @@ impl RunningGateway {
         logging: BodyLogging,
         api_format: &str,
     ) -> Self {
+        Self::new_for_api_format_configured(
+            upstream_url,
+            provider_type,
+            logging,
+            api_format,
+            |_| {},
+        )
+    }
+
+    /// The same gateway, with one chance to adjust `ProxyGatewaySettings`
+    /// before it starts. Tests for settings-dependent behaviour build on this.
+    pub(super) fn new_for_api_format_configured(
+        upstream_url: &str,
+        provider_type: &str,
+        logging: BodyLogging,
+        api_format: &str,
+        configure: impl FnOnce(&mut ProxyGatewaySettings),
+    ) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let db = SqliteDbState::in_memory_for_test().unwrap();
         let api_version = if api_format == "gemini_native" {
@@ -75,7 +93,7 @@ impl RunningGateway {
         let probe = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = probe.local_addr().unwrap().port();
         drop(probe);
-        let settings = ProxyGatewaySettings {
+        let mut settings = ProxyGatewaySettings {
             listen_port: port,
             port_auto_select: true,
             max_retry_count: 0,
@@ -93,6 +111,7 @@ impl RunningGateway {
             },
             ..ProxyGatewaySettings::default()
         };
+        configure(&mut settings);
         let state = ProxyGatewayState::default();
         let status = state
             .manager

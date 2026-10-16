@@ -66,6 +66,16 @@ fn unix_timestamp() -> i64 {
         .unwrap_or(0)
 }
 
+/// Nanosecond clock for ids that must stay unique across two turns in the same
+/// second, which the capsule's `created_at` (seconds) and the item / response
+/// ids have different needs for.
+fn unix_timestamp_nanos() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos() as i64)
+        .unwrap_or(0)
+}
+
 /// Seals a summary into an `encrypted_content` capsule.
 ///
 /// Returns `None` only when the platform random source fails, which would leave
@@ -456,7 +466,9 @@ pub(in crate::coding::proxy_gateway::runtime) fn build_compaction_item(summary: 
     let encrypted_content = seal_compaction_summary(summary, model)?;
     Some(serde_json::json!({
         "type": "compaction",
-        "id": format!("cmp_{}", unix_timestamp()),
+        // Nanoseconds, not seconds: two sessions compacting in the same second
+        // must not hand Codex two items with the same id.
+        "id": format!("cmp_{}", unix_timestamp_nanos()),
         "encrypted_content": encrypted_content,
     }))
 }
@@ -515,7 +527,7 @@ pub(in crate::coding::proxy_gateway::runtime) fn extract_summary_text(
 /// shape unguarded, so a truncated reply that still carried partial text was
 /// sealed as the *entire* conversation history (issue #416 reported the outcome
 /// as an "empty compaction summary", because nothing else was checked).
-fn is_truncated(response: &Value) -> bool {
+pub(in crate::coding::proxy_gateway::runtime) fn is_truncated(response: &Value) -> bool {
     let finish_reason = response
         .pointer("/choices/0/finish_reason")
         .and_then(Value::as_str)
@@ -531,7 +543,7 @@ fn is_truncated(response: &Value) -> bool {
 /// hands back an upstream `response.failed` / `response.cancelled` as JSON, with
 /// the headers that already carried the 200. Non-2xx never gets this far - those
 /// fail the request before the summary is read.
-fn is_failed(response: &Value) -> bool {
+pub(in crate::coding::proxy_gateway::runtime) fn is_failed(response: &Value) -> bool {
     if matches!(
         response.get("status").and_then(Value::as_str),
         Some("failed") | Some("canceled") | Some("cancelled")
@@ -542,6 +554,22 @@ fn is_failed(response: &Value) -> bool {
         .get("error")
         .and_then(Value::as_object)
         .is_some_and(|error| !error.is_empty())
+}
+
+/// Whether a pass-through reply reports a turn the upstream could not finish,
+/// as opposed to answering the trigger with something else.
+///
+/// The caller uses this to decide whether a non-native pass-through reply
+/// counts as a refusal. A failed or truncated turn is not one: the upstream
+/// processed the request but did not complete it, so the next compaction must
+/// probe natively again instead of being remembered as unsupported.
+pub(in crate::coding::proxy_gateway::runtime) fn is_failed_or_truncated_response(
+    body: &[u8],
+) -> bool {
+    let Ok(response) = serde_json::from_slice::<Value>(body) else {
+        return false;
+    };
+    is_failed(&response) || is_truncated(&response)
 }
 
 /// Collects the assistant text out of an upstream Responses WebSocket stream.
@@ -579,14 +607,24 @@ impl CompactionStreamSummary {
             Some("response.output_item.added") | Some("response.output_item.done") => {
                 if let Some(item) = event.get("item") {
                     self.note_native_item(item);
-                }
-                if let Some(text) = event.pointer("/item").and_then(responses_output_text) {
-                    self.completed = Some(text);
+                    if let Some(text) = responses_message_item_text(item) {
+                        self.completed = Some(text);
+                    }
                 }
             }
             Some("response.completed") => {
                 self.terminal = true;
                 if let Some(response) = event.get("response") {
+                    // A terminal snapshot can carry the same verdicts as the
+                    // dedicated events: an upstream that reports `status:
+                    // "incomplete"` or a non-empty `error` inside
+                    // `response.completed` must not have its draft sealed as
+                    // the whole history.
+                    if is_failed(response) {
+                        self.failed = true;
+                    } else if is_truncated(response) {
+                        self.truncated = true;
+                    }
                     if let Some(usage) = response.get("usage") {
                         self.usage = usage.clone();
                     }
@@ -663,6 +701,30 @@ impl CompactionStreamSummary {
     pub(in crate::coding::proxy_gateway::runtime) fn usage(&self) -> &Value {
         &self.usage
     }
+}
+
+/// The text of one Responses `message` output item, read from its own `content`.
+///
+/// `response.output_item.done` carries the finished item, which is where a
+/// WebSocket upstream that skips the delta events puts the whole message; the
+/// item has no `output` array, so [`responses_output_text`] cannot read it.
+fn responses_message_item_text(item: &Value) -> Option<String> {
+    if item.get("type").and_then(Value::as_str) != Some("message") {
+        return None;
+    }
+    let parts = match item.get("content") {
+        Some(Value::String(text)) => vec![text.clone()],
+        Some(Value::Array(content)) => content
+            .iter()
+            .filter_map(|part| {
+                (part.get("type").and_then(Value::as_str) == Some("output_text"))
+                    .then(|| part.get("text").and_then(Value::as_str).map(str::to_string))
+                    .flatten()
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    join_non_empty(parts)
 }
 
 /// OpenAI Responses `output[].content[].output_text`, skipping reasoning items.
@@ -782,7 +844,7 @@ pub(in crate::coding::proxy_gateway::runtime) fn build_websocket_compaction_resp
 }
 
 fn compaction_response_envelope(item: &Value, model: &str, usage: Value) -> Value {
-    let response_id = format!("resp_compact_{}", unix_timestamp());
+    let response_id = format!("resp_compact_{}", unix_timestamp_nanos());
     serde_json::json!({
         "id": response_id,
         "object": "response.compaction",
@@ -928,6 +990,18 @@ mod tests {
         let second = seal_compaction_summary("same", "m").unwrap();
         assert_ne!(first, second, "identical summaries must not share ciphertext");
         assert_eq!(open_compaction_summary(&first), open_compaction_summary(&second));
+    }
+
+    /// Two items sealed back to back — two sessions compacting in the same
+    /// second — must not share an id, so the ids are nanosecond-clocked.
+    #[test]
+    fn compaction_items_get_distinct_ids() {
+        let first = build_compaction_item("summary", "m").unwrap();
+        let second = build_compaction_item("summary", "m").unwrap();
+        let first_id = first.get("id").and_then(Value::as_str).unwrap();
+        let second_id = second.get("id").and_then(Value::as_str).unwrap();
+        assert_ne!(first_id, second_id);
+        assert!(first_id.starts_with("cmp_"), "{first_id}");
     }
 
     #[test]
@@ -1289,6 +1363,117 @@ mod tests {
         }));
 
         assert_eq!(summary.finish().unwrap(), "Summary from the item.");
+    }
+
+    /// Some upstreams send neither deltas nor a filled terminal snapshot — only
+    /// the finished `message` item on `response.output_item.done`. The text has
+    /// to be read off the item itself, which carries no `output` array.
+    #[test]
+    fn a_summary_reassembles_from_the_done_item_alone() {
+        let mut summary = CompactionStreamSummary::default();
+        summary.push(&serde_json::json!({
+            "type": "response.output_item.done",
+            "output_index": 0,
+            "item": {
+                "type": "message",
+                "role": "assistant",
+                "content": [{ "type": "output_text", "text": "Summary from the item." }],
+            },
+        }));
+        summary.push(&serde_json::json!({
+            "type": "response.completed",
+            "response": { "id": "resp_1" },
+        }));
+
+        assert!(summary.is_terminal());
+        assert_eq!(summary.finish().unwrap(), "Summary from the item.");
+    }
+
+    /// A `response.completed` snapshot can carry the same verdicts as the
+    /// dedicated events; a relay that folds `status: "incomplete"` or a
+    /// non-empty `error` into the terminal snapshot must not have its draft
+    /// sealed as the whole history.
+    #[test]
+    fn a_completed_snapshot_reporting_failure_or_truncation_is_not_sealed() {
+        let mut failed = CompactionStreamSummary::default();
+        failed.push(&serde_json::json!({
+            "type": "response.output_text.delta",
+            "delta": "half a summ",
+        }));
+        failed.push(&serde_json::json!({
+            "type": "response.completed",
+            "response": {
+                "id": "resp_1",
+                "status": "failed",
+                "error": { "code": "server_error", "message": "transient" },
+            },
+        }));
+        assert_eq!(failed.finish(), Err(CompactionSummaryError::Failed));
+
+        let mut truncated = CompactionStreamSummary::default();
+        truncated.push(&serde_json::json!({
+            "type": "response.output_text.delta",
+            "delta": "half a summ",
+        }));
+        truncated.push(&serde_json::json!({
+            "type": "response.completed",
+            "response": { "id": "resp_1", "status": "incomplete" },
+        }));
+        assert_eq!(
+            truncated.finish(),
+            Err(CompactionSummaryError::Truncated)
+        );
+
+        // A healthy snapshot stays a summary.
+        let mut healthy = CompactionStreamSummary::default();
+        healthy.push(&serde_json::json!({
+            "type": "response.output_text.delta",
+            "delta": "a whole summary",
+        }));
+        healthy.push(&serde_json::json!({
+            "type": "response.completed",
+            "response": { "id": "resp_1", "status": "completed" },
+        }));
+        assert_eq!(healthy.finish().unwrap(), "a whole summary");
+    }
+
+    /// The pass-through caller consults this on a reply that is not a native
+    /// item: a failed or truncated turn is not a refusal and must not be
+    /// remembered as one.
+    #[test]
+    fn failed_or_truncated_pass_through_replies_are_told_apart_from_refusals() {
+        for body in [
+            serde_json::to_vec(&serde_json::json!({
+                "status": "failed",
+                "error": { "code": "server_error", "message": "transient" },
+                "output": [{ "type": "message", "content": [{ "type": "output_text", "text": "draft" }] }],
+            }))
+            .unwrap(),
+            serde_json::to_vec(&serde_json::json!({
+                "status": "incomplete",
+                "output": [{ "type": "message", "content": [{ "type": "output_text", "text": "draft" }] }],
+            }))
+            .unwrap(),
+        ] {
+            assert!(
+                is_failed_or_truncated_response(&body),
+                "a failed or truncated turn is not a refusal"
+            );
+        }
+
+        for body in [
+            serde_json::to_vec(&serde_json::json!({
+                "status": "completed",
+                "output": [{ "type": "message", "content": [{ "type": "output_text", "text": "reply" }] }],
+            }))
+            .unwrap(),
+            b"not json".to_vec(),
+        ] {
+            assert!(
+                !is_failed_or_truncated_response(&body),
+                "an ordinary reply is a refusal"
+            );
+        }
     }
 
     /// A pass-through turn is decided from what the upstream streamed: its own

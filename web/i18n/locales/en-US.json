@@ -787,6 +787,7 @@
         "responsesEncryptedContentRectifier": "Responses encrypted-content recovery",
         "sessionUsage": "Local session usage",
         "codexWebsocket": "Codex WebSocket",
+        "codexCompactionNativePassthrough": "Codex v2 compaction passthrough",
         "skipUndeclaredModels": "Skip sites that don't declare the model"
       },
       "fieldHelp": {
@@ -817,6 +818,8 @@
         "metrics": "Write per-request token, cost and latency summaries into the local database for the statistics page and request list; summaries are recorded while either this or request logging is on.",
         "codexWebsocketDefault": "Off by default. Only for upstreams using the Responses protocol.",
         "codexWebsocket": "While off, the takeover writes supports_websockets = false so Codex goes straight to HTTP/SSE instead of opening a WebSocket that would be rejected; it is only written as true once enabled. Toggling takes effect in a new Codex session or after restarting the client. Requests requiring protocol conversion always use HTTP/SSE.",
+        "codexCompactionNativePassthroughDefault": "On by default. Only for upstreams using the Responses protocol.",
+        "codexCompactionNativePassthrough": "While on, a Codex compaction turn forwards the compaction_trigger to the upstream first: the upstream's own compaction item is relayed as-is (native compaction), otherwise the Gateway rewrites the turn into a summary request and seals its own item, labelled native / fallback / simulated in the request log. While off, every compaction turn is simulated by the Gateway without probing the upstream. Upstreams reached through a protocol conversion are always simulated.",
         "skipUndeclaredModels": "When on, a site whose model catalog does not list the requested model is skipped outright — no wasted request, no health penalty — instead of being tried and failed. Requires at least one site to maintain a model catalog, otherwise the switch does nothing."
       },
       "perCli": {

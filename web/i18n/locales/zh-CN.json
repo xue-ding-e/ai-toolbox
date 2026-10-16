@@ -787,6 +787,7 @@
         "responsesEncryptedContentRectifier": "Responses 密文恢复",
         "sessionUsage": "本地会话统计",
         "codexWebsocket": "Codex WebSocket",
+        "codexCompactionNativePassthrough": "Codex 透传 v2 远程压缩",
         "skipUndeclaredModels": "跳过未声明该模型的站点"
       },
       "fieldHelp": {
@@ -817,6 +818,8 @@
         "metrics": "把请求的 token、费用、耗时等摘要写入数据库，作为统计页和请求列表的数据来源；只要本项或请求记录任一开启，摘要就会随请求记录。",
         "codexWebsocketDefault": "默认关闭，仅用于同协议 Responses 上游。",
         "codexWebsocket": "关闭时接管配置会写入 supports_websockets = false，Codex 直接使用 HTTP/SSE，不会先尝试一次注定失败的 WebSocket 握手；开启后才写入 true。切换后需新建 Codex 会话或重启客户端生效。需要协议转换的请求始终走 HTTP/SSE。",
+        "codexCompactionNativePassthroughDefault": "默认开启，仅用于 Responses 协议上游。",
+        "codexCompactionNativePassthrough": "开启后，Codex 压缩轮次先把 compaction_trigger 原样转发给上游：上游回了自己的 compaction 项就原样返回（原生压缩），否则网关改写为摘要请求自行封装，并在日志里标注 native / fallback / simulated；关闭后所有压缩轮次直接由网关模拟，不再探测上游。需要协议转换的上游始终由网关模拟。",
         "skipUndeclaredModels": "开启后，模型目录里没有列出本次请求模型的站点会被直接跳过（不产生错误请求、不计入健康度），而不是先试一次再失败。前提是至少有一个站点维护了模型目录，否则该开关不生效。"
       },
       "perCli": {

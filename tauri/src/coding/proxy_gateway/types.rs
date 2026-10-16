@@ -479,6 +479,12 @@ pub struct ProxyGatewaySettings {
     pub enabled_cli_keys: Vec<GatewayCliKey>,
     /// Allow Codex Responses WebSocket upgrades. HTTP/SSE remains the default transport.
     pub codex_websocket_enabled: bool,
+    /// Offer a Codex remote-compaction v2 turn to the upstream natively first.
+    /// On by default: the `compaction_trigger` is forwarded unchanged, and the
+    /// Gateway summarizes the turn itself only when the upstream answers with
+    /// something other than its own `compaction` item. When off, every
+    /// compaction turn is summarized by the Gateway without probing.
+    pub codex_compaction_native_passthrough_enabled: bool,
     pub request_log_enabled: bool,
     pub request_log_level: String,
     pub metrics_enabled: bool,
@@ -564,6 +570,7 @@ impl Default for ProxyGatewaySettings {
             wsl_host: String::new(),
             enabled_cli_keys: GatewayCliKey::supported_mvp(),
             codex_websocket_enabled: false,
+            codex_compaction_native_passthrough_enabled: true,
             request_log_enabled: true,
             request_log_level: "summary".to_string(),
             metrics_enabled: true,

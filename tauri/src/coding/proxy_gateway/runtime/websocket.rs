@@ -1393,7 +1393,13 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin, U: AsyncRead + AsyncWrite + Un
                         // the request half must not disagree with it.
                         let remote_compaction = RemoteCompactionCompat::resolve_websocket(
                             Some(&provider),
-                            upstream::should_attempt_native_remote_compaction(context, &provider),
+                            context
+                                .settings_snapshot()
+                                .codex_compaction_native_passthrough_enabled
+                                && upstream::should_attempt_native_remote_compaction(
+                                    context,
+                                    &provider,
+                                ),
                             &value,
                         );
                         let prepared = privacy.as_ref().map_err(Clone::clone).and_then(|privacy| {
