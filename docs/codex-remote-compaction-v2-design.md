@@ -154,46 +154,6 @@ const COMPACTION_CAPSULE_PREFIX: &str = "ai-toolbox-compact-v1:";
 
 容量与淘汰、指纹绑定、持久化均**不需要**——这是相对初版设计的简化。
 
-### 3.6 WebSocket 传输
-
-Codex 的 remote compaction v2 走的是 `ModelClientSession::stream()`，与普通轮次**同一个入口**（`core/src/client.rs:2251`）：provider 支持 WebSocket 时，compaction 轮次同样发 `response.create` 帧，`compaction_trigger` 在 `input` 末尾。因此网关的 WS 路径必须同样处理。
-
-三条与 HTTP 不同的约束：
-
-| 约束 | 事实 | 后果 |
-|---|---|---|
-| 帧是裸 JSON | Codex 用 `serde_json::from_str::<ResponsesStreamEvent>(&text)` 直接解析文本帧（`codex-api/src/endpoint/responses_websocket.rs:739`），没有 SSE 的 `event:`/`data:` 外壳 | 合成事件必须逐帧发裸 JSON，不能复用 HTTP 的 SSE 文本 |
-| 没有非流模式 | WS 只能一帧一帧收 | 摘要必须从上游自己的 delta 事件里重组，不能像 HTTP 那样请求一次性 JSON |
-| 网关只转发同协议 | `websocket.rs` 的 `fallback_reason` 对任何需要协议转换的 provider 返回 426 | WS 压缩**只覆盖 Responses 直通**，Chat/Anthropic/Gemini 走 HTTP |
-
-请求侧的改写与 HTTP 共用：`prepare_websocket_request_with_model` 调 `RemoteCompactionCompat::resolve_websocket` 判定，`build_upstream_body_for_provider` 内的改写逻辑不变（`stream` 字段本来就由 WS 路径统一剥除）。
-
-响应侧在 `relay` 里拦截：compaction 轮次的每条上游帧先喂给 `CompactionStreamSummary` 累加，**不转发**；收到终态后合成为一个 `compaction` item，用 `build_compaction_frames` 发 5 个裸 JSON 帧。上游自己的 `response.completed` 被丢弃——否则 Codex 会看到两个终态。
-
-摘要不可用时**不伪造 item**：Codex 把返回的 item 当作整段对话历史安装，占位文本会静默丢弃上下文。WS 侧改为转发上游自己的终态，让 Codex 按 error code 分类并重试可重试项。注意失败前到达的 delta 只是半截草稿，`finish()` 必须先判失败。
-
-### 3.7 路由边界（与 `/responses/compact` 的分工）
-
-legacy `/responses/compact` 端点**已经由** `CodexResponsesCompactCompat` 拥有（Codex 自身已废弃该端点）。本模块刻意只认 v2 信号，否则同一个请求会被改写两次。`RemoteCompactionCompat::resolve` 里对此有显式文档注释与回归测试（`the_legacy_compact_endpoint_is_not_claimed`）。
-
-### 5.1 catalog 的 `auto_compact_token_limit` 缺口
-
-cc-switch 在同一 PR 里补了一个 AI Toolbox 目前完全缺失的字段（`codex_config.rs:1200-1216`）：
-
-```rust
-if profile == CodexCatalogToolProfile::ProxyChat {
-    entry_obj.insert("auto_compact_token_limit", json!(context_window * 9 / 10));
-} else {
-    entry_obj.remove("auto_compact_token_limit");
-}
-```
-
-- **只为 ProxyChat profile 写**：Chat 中转路径需要显式阈值跟随 provider 的有效窗口。
-- **NativeResponses / Anthropic 显式移除**：让 Codex 按 `context_window` 自己推导 90%。
-- 原因见 PR review P1：给 Anthropic profile 声明自动压缩阈值，会让 Codex 在 90% 处发起压缩请求，而 Anthropic 路径当时没有 compaction 响应语义 → 长会话失败。
-
-AI Toolbox 的 catalog 生成（`tauri/src/coding/codex/commands.rs`）当前**不写该字段**。若本设计补齐了四种目标协议的 compaction 支持，这个字段才有意义——但**必须与目标协议的实际支持范围严格对齐**，不能无条件写。这条列入实现清单。
-
 ### 3.6 原生优先与一次自封装回退
 
 网关对**每一个** Responses 目标的压缩轮次都先试原生：`compaction_trigger` 原样转发，上游若回 `compaction` item 就照原样回给 Codex（含 SSE 生命周期）。上游回的不是那个 item，才回退到网关自己的摘要。这是 Codex 直连官方端点时的行为，也是用户要的默认行为。
@@ -250,6 +210,28 @@ AI Toolbox 的 catalog 生成（`tauri/src/coding/codex/commands.rs`）当前**�
 
 第三值不是凑数：`fallback` 与 `simulated` 都表示「网关写的」，但前者说明链路曾经有过原生机会、后者说明协议上从来不可能——这正是 issue #416 里被问的那个问题。写入点在 `upstream.rs` 两条响应路径（聚合分支与常规非流分支），由纯函数 `compaction_mode_label` 产出（`RemoteCompactionCompat::Fallback` → `fallback`）；WS 侧在**封装成功那一刻**标（`CompactionTurn::served_mode_label`）或在原生回放那一刻标 `native`。存储走 v28 迁移（`proxy_request_logs.compaction_mode TEXT`，仿 v27 的 `service_tier`），前端在请求日志的列表与明细里各渲染一个徽章。
 
+### 3.7 WebSocket 传输
+
+Codex 的 remote compaction v2 走的是 `ModelClientSession::stream()`，与普通轮次**同一个入口**（`core/src/client.rs:2251`）：provider 支持 WebSocket 时，compaction 轮次同样发 `response.create` 帧，`compaction_trigger` 在 `input` 末尾。因此网关的 WS 路径必须同样处理。
+
+三条与 HTTP 不同的约束：
+
+| 约束 | 事实 | 后果 |
+|---|---|---|
+| 帧是裸 JSON | Codex 用 `serde_json::from_str::<ResponsesStreamEvent>(&text)` 直接解析文本帧（`codex-api/src/endpoint/responses_websocket.rs:739`），没有 SSE 的 `event:`/`data:` 外壳 | 合成事件必须逐帧发裸 JSON，不能复用 HTTP 的 SSE 文本 |
+| 没有非流模式 | WS 只能一帧一帧收 | 摘要必须从上游自己的 delta 事件里重组，不能像 HTTP 那样请求一次性 JSON |
+| 网关只转发同协议 | `websocket.rs` 的 `fallback_reason` 对任何需要协议转换的 provider 返回 426 | WS 压缩**只覆盖 Responses 直通**，Chat/Anthropic/Gemini 走 HTTP |
+
+请求侧的改写与 HTTP 共用：`prepare_websocket_request_with_model` 调 `RemoteCompactionCompat::resolve_websocket` 判定，`build_upstream_body_for_provider` 内的改写逻辑不变（`stream` 字段本来就由 WS 路径统一剥除）。
+
+响应侧在 `relay` 里拦截：compaction 轮次的每条上游帧先喂给 `CompactionStreamSummary` 累加，**不转发**；收到终态后合成为一个 `compaction` item，用 `build_compaction_frames` 发 5 个裸 JSON 帧。上游自己的 `response.completed` 被丢弃——否则 Codex 会看到两个终态。
+
+摘要不可用时**不伪造 item**：Codex 把返回的 item 当作整段对话历史安装，占位文本会静默丢弃上下文。WS 侧改为转发上游自己的终态，让 Codex 按 error code 分类并重试可重试项。注意失败前到达的 delta 只是半截草稿，`finish()` 必须先判失败。
+
+### 3.8 路由边界（与 `/responses/compact` 的分工）
+
+legacy `/responses/compact` 端点**已经由** `CodexResponsesCompactCompat` 拥有（Codex 自身已废弃该端点）。本模块刻意只认 v2 信号，否则同一个请求会被改写两次。`RemoteCompactionCompat::resolve` 里对此有显式文档注释与回归测试（`the_legacy_compact_endpoint_is_not_claimed`）。
+
 ## 4. 四目标协议差异
 
 ### 4.1 Responses 直通（identity route）
@@ -292,6 +274,24 @@ cc-switch 的 code review 明确指出：其 Anthropic 路径**未实现** compa
 | WS 挂载 | `runtime/websocket.rs` | `prepare_websocket_request_with_model` 判定；`relay` 内 `PendingTurn.compaction` 累加上游帧并在终态合成 |
 | 门控 | `codex-rs/model-provider/src/capabilities.rs` | `name = "OpenAI"`（或 Azure）或显式 `capabilities.remote_compaction = "v2"` 才启用（见 §8） |
 | catalog | 未改动 | `auto_compact_token_limit` 缺口仍存在（§5.1） |
+
+### 5.1 catalog 的 `auto_compact_token_limit` 缺口
+
+cc-switch 在同一 PR 里补了一个 AI Toolbox 目前完全缺失的字段（`codex_config.rs:1200-1216`）：
+
+```rust
+if profile == CodexCatalogToolProfile::ProxyChat {
+    entry_obj.insert("auto_compact_token_limit", json!(context_window * 9 / 10));
+} else {
+    entry_obj.remove("auto_compact_token_limit");
+}
+```
+
+- **只为 ProxyChat profile 写**：Chat 中转路径需要显式阈值跟随 provider 的有效窗口。
+- **NativeResponses / Anthropic 显式移除**：让 Codex 按 `context_window` 自己推导 90%。
+- 原因见 PR review P1：给 Anthropic profile 声明自动压缩阈值，会让 Codex 在 90% 处发起压缩请求，而 Anthropic 路径当时没有 compaction 响应语义 → 长会话失败。
+
+AI Toolbox 的 catalog 生成（`tauri/src/coding/codex/commands.rs`）当前**不写该字段**。若本设计补齐了四种目标协议的 compaction 支持，这个字段才有意义——但**必须与目标协议的实际支持范围严格对齐**，不能无条件写。这条列入实现清单。
 
 ## 6. 测试矩阵
 
