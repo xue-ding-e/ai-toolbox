@@ -166,11 +166,39 @@ pub(super) fn reconcile_session_costs(
                     files.push((path, true));
                 }
             }
+            // MiMoCode's root is the database file itself.
+            GatewayUsageTool::Mimocode => {
+                if root.is_file() {
+                    files.push((root.clone(), true));
+                }
+            }
             GatewayUsageTool::OpenClaw => files.extend(
                 super::open_claw::database_files(root)
                     .into_iter()
                     .map(|path| (path, true)),
             ),
+            GatewayUsageTool::Devin | GatewayUsageTool::Minimax => {
+                // The root itself is the database; `session_files` never walks
+                // it, so pricing must re-read that one file.
+                if root.is_file() {
+                    files.push((root.clone(), true));
+                }
+            }
+            GatewayUsageTool::Antigravity => {
+                // Usage comes from `conversations/<uuid>.db`, so the pricing
+                // retry must read the same databases rather than the mirror.
+                if let Ok(entries) = fs::read_dir(root.join("conversations")) {
+                    files.extend(
+                        entries
+                            .flatten()
+                            .map(|entry| entry.path())
+                            .filter(|path| {
+                                path.extension().and_then(|value| value.to_str()) == Some("db")
+                            })
+                            .map(|path| (path, true)),
+                    );
+                }
+            }
             _ => {}
         }
     }
@@ -250,8 +278,13 @@ pub(super) fn reconcile_session_costs(
     for file in &files {
         let parsed = if file.database {
             let records = match cli_key {
-                GatewayUsageTool::OpenCode => super::open_code::cost_records(&file.path)?,
+                GatewayUsageTool::OpenCode | GatewayUsageTool::Mimocode => {
+                    super::open_code::cost_records(cli_key, &file.path)?
+                }
+                GatewayUsageTool::Devin => super::devin::cost_records(&file.path)?,
+                GatewayUsageTool::Minimax => super::minimax::cost_records(&file.path)?,
                 GatewayUsageTool::OpenClaw => super::open_claw::cost_records(&file.path)?,
+                GatewayUsageTool::Antigravity => super::antigravity::cost_records(&file.path)?,
                 _ => return Err("Unsupported native cost database".into()),
             };
             parsers::ParsedSession {

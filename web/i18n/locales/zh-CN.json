@@ -90,7 +90,7 @@
         },
         "range": {
           "today": "今天",
-          "yesterday": "昨日",
+          "yesterday": "昨天",
           "thisWeek": "本周",
           "lastWeek": "上周",
           "thisMonth": "本月",
@@ -143,7 +143,13 @@
             "2": "三",
             "4": "五"
           }
-        }
+        },
+        "pricingUnit": "单价（每百万 tokens，USD）：",
+        "pricingInput": "输入 {{value}}",
+        "pricingOutput": "输出 {{value}}",
+        "pricingCacheRead": "缓存读取 {{value}}",
+        "pricingCacheCreation": "缓存创建 {{value}}",
+        "pricingUnavailable": "该模型未匹配到价格，金额只计算已报告或已定价的用量。"
       },
       "pricing": {
         "open": "定价配置",
@@ -866,7 +872,17 @@
         "hermes": "Hermes",
         "openclaw": "OpenClaw",
         "kimi_cli": "Kimi CLI (Python)",
-        "zcode": "ZCode"
+        "zcode": "ZCode",
+        "mimocode": "MiMoCode",
+        "prime_agent": "Prime Agent",
+        "devin": "Devin CLI",
+        "musecode": "Muse Code",
+        "cmdcode": "Command Code",
+        "qwencode": "Qwen Code",
+        "workbuddy": "WorkBuddy",
+        "workbuddy_ai": "WorkBuddy 国际版",
+        "codebuddy": "CodeBuddy",
+        "minimax": "MiniMax Code"
       },
       "cliStatus": {
         "direct": "未接管",

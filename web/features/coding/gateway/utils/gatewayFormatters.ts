@@ -134,6 +134,16 @@ export const calculateCacheHitRate = (inputTokens: number, cacheReadTokens: numb
   return totalInputTokens > 0 ? cacheReadTokens / totalInputTokens : null;
 };
 
+/**
+ * Tools the gateway only reads usage for, never proxies. Their request rate is
+ * reported as `null` (`-`) instead of 0, which would read as "nothing running".
+ */
+const USAGE_ONLY_TOOLS: readonly GatewayUsageTool[] = [
+  'pi', 'oh_my_pi', 'omo_native', 'dsh', 'hermes', 'openclaw', 'kimi_cli', 'zcode',
+  'mimocode', 'prime_agent', 'devin', 'musecode', 'cmdcode', 'qwencode',
+  'workbuddy', 'workbuddy_ai', 'codebuddy', 'minimax',
+];
+
 export const getGatewayRequestsPerMinute = (
   status: Pick<ProxyGatewayStatus, 'requests_per_minute' | 'requests_per_minute_by_cli'> | null | undefined,
   cliKey?: GatewayUsageTool,
@@ -144,7 +154,9 @@ export const getGatewayRequestsPerMinute = (
   if (!cliKey) {
     return status.requests_per_minute;
   }
-  if (['pi', 'oh_my_pi', 'omo_native', 'dsh', 'hermes', 'openclaw', 'kimi_cli', 'zcode'].includes(cliKey)) {
+  // Usage-only tools are never routed by the gateway, so they have no
+  // request rate at all; `null` renders as `-`, while 0 would claim silence.
+  if (USAGE_ONLY_TOOLS.includes(cliKey)) {
     return null;
   }
   return status.requests_per_minute_by_cli == null

@@ -1160,14 +1160,37 @@ pub fn model_stats(
         // Pricing coverage is a property of the model id, so it holds for detail
         // rows, rollup-only rows and merged groups alike. Memoised because the
         // same model can appear under several CLIs.
-        let mut pricing_memo = HashMap::<String, bool>::new();
+        let mut pricing_memo = HashMap::<String, Option<ModelPricing>>::new();
         let mut items = stats_map
             .into_iter()
             .filter_map(|((app_type, model), item)| {
                 let cli_key = cli_key_from_app_type(&app_type)?;
-                let has_pricing = *pricing_memo
+                // The same matcher that priced the rows is reused here, so an
+                // expanded row shows exactly the prices that were billed.
+                let pricing = pricing_memo
                     .entry(model.clone())
-                    .or_insert_with(|| session_model_has_pricing(conn, &model));
+                    .or_insert_with(|| find_model_pricing(conn, &model))
+                    .clone()
+                    .map(|pricing| super::types::ModelPricing {
+                        model_id: model.clone(),
+                        display_name: model.clone(),
+                        input_cost_per_million: pricing
+                            .input_cost_per_million
+                            .normalize()
+                            .to_string(),
+                        output_cost_per_million: pricing
+                            .output_cost_per_million
+                            .normalize()
+                            .to_string(),
+                        cache_read_cost_per_million: pricing
+                            .cache_read_cost_per_million
+                            .normalize()
+                            .to_string(),
+                        cache_creation_cost_per_million: pricing
+                            .cache_creation_cost_per_million
+                            .normalize()
+                            .to_string(),
+                    });
                 Some(GatewayModelStats {
                     cli_key,
                     model,
@@ -1177,7 +1200,8 @@ pub fn model_stats(
                     success_rate: item.proxy_success_rate(),
                     avg_latency_ms: item.avg_latency_ms(),
                     cache_hit_rate: item.cache_hit_rate(),
-                    has_pricing,
+                    has_pricing: pricing.is_some(),
+                    pricing,
                 })
             })
             .collect::<Vec<_>>();

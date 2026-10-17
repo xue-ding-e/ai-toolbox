@@ -15,6 +15,11 @@
 //!   `completed` is the only status worth reading, and filtering on it also
 //!   keeps a request that is *still in flight* out of the statistics, rather
 //!   than importing it once with zeros and again with the real numbers.
+//!
+//! `input_tokens` is the provider's *prompt* count and **includes** cached
+//! tokens (measured locally: input 95855 with cache_read 83840). The importer's
+//! `input_tokens` means fresh, non-cached input, so the cache columns are
+//! subtracted here; keeping both would bill the cached part twice.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -28,8 +33,8 @@ use super::{GatewayUsageTool, SessionUsageRecord};
 
 /// Columns read from `model_usage`, in order.
 const USAGE_QUERY: &str = "SELECT id, session_id, provider_id, model_id, started_at, \
-     input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, \
-     raw_usage_json \
+     completed_at, input_tokens, output_tokens, cache_read_input_tokens, \
+     cache_creation_input_tokens, raw_usage_json \
      FROM model_usage \
      WHERE attempt_index = 0 AND status = 'completed' \
      ORDER BY started_at ASC";
@@ -58,11 +63,12 @@ pub(super) fn parse(path: &Path, fallback: i64) -> Result<ParsedSession, String>
                 provider_id: row.get(2)?,
                 model_id: row.get(3)?,
                 started_at: row.get(4)?,
-                input_tokens: row.get(5)?,
-                output_tokens: row.get(6)?,
-                cache_read_tokens: row.get(7)?,
-                cache_creation_tokens: row.get(8)?,
-                raw_usage: row.get(9)?,
+                completed_at: row.get(5)?,
+                input_tokens: row.get(6)?,
+                output_tokens: row.get(7)?,
+                cache_read_tokens: row.get(8)?,
+                cache_creation_tokens: row.get(9)?,
+                raw_usage: row.get(10)?,
             })
         })
         .map_err(|error| format!("Failed to query ZCode usage: {error}"))?;
@@ -89,6 +95,7 @@ struct UsageRow {
     provider_id: String,
     model_id: String,
     started_at: i64,
+    completed_at: i64,
     input_tokens: i64,
     output_tokens: i64,
     cache_read_tokens: i64,
@@ -98,24 +105,37 @@ struct UsageRow {
 
 impl UsageRow {
     fn into_record(self, fallback: i64) -> SessionUsageRecord {
-        // `started_at` is epoch milliseconds, like every other timestamp ZCode
-        // writes; the importer works in seconds.
-        let created_at = if self.started_at > 0 {
-            self.started_at / 1000
+        // Both timestamps are epoch milliseconds; `completed_at` is the closer
+        // match to when the tokens were actually produced, and it is what tokei
+        // bills against. `started_at` remains the fallback for old rows.
+        let timestamp_ms = if self.completed_at > 0 {
+            self.completed_at
+        } else {
+            self.started_at
+        };
+        let created_at = if timestamp_ms > 0 {
+            timestamp_ms / 1000
         } else {
             fallback
         };
 
+        // `input_tokens` includes the cached part, so the four buckets are
+        // re-cut here: fresh = prompt - cache_read - cache_creation.
+        let cache_read = self.cache_read_tokens.max(0) as u64;
+        let cache_creation = self.cache_creation_tokens.max(0) as u64;
+        let input = (self.input_tokens.max(0) as u64)
+            .saturating_sub(cache_read)
+            .saturating_sub(cache_creation);
         let mut record = native_record(
             GatewayUsageTool::Zcode,
             &self.session_id,
             &self.id,
             Some(self.model_id),
             TokenUsage {
-                input_tokens: Some(self.input_tokens.max(0) as u64),
+                input_tokens: Some(input),
                 output_tokens: Some(self.output_tokens.max(0) as u64),
-                cache_read_tokens: Some(self.cache_read_tokens.max(0) as u64),
-                cache_creation_tokens: Some(self.cache_creation_tokens.max(0) as u64),
+                cache_read_tokens: Some(cache_read),
+                cache_creation_tokens: Some(cache_creation),
                 envelope_id: None,
             },
             created_at,
@@ -156,6 +176,7 @@ mod tests {
                     model_id TEXT NOT NULL,
                     status TEXT NOT NULL,
                     started_at INTEGER NOT NULL,
+                    completed_at INTEGER NOT NULL DEFAULT 0,
                     input_tokens INTEGER NOT NULL DEFAULT 0,
                     output_tokens INTEGER NOT NULL DEFAULT 0,
                     cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
@@ -168,10 +189,10 @@ mod tests {
         connection
             .execute_batch(
                 r#"INSERT INTO model_usage VALUES
-                   ('u1', 0, 'sess_a', 'account:zai', 'GLM-5.3', 'completed', 1791123438145, 100, 20, 30, 0, '{"total_tokens": 150}'),
-                   ('u2', 1, 'sess_a', 'account:zai', 'GLM-5.3', 'completed', 1791123438200, 100, 20, 30, 0, NULL),
-                   ('u3', 0, 'sess_b', 'account:zai', 'GLM-5.3', 'cancelled', 1791123439000, 0, 0, 0, 0, NULL),
-                   ('u4', 0, 'sess_b', 'account:zai', 'GLM-5.3', 'running',   1791123440000, 0, 0, 0, 0, NULL);"#,
+                   ('u1', 0, 'sess_a', 'account:zai', 'GLM-5.3', 'completed', 1791123438145, 1791123439999, 100, 20, 30, 0, '{"total_tokens": 150}'),
+                   ('u2', 1, 'sess_a', 'account:zai', 'GLM-5.3', 'completed', 1791123438200, 0, 100, 20, 30, 0, NULL),
+                   ('u3', 0, 'sess_b', 'account:zai', 'GLM-5.3', 'cancelled', 1791123439000, 0, 0, 0, 0, 0, NULL),
+                   ('u4', 0, 'sess_b', 'account:zai', 'GLM-5.3', 'running',   1791123440000, 0, 0, 0, 0, 0, NULL);"#,
             )
             .expect("rows");
         directory
@@ -188,12 +209,48 @@ mod tests {
         assert_eq!(record.cli_key, GatewayUsageTool::Zcode);
         assert_eq!(record.session_id, "sess_a");
         assert_eq!(record.model, "GLM-5.3");
-        assert_eq!(record.usage.input_tokens, Some(100));
+        // `input_tokens` includes the cached part: 100 - 30 read - 0 write.
+        assert_eq!(record.usage.input_tokens, Some(70));
         assert_eq!(record.usage.cache_read_tokens, Some(30));
         assert_eq!(record.metadata.native_provider.as_deref(), Some("account:zai"));
         assert_eq!(record.metadata.reported_total_tokens, Some(150));
-        // Milliseconds on disk, seconds in the record.
-        assert_eq!(record.created_at, 1791123438);
+        // `completed_at` wins over `started_at`; milliseconds on disk, seconds
+        // in the record.
+        assert_eq!(record.created_at, 1791123439);
+    }
+
+    #[test]
+    fn cache_tokens_cannot_push_fresh_input_below_zero() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let path = directory.path().join("db.sqlite");
+        let connection = Connection::open(&path).expect("open");
+        connection
+            .execute_batch(
+                "CREATE TABLE model_usage (
+                    id TEXT PRIMARY KEY,
+                    attempt_index INTEGER NOT NULL DEFAULT 0,
+                    session_id TEXT NOT NULL,
+                    provider_id TEXT NOT NULL,
+                    model_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    started_at INTEGER NOT NULL,
+                    completed_at INTEGER NOT NULL DEFAULT 0,
+                    input_tokens INTEGER NOT NULL DEFAULT 0,
+                    output_tokens INTEGER NOT NULL DEFAULT 0,
+                    cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
+                    cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
+                    raw_usage_json TEXT
+                );
+                INSERT INTO model_usage VALUES
+                  ('u1', 0, 'sess_a', 'account:zai', 'GLM-5.3', 'completed', 1791123438145, 0, 100, 20, 80, 50, NULL);",
+            )
+            .expect("schema");
+
+        let parsed = parse(&path, 0).expect("parse");
+        let record = parsed.records.first().unwrap();
+        assert_eq!(record.usage.input_tokens, Some(0));
+        assert_eq!(record.usage.cache_read_tokens, Some(80));
+        assert_eq!(record.usage.cache_creation_tokens, Some(50));
     }
 
     #[test]
@@ -237,6 +294,7 @@ mod end_to_end_tests {
                     model_id TEXT NOT NULL,
                     status TEXT NOT NULL,
                     started_at INTEGER NOT NULL,
+                    completed_at INTEGER NOT NULL DEFAULT 0,
                     input_tokens INTEGER NOT NULL DEFAULT 0,
                     output_tokens INTEGER NOT NULL DEFAULT 0,
                     cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
@@ -244,8 +302,8 @@ mod end_to_end_tests {
                     raw_usage_json TEXT
                 );
                 INSERT INTO model_usage VALUES
-                  ('u1', 0, 'sess_a', 'account:zai', 'GLM-5.3', 'completed', 1791123438145, 100, 20, 30, 0, NULL),
-                  ('u2', 0, 'sess_a', 'account:zai', 'GLM-5.3', 'completed', 1791123439000, 200, 40, 60, 0, NULL);",
+                  ('u1', 0, 'sess_a', 'account:zai', 'GLM-5.3', 'completed', 1791123438145, 0, 100, 20, 30, 0, NULL),
+                  ('u2', 0, 'sess_a', 'account:zai', 'GLM-5.3', 'completed', 1791123439000, 0, 200, 40, 60, 0, NULL);",
             )
             .expect("schema");
 

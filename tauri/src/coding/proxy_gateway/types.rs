@@ -66,6 +66,27 @@ pub enum GatewayUsageTool {
     /// ZCode's CLI session database (`cli/db/db.sqlite`). Usage-only, like the
     /// other native-transcript tools: the gateway never proxies it.
     Zcode,
+    /// MiMoCode's OpenCode-derived SQLite store. Usage-only.
+    Mimocode,
+    /// Prime Agent's session JSONL tree. Usage-only.
+    PrimeAgent,
+    /// Devin CLI's SQLite session store. Usage-only.
+    Devin,
+    /// Muse Code's session event tree. Usage-only.
+    Musecode,
+    /// Command Code's per-project transcript tree. Usage-only.
+    Cmdcode,
+    /// Qwen Code's per-request and per-session usage files. Usage-only.
+    Qwencode,
+    /// WorkBuddy's Claude-Code-shaped transcripts. Usage-only.
+    Workbuddy,
+    /// WorkBuddy international transcripts, kept separate from the mainland
+    /// edition. Usage-only.
+    WorkbuddyAi,
+    /// CodeBuddy Code's transcripts. Usage-only.
+    Codebuddy,
+    /// MiniMax Code's runtime state database and logs. Usage-only.
+    Minimax,
 }
 
 impl GatewayUsageTool {
@@ -87,6 +108,16 @@ impl GatewayUsageTool {
             Self::OpenClaw,
             Self::KimiCli,
             Self::Zcode,
+            Self::Mimocode,
+            Self::PrimeAgent,
+            Self::Devin,
+            Self::Musecode,
+            Self::Cmdcode,
+            Self::Qwencode,
+            Self::Workbuddy,
+            Self::WorkbuddyAi,
+            Self::Codebuddy,
+            Self::Minimax,
         ]
     }
 
@@ -108,6 +139,16 @@ impl GatewayUsageTool {
             Self::OpenClaw => "openclaw",
             Self::KimiCli => "kimi_cli",
             Self::Zcode => "zcode",
+            Self::Mimocode => "mimocode",
+            Self::PrimeAgent => "prime_agent",
+            Self::Devin => "devin",
+            Self::Musecode => "musecode",
+            Self::Cmdcode => "cmdcode",
+            Self::Qwencode => "qwencode",
+            Self::Workbuddy => "workbuddy",
+            Self::WorkbuddyAi => "workbuddy_ai",
+            Self::Codebuddy => "codebuddy",
+            Self::Minimax => "minimax",
         }
     }
 
@@ -1158,6 +1199,11 @@ pub struct GatewayModelStats {
     /// already stored are only requoted by the session cost reconciliation, not
     /// by pricing CRUD.
     pub has_pricing: bool,
+    /// The four per-million prices that actually priced this model, when the
+    /// pricing table matched one. Mirrors what the write path used, so the row
+    /// can be expanded without re-implementing the matcher in the frontend.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing: Option<ModelPricing>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1472,6 +1518,16 @@ pub enum GatewaySessionImportCli {
     /// ZCode's CLI session database (`cli/db/db.sqlite`). Usage-only, like the
     /// other native-transcript tools: the gateway never proxies it.
     Zcode,
+    Mimocode,
+    PrimeAgent,
+    Devin,
+    Musecode,
+    Cmdcode,
+    Qwencode,
+    Workbuddy,
+    WorkbuddyAi,
+    Codebuddy,
+    Minimax,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

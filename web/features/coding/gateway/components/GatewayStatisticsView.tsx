@@ -753,6 +753,43 @@ const GatewayStatisticsView: React.FC<GatewayStatisticsViewProps> = ({ refreshKe
             loading={loading}
             pagination={false}
             scroll={{ x: 880 }}
+            expandable={{
+              // The prices are the ones the backend actually billed, so the
+              // expanded row never disagrees with the amount beside it.
+              expandedRowRender: (record) => (
+                <div className={styles.pricingDetail}>
+                  {record.pricing ? (
+                    <>
+                      <span className={styles.pricingDetailLabel}>
+                        {t('gateway.page.statistics.pricingUnit')}
+                      </span>
+                      <span>
+                        {t('gateway.page.statistics.pricingInput', {
+                          value: formatUsd(record.pricing.input_cost_per_million, 4),
+                        })}
+                      </span>
+                      <span>
+                        {t('gateway.page.statistics.pricingOutput', {
+                          value: formatUsd(record.pricing.output_cost_per_million, 4),
+                        })}
+                      </span>
+                      <span>
+                        {t('gateway.page.statistics.pricingCacheRead', {
+                          value: formatUsd(record.pricing.cache_read_cost_per_million, 4),
+                        })}
+                      </span>
+                      <span>
+                        {t('gateway.page.statistics.pricingCacheCreation', {
+                          value: formatUsd(record.pricing.cache_creation_cost_per_million, 4),
+                        })}
+                      </span>
+                    </>
+                  ) : (
+                    <span>{t('gateway.page.statistics.pricingUnavailable')}</span>
+                  )}
+                </div>
+              ),
+            }}
           />
         )}
       </section>

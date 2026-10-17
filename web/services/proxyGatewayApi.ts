@@ -397,6 +397,8 @@ export interface GatewayModelStats {
   cache_hit_rate: number | null;
   /** Whether `model_pricing` can price this model id at all (backend matcher). */
   has_pricing: boolean;
+  /** The per-million prices the backend's matcher resolved, when any. */
+  pricing?: ModelPricing | null;
 }
 
 export interface GatewayRequestLogSummary {
@@ -891,11 +893,32 @@ export const listProxyGatewayModelHealthEntries = async (): Promise<GatewayModel
 };
 
 /** Collecting local usage does not enable proxy takeover for a tool. */
-export type GatewayUsageTool = GatewayCliKey | 'pi' | 'oh_my_pi' | 'omo_native' | 'dsh' | 'hermes' | 'openclaw' | 'kimi_cli' | 'zcode';
+export type GatewayUsageTool =
+  | GatewayCliKey
+  | 'pi'
+  | 'oh_my_pi'
+  | 'omo_native'
+  | 'dsh'
+  | 'hermes'
+  | 'openclaw'
+  | 'kimi_cli'
+  | 'zcode'
+  | 'mimocode'
+  | 'prime_agent'
+  | 'devin'
+  | 'musecode'
+  | 'cmdcode'
+  | 'qwencode'
+  | 'workbuddy'
+  | 'workbuddy_ai'
+  | 'codebuddy'
+  | 'minimax';
 
 export const GATEWAY_USAGE_TOOLS: readonly GatewayUsageTool[] = [
   'claude', 'claude_desktop', 'codex', 'grok', 'kimi', 'gemini', 'antigravity', 'opencode',
   'pi', 'oh_my_pi', 'omo_native', 'dsh', 'hermes', 'openclaw', 'kimi_cli', 'zcode',
+  'mimocode', 'prime_agent', 'devin', 'musecode', 'cmdcode', 'qwencode',
+  'workbuddy', 'workbuddy_ai', 'codebuddy', 'minimax',
 ];
 
 export interface SessionUsageMetadata {

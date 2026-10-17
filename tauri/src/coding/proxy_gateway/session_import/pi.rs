@@ -177,7 +177,7 @@ pub(super) fn parse_entry(
         tool,
         session,
         &identity,
-        string(payload, &["/model", "/modelId"]),
+        string(payload, &["/model", "/modelId", "/message/model", "/message/modelId"]),
         usage,
         timestamp(entry)
             .or_else(|| timestamp(payload))

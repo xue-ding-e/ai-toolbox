@@ -6,7 +6,19 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::Path;
 
+/// Grok ≥ 0.2 writes one log per install at `~/.grok/logs/unified.jsonl`.
+///
+/// Each `shell.turn.inference_done` event is one model call with its own token
+/// counts; the older `sessions/**/updates.jsonl` mirror simply does not exist
+/// on current installs, which is why the importer used to see no Grok usage.
+pub(super) fn is_unified_log(path: &Path) -> bool {
+    path.file_name().and_then(|name| name.to_str()) == Some("unified.jsonl")
+}
+
 pub(super) fn parse(path: &Path, fallback: i64) -> Result<ParsedSession, String> {
+    if is_unified_log(path) {
+        return parse_unified_log(path, fallback);
+    }
     let mut records = BTreeMap::new();
     let pending = read_jsonl(path, |_, value| {
         if value.get("method").and_then(Value::as_str) != Some("_x.ai/session/update") {
@@ -93,6 +105,69 @@ pub(super) fn parse(path: &Path, fallback: i64) -> Result<ParsedSession, String>
         } else {
             add("unknown", totals);
         }
+    })?;
+    Ok(ParsedSession {
+        records: records.into_values().collect(),
+        pending,
+        ..Default::default()
+    })
+}
+
+/// One record per `shell.turn.inference_done` event.
+///
+/// `prompt_tokens` includes the cached prompt and `completion_tokens` includes
+/// reasoning, so the importer's fresh/cached split is derived here. Events
+/// without any token key are skipped: old log lines only carry timing.
+fn parse_unified_log(path: &Path, _fallback: i64) -> Result<ParsedSession, String> {
+    let mut records = BTreeMap::new();
+    let pending = read_jsonl(path, |_, value| {
+        if value.get("msg").and_then(Value::as_str) != Some("shell.turn.inference_done") {
+            return;
+        }
+        let Some(ctx) = value.get("ctx").filter(|ctx| ctx.is_object()) else {
+            return;
+        };
+        let token_keys = [
+            "prompt_tokens",
+            "cached_prompt_tokens",
+            "completion_tokens",
+            "reasoning_tokens",
+        ];
+        if !token_keys.iter().any(|key| ctx.get(*key).is_some()) {
+            return;
+        }
+        let Some(session) = string(&value, &["/sid"]) else {
+            return;
+        };
+        let Some(created_at) = timestamp(&value) else {
+            return;
+        };
+        let prompt = number(ctx, &["prompt_tokens"]);
+        let cached = number(ctx, &["cached_prompt_tokens"]).min(prompt);
+        let completion = number(ctx, &["completion_tokens"]);
+        let reasoning = number(ctx, &["reasoning_tokens"]).min(completion);
+        let loop_index = ctx.get("loop_index").and_then(Value::as_u64).unwrap_or(0);
+        let attempts = ctx.get("attempts").and_then(Value::as_u64).unwrap_or(0);
+        let usage = TokenUsage {
+            input_tokens: Some(prompt.saturating_sub(cached)),
+            // Reasoning is part of the completion count, not an extra bucket.
+            output_tokens: Some(completion),
+            cache_read_tokens: Some(cached),
+            ..Default::default()
+        };
+        if usage.total_tokens().is_none() {
+            return;
+        }
+        // Same composite identity as tokei: one log can hold several identical
+        // counters, and re-reading the file must map them onto the same rows.
+        let identity = format!(
+            "inference:{created_at}:{loop_index}:{attempts}:{prompt}:{cached}:{completion}:{reasoning}"
+        );
+        let mut record =
+            native_record(GatewayUsageTool::Grok, &session, &identity, None, usage, created_at);
+        record.metadata.granularity = SessionUsageGranularity::Request;
+        record.metadata.call_count = Some(1);
+        records.insert(record.request_id.clone(), record);
     })?;
     Ok(ParsedSession {
         records: records.into_values().collect(),

@@ -27,6 +27,9 @@ struct ModelUsage {
     model: String,
     provider: Option<String>,
     scope: String,
+    /// Hermes ≥ 0.19 splits a session by task; the main loop has an empty task,
+    /// and only the main loop may coexist with the `sessions` rollup.
+    task: String,
     first_seen: Option<i64>,
     snapshot: Snapshot,
     cost_source: String,
@@ -45,6 +48,32 @@ pub(super) fn open_read_only(path: &Path) -> Result<Connection, String> {
         .execute_batch("PRAGMA query_only = ON; BEGIN DEFERRED")
         .map_err(|error| error.to_string())?;
     Ok(source)
+}
+
+/// Every state database under a Hermes root, with the ledger prefix to file
+/// its rows under. Profiles used to be invisible to the importer, so their
+/// usage was silently missing whenever more than one Hermes profile had run.
+///
+/// The root database keeps the bare `hermes` prefix so an existing ledger
+/// continues where it left off; each profile gets its own prefix because
+/// session ids are only unique within one database.
+pub(super) fn database_paths(root: &Path) -> Vec<(std::path::PathBuf, String)> {
+    let mut paths = Vec::new();
+    let root_db = root.join("state.db");
+    if root_db.is_file() {
+        paths.push((root_db, "hermes".to_string()));
+    }
+    if let Ok(entries) = std::fs::read_dir(root.join("profiles")) {
+        for entry in entries.filter_map(Result::ok) {
+            let db = entry.path().join("state.db");
+            if db.is_file() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                paths.push((db, format!("hermes:profile:{name}")));
+            }
+        }
+        paths.sort_by(|left, right| left.0.cmp(&right.0));
+    }
+    paths
 }
 
 pub(super) fn columns(source: &Connection, table: &str) -> Result<HashSet<String>, String> {
@@ -72,7 +101,10 @@ fn read_usage(source: &Connection, table: &str) -> Result<Vec<ModelUsage>, Strin
             fallback.to_string()
         }
     };
-    let model_table = table == "session_model_usage";
+    // `session_model_usage_v21` is the pre-v22 spelling, left behind when the
+    // 0.19 migration aborted on a foreign key. Its columns match the current
+    // table, so it reads through the same path; only the identity differs.
+    let model_table = matches!(table, "session_model_usage" | "session_model_usage_v21");
     let session = if model_table { "session_id" } else { "id" };
     let model = if model_table {
         field("model", "'unknown'")
@@ -147,6 +179,7 @@ fn read_usage(source: &Connection, table: &str) -> Result<Vec<ModelUsage>, Strin
                 model: row.get(1)?,
                 provider: (!provider.is_empty()).then_some(provider),
                 scope,
+                task,
                 first_seen: row.get::<_, Option<f64>>(2)?.map(|value| value as i64),
                 snapshot: Snapshot {
                     tokens: [
@@ -180,6 +213,7 @@ fn read_usage(source: &Connection, table: &str) -> Result<Vec<ModelUsage>, Strin
 pub(super) fn sync_database(
     db: &SqliteDbState,
     path: &Path,
+    source_prefix: &str,
     states: &mut HashMap<String, SourceState>,
     claims: &mut HashMap<String, String>,
     now: i64,
@@ -188,7 +222,30 @@ pub(super) fn sync_database(
         return Ok(Default::default());
     }
     let source = open_read_only(path)?;
-    let mut rows = read_usage(&source, "session_model_usage")?;
+    // Schema v21 rows and current rows can coexist after an interrupted
+    // upgrade: the migration renames the old table before copying it, and a
+    // foreign-key failure leaves both behind. Read both and keep, per full
+    // key, the row with the larger token total — one logical usage row is
+    // never billed twice.
+    let mut rows = Vec::new();
+    for table in ["session_model_usage_v21", "session_model_usage"] {
+        for row in read_usage(&source, table)? {
+            let key = (
+                row.session.clone(),
+                row.model.clone(),
+                row.scope.clone(),
+                row.task.clone(),
+            );
+            let total = |row: &ModelUsage| row.snapshot.tokens.iter().sum::<u64>();
+            match rows.iter_mut().find(|(existing, _)| *existing == key) {
+                // A later table only replaces the row when it holds more.
+                Some((_, existing)) if total(existing) < total(&row) => *existing = row,
+                Some(_) => {}
+                None => rows.push((key, row)),
+            }
+        }
+    }
+    let mut rows = rows.into_iter().map(|(_, row)| row).collect::<Vec<_>>();
     rows.retain(|row| {
         row.snapshot.calls > 0
             || row.snapshot.tokens.iter().any(|value| *value > 0)
@@ -196,7 +253,7 @@ pub(super) fn sync_database(
     });
     let mut continued_legacy = BTreeMap::<String, ModelUsage>::new();
     rows.retain(|row| {
-        let old_source = format!("hermes:{}:unknown:legacy", row.session);
+        let old_source = format!("{source_prefix}:{}:unknown:legacy", row.session);
         if !states
             .get(&old_source)
             .is_some_and(|state| state.cumulative_usage.is_some())
@@ -213,6 +270,7 @@ pub(super) fn sync_database(
                 model: "unknown".into(),
                 provider: None,
                 scope: "legacy".into(),
+                task: String::new(),
                 first_seen: row.first_seen,
                 snapshot: Snapshot {
                     cost: "0".into(),
@@ -239,21 +297,25 @@ pub(super) fn sync_database(
         false
     });
     rows.extend(continued_legacy.into_values());
-    let model_sessions = rows
+    // Fall back to the per-session rollup only for sessions that have no main
+    // loop row (`task = ''`). Schema v22 stores that row itself, so using the
+    // rollup as well would count the session twice.
+    let main_loop_sessions = rows
         .iter()
+        .filter(|row| row.task.is_empty())
         .map(|row| row.session.clone())
         .collect::<HashSet<_>>();
     rows.extend(
         read_usage(&source, "sessions")?
             .into_iter()
-            .filter(|row| !model_sessions.contains(&row.session)),
+            .filter(|row| !main_loop_sessions.contains(&row.session)),
     );
     let mut result = GatewaySessionUsageImportResult {
         scanned_files: 1,
         ..Default::default()
     };
     for mut row in rows {
-        let source_id = format!("hermes:{}:{}:{}", row.session, row.model, row.scope);
+        let source_id = format!("{source_prefix}:{}:{}:{}", row.session, row.model, row.scope);
         let mut state = states.get(&source_id).cloned().unwrap_or_default();
         let previous = state.cumulative_usage.clone().unwrap_or_default();
         if row

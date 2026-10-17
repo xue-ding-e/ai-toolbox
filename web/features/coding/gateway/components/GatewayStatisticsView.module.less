@@ -400,6 +400,21 @@
   }
 }
 
+/* Expanded model row: the four per-million prices that priced this model. */
+.pricingDetail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  align-items: baseline;
+  padding: 2px 4px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.pricingDetailLabel {
+  color: var(--color-text-tertiary);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .refreshButton,
   .spin {

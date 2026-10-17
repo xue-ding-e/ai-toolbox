@@ -18,17 +18,25 @@ use tauri::{Emitter, Manager};
 use walkdir::WalkDir;
 
 mod antigravity;
+mod cmdcode;
+mod codebuddy;
 mod cost_reconciliation;
 mod desktop;
+mod devin;
 mod dsh;
 mod grok;
 mod hermes;
 mod kimi;
+mod minimax;
+mod musecode;
 mod open_claw;
 mod open_code;
 mod parsers;
 mod pi;
+mod prime_agent;
+mod qwencode;
 mod reconciliation;
+mod workbuddy_family;
 mod zcode;
 pub(super) fn mark_archived_contributions(conn: &Connection, cutoff: i64) -> Result<(), String> {
     reconciliation::mark_archived(conn, cutoff)
@@ -515,6 +523,16 @@ fn import_cli_keys(selection: GatewaySessionImportCli) -> Vec<GatewayUsageTool> 
         GatewaySessionImportCli::OpenClaw => vec![GatewayUsageTool::OpenClaw],
         GatewaySessionImportCli::KimiCli => vec![GatewayUsageTool::KimiCli],
         GatewaySessionImportCli::Zcode => vec![GatewayUsageTool::Zcode],
+        GatewaySessionImportCli::Mimocode => vec![GatewayUsageTool::Mimocode],
+        GatewaySessionImportCli::PrimeAgent => vec![GatewayUsageTool::PrimeAgent],
+        GatewaySessionImportCli::Devin => vec![GatewayUsageTool::Devin],
+        GatewaySessionImportCli::Musecode => vec![GatewayUsageTool::Musecode],
+        GatewaySessionImportCli::Cmdcode => vec![GatewayUsageTool::Cmdcode],
+        GatewaySessionImportCli::Qwencode => vec![GatewayUsageTool::Qwencode],
+        GatewaySessionImportCli::Workbuddy => vec![GatewayUsageTool::Workbuddy],
+        GatewaySessionImportCli::WorkbuddyAi => vec![GatewayUsageTool::WorkbuddyAi],
+        GatewaySessionImportCli::Codebuddy => vec![GatewayUsageTool::Codebuddy],
+        GatewaySessionImportCli::Minimax => vec![GatewayUsageTool::Minimax],
     }
 }
 
@@ -620,12 +638,79 @@ fn default_session_roots(db: &SqliteDbState, cli_key: GatewayUsageTool) -> Vec<P
             roots.extend(desktop::official_session_roots());
             return roots;
         }
+        GatewayUsageTool::Mimocode => {
+            roots.extend(mimocode_db_paths());
+            return roots;
+        }
+        GatewayUsageTool::PrimeAgent => {
+            if let Some(home) = dirs::home_dir() {
+                roots.push(home.join(".prime/agent"));
+            }
+            return roots;
+        }
+        GatewayUsageTool::Devin => {
+            if let Some(home) = dirs::home_dir() {
+                let path = home.join(".local/share/devin/cli/sessions.db");
+                if path.is_file() {
+                    roots.push(path);
+                }
+            }
+            return roots;
+        }
+        GatewayUsageTool::Musecode => {
+            if let Some(home) = dirs::home_dir() {
+                roots.push(home.join(".local/share/muse/sessions"));
+            }
+            return roots;
+        }
+        GatewayUsageTool::Cmdcode => {
+            if let Some(home) = dirs::home_dir() {
+                roots.push(home.join(".commandcode/projects"));
+            }
+            return roots;
+        }
+        GatewayUsageTool::Qwencode => {
+            roots.push(qwencode::root());
+            return roots;
+        }
+        GatewayUsageTool::Workbuddy => {
+            if let Some(home) = dirs::home_dir() {
+                roots.push(home.join(".workbuddy/projects"));
+            }
+            return roots;
+        }
+        GatewayUsageTool::WorkbuddyAi => {
+            if let Some(home) = dirs::home_dir() {
+                roots.push(home.join(".workbuddy-ai/projects"));
+            }
+            return roots;
+        }
+        GatewayUsageTool::Codebuddy => {
+            if let Some(home) = dirs::home_dir() {
+                roots.push(home.join(".codebuddy/projects"));
+            }
+            return roots;
+        }
+        GatewayUsageTool::Minimax => {
+            if let Some(home) = dirs::home_dir() {
+                let path = home.join(".minimax/v2/sqlite/runtime-state.sqlite");
+                if path.is_file() {
+                    roots.push(path);
+                }
+            }
+            return roots;
+        }
     };
     if let Some(location) = location {
         if cli_key == GatewayUsageTool::Kimi {
             roots.push(location.host_path.join("store"));
         }
         roots.push(location.host_path.join(suffix));
+        // Grok's per-request token counts live in `logs/unified.jsonl`, not in
+        // the session mirror tree; the mirror is kept for older installs.
+        if cli_key == GatewayUsageTool::Grok {
+            roots.push(location.host_path.join("logs"));
+        }
     }
     if let Some(home) = dirs::home_dir() {
         let default = home.join(home_name).join(suffix);
@@ -643,6 +728,58 @@ fn default_session_roots(db: &SqliteDbState, cli_key: GatewayUsageTool) -> Vec<P
     roots
 }
 
+/// MiMoCode keeps an OpenCode-derived store under a per-platform data
+/// directory: `mimocode.db`, or the newest channel database
+/// `mimocode-<channel>.db`.
+fn mimocode_db_paths() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(home) = std::env::var_os("MIMOCODE_HOME") {
+        dirs.push(PathBuf::from(home).join("data"));
+    } else if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
+        dirs.push(PathBuf::from(xdg).join("mimocode"));
+    } else {
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            dirs.push(PathBuf::from(local).join("mimocode"));
+        }
+        if let Some(roaming) = std::env::var_os("APPDATA") {
+            dirs.push(PathBuf::from(roaming).join("mimocode"));
+        }
+        if let Some(home) = dirs::home_dir() {
+            dirs.push(home.join(".local/share/mimocode"));
+        }
+    }
+    for dir in dirs {
+        let default = dir.join("mimocode.db");
+        if default.is_file() {
+            return vec![default];
+        }
+        let mut channels = std::fs::read_dir(&dir)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .map(|entry| entry.path())
+                    .filter(|path| {
+                        path.file_name()
+                            .and_then(|name| name.to_str())
+                            .is_some_and(|name| {
+                                name.starts_with("mimocode-") && name.ends_with(".db")
+                            })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        channels.sort_by_key(|path| {
+            std::fs::metadata(path)
+                .and_then(|metadata| metadata.modified())
+                .ok()
+        });
+        if let Some(active) = channels.pop() {
+            return vec![active];
+        }
+    }
+    Vec::new()
+}
+
 fn source_identity(cli_key: GatewayUsageTool, path: &Path) -> String {
     if matches!(
         cli_key,
@@ -656,6 +793,7 @@ fn source_identity(cli_key: GatewayUsageTool, path: &Path) -> String {
             | GatewayUsageTool::ClaudeDesktop
             | GatewayUsageTool::OpenClaw
             | GatewayUsageTool::Antigravity
+            | GatewayUsageTool::PrimeAgent
     ) {
         // Generic basenames (audit, updates, wire, session) occur in many
         // directories. The file cursor is physical; invocation IDs are native.
@@ -720,10 +858,16 @@ fn source_identity(cli_key: GatewayUsageTool, path: &Path) -> String {
 }
 
 fn session_files(cli_key: GatewayUsageTool, root: &Path) -> Vec<PathBuf> {
-    // ZCode's "root" is its SQLite database, not a directory of transcripts.
-    // Without this the walk below silently returns nothing and the tool looks
-    // like it has no usage at all.
-    if cli_key == GatewayUsageTool::Zcode {
+    // ZCode/Devin/MiniMax/MiMoCode keep one SQLite database rather than a
+    // transcript tree, so their "root" is that file. Without this the walk
+    // below silently returns nothing and the tool looks like it has no usage.
+    if matches!(
+        cli_key,
+        GatewayUsageTool::Zcode
+            | GatewayUsageTool::Devin
+            | GatewayUsageTool::Minimax
+            | GatewayUsageTool::Mimocode
+    ) {
         return root
             .is_file()
             .then(|| vec![root.to_path_buf()])
@@ -754,10 +898,11 @@ fn session_files(cli_key: GatewayUsageTool, root: &Path) -> Vec<PathBuf> {
                 }
                 GatewayUsageTool::Antigravity => antigravity::is_transcript(&path),
                 GatewayUsageTool::Grok => {
-                    name == "updates.jsonl"
+                    (name == "updates.jsonl"
                         && !path
                             .components()
-                            .any(|part| part.as_os_str() == "subagents")
+                            .any(|part| part.as_os_str() == "subagents"))
+                        || grok::is_unified_log(&path)
                 }
                 GatewayUsageTool::Kimi | GatewayUsageTool::KimiCli => {
                     kimi::is_usage_file(cli_key, &path)
@@ -777,6 +922,17 @@ fn session_files(cli_key: GatewayUsageTool, root: &Path) -> Vec<PathBuf> {
                             relative.starts_with(Path::new("storage").join("message"))
                         })
                 }
+                GatewayUsageTool::PrimeAgent => extension == "jsonl",
+                GatewayUsageTool::Musecode => musecode::is_session_file(&path),
+                GatewayUsageTool::Cmdcode => cmdcode::is_session_file(&path),
+                GatewayUsageTool::Qwencode => qwencode::is_usage_file(&path),
+                GatewayUsageTool::Workbuddy
+                | GatewayUsageTool::WorkbuddyAi
+                | GatewayUsageTool::Codebuddy => extension == "jsonl",
+                // SQLite tools are never reached by this walk.
+                GatewayUsageTool::Devin | GatewayUsageTool::Minimax | GatewayUsageTool::Mimocode => {
+                    false
+                }
             };
             accepted.then_some(path)
         })
@@ -789,6 +945,8 @@ fn session_files(cli_key: GatewayUsageTool, root: &Path) -> Vec<PathBuf> {
         open_claw::canonical_files(files)
     } else if cli_key == GatewayUsageTool::Antigravity {
         antigravity::select_sources(files)
+    } else if cli_key == GatewayUsageTool::PrimeAgent {
+        prime_agent::canonical_files(files)
     } else {
         files
     }
@@ -1057,34 +1215,101 @@ fn sync_sources(
             }
         }
         if *cli_key == GatewayUsageTool::Hermes {
-            match hermes::sync_database(
-                db,
-                &root.join("state.db"),
-                &mut states,
-                &mut claimed_proxies,
-                now,
-            ) {
-                Ok(changes) => result.merge(changes),
-                Err(error) => {
-                    result.failed_files += 1;
-                    failed_tools.insert(*cli_key);
-                    log::warn!("Hermes session usage sync failed: {error}");
+            // Hermes keeps one database per profile beside the root one; a
+            // profile run is invisible if only `state.db` is opened.
+            for (path, source_prefix) in hermes::database_paths(root) {
+                match hermes::sync_database(
+                    db,
+                    &path,
+                    &source_prefix,
+                    &mut states,
+                    &mut claimed_proxies,
+                    now,
+                ) {
+                    Ok(changes) => result.merge(changes),
+                    Err(error) => {
+                        result.failed_files += 1;
+                        failed_tools.insert(*cli_key);
+                        log::warn!(
+                            "Hermes session usage sync failed for {}: {error}",
+                            path.display()
+                        );
+                    }
                 }
             }
         }
-        if *cli_key == GatewayUsageTool::OpenCode {
-            match open_code::sync_database(
-                db,
-                &root.join("opencode.db"),
-                &mut states,
-                &mut claimed_proxies,
-                now,
-            ) {
+        if *cli_key == GatewayUsageTool::Qwencode {
+            // The per-request files and the session rollup must be merged
+            // before import: the rollup only contributes what the request
+            // files do not cover, which a per-file walk cannot see.
+            match qwencode::sync_root(db, root, &mut states, &mut claimed_proxies, now) {
                 Ok(changes) => result.merge(changes),
                 Err(error) => {
                     result.failed_files += 1;
                     failed_tools.insert(*cli_key);
-                    log::warn!("OpenCode session usage sync failed: {error}");
+                    log::warn!("Qwen Code session usage sync failed: {error}");
+                }
+            }
+        }
+        if *cli_key == GatewayUsageTool::Antigravity {
+            match antigravity::sync_databases(db, root, &mut states, &mut claimed_proxies, now) {
+                Ok(changes) => result.merge(changes),
+                Err(error) => {
+                    result.failed_files += 1;
+                    failed_tools.insert(*cli_key);
+                    log::warn!("Antigravity session usage sync failed: {error}");
+                }
+            }
+        }
+        if matches!(
+            *cli_key,
+            GatewayUsageTool::OpenCode
+                | GatewayUsageTool::Mimocode
+                | GatewayUsageTool::Devin
+                | GatewayUsageTool::Minimax
+        ) {
+            // These tools keep usage in SQLite rather than in a transcript
+            // tree; the root resolver points at the database file itself.
+            let (sync, label) = match *cli_key {
+                // OpenCode's root is its data directory; MiMoCode's is the
+                // database file itself.
+                GatewayUsageTool::OpenCode => (
+                    open_code::sync_database(
+                        db,
+                        *cli_key,
+                        &root.join("opencode.db"),
+                        &mut states,
+                        &mut claimed_proxies,
+                        now,
+                    ),
+                    "OpenCode",
+                ),
+                GatewayUsageTool::Mimocode => (
+                    open_code::sync_database(
+                        db,
+                        *cli_key,
+                        root,
+                        &mut states,
+                        &mut claimed_proxies,
+                        now,
+                    ),
+                    "MiMoCode",
+                ),
+                GatewayUsageTool::Devin => (
+                    devin::sync_database(db, root, &mut states, &mut claimed_proxies, now),
+                    "Devin",
+                ),
+                _ => (
+                    minimax::sync_database(db, root, &mut states, &mut claimed_proxies, now),
+                    "MiniMax",
+                ),
+            };
+            match sync {
+                Ok(changes) => result.merge(changes),
+                Err(error) => {
+                    result.failed_files += 1;
+                    failed_tools.insert(*cli_key);
+                    log::warn!("{label} session usage sync failed: {error}");
                 }
             }
         }

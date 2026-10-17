@@ -101,6 +101,7 @@ fn select_aggregate(
 /// is skipped for forks, whose aggregate can include the copied parent history
 /// that the message reader deliberately drops.
 fn session_difference_record(
+    tool: GatewayUsageTool,
     session: &SessionRow,
     aggregate: &SessionAggregate,
     records: &[SessionUsageRecord],
@@ -145,13 +146,9 @@ fn session_difference_record(
             granularity: SessionUsageGranularity::Session,
             ..Default::default()
         },
-        request_id: format!(
-            "SESSION:{}:{}:aggregate",
-            GatewayUsageTool::OpenCode.as_str(),
-            session.id
-        ),
+        request_id: format!("SESSION:{}:{}:aggregate", tool.as_str(), session.id),
         legacy_request_ids: Vec::new(),
-        cli_key: GatewayUsageTool::OpenCode,
+        cli_key: tool,
         // Native session metadata, never a guess from the current settings.
         model: aggregate
             .model
@@ -201,6 +198,7 @@ fn select_sessions(source: &Connection, schema: SessionSchema) -> Result<Vec<Ses
 
 pub(super) fn sync_database(
     db: &SqliteDbState,
+    tool: GatewayUsageTool,
     path: &Path,
     states: &mut HashMap<String, SourceState>,
     claimed_proxies: &mut HashMap<String, String>,
@@ -222,9 +220,9 @@ pub(super) fn sync_database(
     let mut result = GatewaySessionUsageImportResult::default();
     for session in sessions {
         result.scanned_files += 1;
-        let source_id = format!("opencode:session:{}", session.id);
+        let source_id = format!("{}:session:{}", tool.as_str(), session.id);
         let mut state = states.get(&source_id).cloned().unwrap_or_default();
-        let parser_revision = parsers::revision(GatewayUsageTool::OpenCode);
+        let parser_revision = parsers::revision(tool);
         if state.parser_revision == parser_revision
             && state.modified_nanos == session.watermark.max(0) as u64
             && !state.pending
@@ -234,7 +232,7 @@ pub(super) fn sync_database(
         state.parser_revision = parser_revision;
         state.modified_nanos = session.watermark.max(0) as u64;
         state.pending = false;
-        let parsed = read_session(&source, schema, &session)?;
+        let parsed = read_session(tool, &source, schema, &session)?;
         state.pending = parsed.pending;
         let mut records = parsed.records;
         super::adopt_known_records(&mut state, &mut records, states);
@@ -247,6 +245,7 @@ pub(super) fn sync_database(
 }
 
 fn read_session(
+    tool: GatewayUsageTool,
     source: &Connection,
     schema: SessionSchema,
     session: &SessionRow,
@@ -312,7 +311,7 @@ fn read_session(
             continue;
         }
         if let Some(record) = parsers::parse_value(
-            GatewayUsageTool::OpenCode,
+            tool,
             &value,
             &session.id,
             0,
@@ -328,7 +327,7 @@ fn read_session(
         match select_aggregate(source, &session.id) {
             Ok(Some(aggregate)) => {
                 if let Some(record) =
-                    session_difference_record(session, &aggregate, &parsed.records)
+                    session_difference_record(tool, session, &aggregate, &parsed.records)
                 {
                     parsed.records.push(record);
                 }
@@ -340,13 +339,16 @@ fn read_session(
     Ok(parsed)
 }
 
-pub(super) fn cost_records(path: &Path) -> Result<Vec<SessionUsageRecord>, String> {
+pub(super) fn cost_records(
+    tool: GatewayUsageTool,
+    path: &Path,
+) -> Result<Vec<SessionUsageRecord>, String> {
     let source = super::hermes::open_read_only(path)?;
     let schema = SessionSchema::detect(&source)?;
     let mut records = Vec::new();
     for session in select_sessions(&source, schema)? {
         // Unfinished messages do not prevent pricing completed, committed ones.
-        records.extend(read_session(&source, schema, &session)?.records);
+        records.extend(read_session(tool, &source, schema, &session)?.records);
     }
     Ok(records)
 }
