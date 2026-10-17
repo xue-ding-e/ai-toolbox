@@ -646,6 +646,15 @@ impl CompactionStreamSummary {
                 self.terminal = true;
                 self.failed = true;
             }
+            // A cancelled turn is a failure the same way `is_failed` reads it
+            // on the HTTP side (`status: canceled/cancelled`): the upstream
+            // stopped early, which is transient for native support — it must
+            // end the turn (otherwise the relay waits for a terminal that
+            // already passed) and must not be remembered as a refusal.
+            Some("response.cancelled") | Some("response.canceled") => {
+                self.terminal = true;
+                self.failed = true;
+            }
             _ => {}
         }
     }

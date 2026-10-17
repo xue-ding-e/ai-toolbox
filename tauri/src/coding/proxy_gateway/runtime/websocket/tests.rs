@@ -845,6 +845,15 @@ async fn websocket_compaction_refusal_memory_ignores_incomplete_snapshot() {
 }
 
 #[tokio::test]
+async fn websocket_compaction_refusal_memory_ignores_cancelled_event() {
+    // A dedicated `response.cancelled` event (no completed snapshot carrying a
+    // status) must end the turn and count as transient, the same way
+    // `is_failed` reads `canceled`/`cancelled` on the HTTP side.
+    assert_websocket_compaction_refusal_memory(json!({"type":"response.cancelled",
+        "response":{"id":"resp_probe_first","status":"cancelled"}}), true).await;
+}
+
+#[tokio::test]
 async fn websocket_compaction_refusal_memory_keeps_ordinary_refusal() {
     assert_websocket_compaction_refusal_memory(json!({"type":"response.completed",
         "response":{"id":"resp_probe_first","status":"completed","output":[{
