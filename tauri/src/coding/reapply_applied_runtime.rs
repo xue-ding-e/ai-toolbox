@@ -238,6 +238,10 @@ fn wsl_module_for_reapply_label(label: &str) -> Option<&'static str> {
         "grok" => Some("grok"),
         "kimi" => Some("kimi"),
         "gemini" => Some("geminicli"),
+        // `ALL_WSL_FILE_MODULES` carries "antigravity": without this arm a
+        // restore would re-apply the config but silently skip the follow-up
+        // WSL sync for it (the label→module lookup falls through to None).
+        "antigravity" => Some("antigravity"),
         "opencode" | "oh-my-openagent" | "oh-my-opencode-slim" => Some("opencode"),
         "pi" => Some("pi"),
         "oh_my_pi" => Some("oh_my_pi"),
@@ -1288,6 +1292,10 @@ mod tests {
             Some("opencode")
         );
         assert_eq!(wsl_module_for_reapply_label("pi"), Some("pi"));
+        assert_eq!(
+            wsl_module_for_reapply_label("antigravity"),
+            Some("antigravity")
+        );
     }
 
     #[test]

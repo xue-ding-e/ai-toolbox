@@ -34,7 +34,11 @@ pub const OMO_EXTENSION_SPEC: CliExtensionSpec = CliExtensionSpec {
     extensions_dir: "extensions",
     // 本机两个 CLI 的内置扩展前缀相同；`omo` 侧暂无自己的内置包。
     protected_prefixes: &["pi-deck-", "ai-toolbox-"],
-    resource_type_keys: &["extensions", "skills", "prompts", "themes"],
+    // senpi 引擎的包加载器认第五类资源 `hooks`（`RESOURCE_TYPES2`，文件模式
+    // `*.json`）；Pi 的 package-manager 只有四类。判「整包不加载」与禁用写
+    // `[]` 都必须带上它，否则只含 hooks 的包会被误判已禁用、禁用后 hooks
+    // 仍在加载。
+    resource_type_keys: &["extensions", "skills", "prompts", "themes", "hooks"],
     scan_timeout: std::time::Duration::from_secs(20),
     wsl_sync_event: "wsl-sync-request-omo-native",
 };
@@ -104,9 +108,9 @@ async fn resolve_context(db: &SqliteDbState) -> Result<OmoExtensionContext, Stri
     })?;
     Ok(OmoExtensionContext {
         program: shared::ResolvedCliProgram { path: program.path },
-        settings_path: runtime_location
-            .host_path
-            .join(super::constants::OMO_NATIVE_SETTINGS_FILE),
+        settings_path: runtime_location.host_path.join(
+            super::providers::resolve_omo_native_settings_file_name(&runtime_location.host_path),
+        ),
         runtime_location,
     })
 }

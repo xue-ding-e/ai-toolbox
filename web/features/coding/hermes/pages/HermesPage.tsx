@@ -1990,6 +1990,7 @@ const HermesPage: React.FC = () => {
           open={importModalOpen}
           onClose={() => setImportModalOpen(false)}
           onImport={handleImportFavoriteProviders}
+          toolName="Hermes"
           existingProviderIds={existingFavoriteProviderIds}
           providerFilter={(provider) => isFavoriteProviderForSource('hermes', provider)}
         />

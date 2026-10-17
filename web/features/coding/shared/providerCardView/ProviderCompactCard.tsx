@@ -109,6 +109,20 @@ interface ProviderCompactCardProps {
   subtitle?: { label: string; value: string }[];
   /** Same object the list card receives. */
   providerState?: ProviderCardState;
+  /**
+   * Whether this cell is a locate target, i.e. `data-provider-id` is written.
+   * Off for members that are not providers (ZCode's official-account cell
+   * registers under a card id no locate query should ever answer to — with
+   * the attribute present, "locate" on an applied account found a card the
+   * page had deliberately excluded, then reported "nothing applied" while an
+   * applied cell sat on screen).
+   */
+  locateAnchor?: boolean;
+  /**
+   * Stable test hook distinguishing non-provider members, since they carry no
+   * `data-provider-id` to query. Rendered as `data-provider-kind`.
+   */
+  memberKind?: string;
   /** Same object the list card receives. */
   actions?: ProviderCardActions;
   /**
@@ -194,6 +208,10 @@ const ProviderCompactCard: React.FC<ProviderCompactCardProps> = ({
   provider,
   subtitle,
   providerState,
+  // Every provider cell is a locate target; only explicit non-provider
+  // members (official-account managers) pass `false`.
+  locateAnchor = true,
+  memberKind,
   actions,
   namePrefix,
   nameTags,
@@ -297,7 +315,13 @@ const ProviderCompactCard: React.FC<ProviderCompactCardProps> = ({
     // The ref is attached even when dragging is off: dnd-kit measures the node
     // to compute transforms, and an unregistered node cannot be dragged the
     // moment the parent re-enables it.
-    <div ref={setNodeRef} data-provider-id={sortableId} className={styles.cardOuter} style={style}>
+    <div
+      ref={setNodeRef}
+      data-provider-id={locateAnchor ? sortableId : undefined}
+      data-provider-kind={memberKind}
+      className={styles.cardOuter}
+      style={style}
+    >
       <div
         className={styles.card}
         style={{ borderColor, background }}

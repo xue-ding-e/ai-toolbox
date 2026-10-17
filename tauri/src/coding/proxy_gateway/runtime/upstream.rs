@@ -1211,14 +1211,16 @@ async fn forward_to_upstream(
     // Catalog filtering (issue #414) only engages when at least one candidate
     // declares a catalog at all. A provider without one declares nothing, and
     // treating that as "serves nothing" would refuse every request for every
-    // CLI whose config carries no model catalog (Claude, Grok, …). Requiring a
+    // CLI whose config carries no model catalog (Claude, Gemini, …). Requiring a
     // maintained catalog somewhere keeps those deployments on the old behavior.
     //
     // This guard deliberately looks at `declared_models` only, *not* at
     // `default_model`, even though the skip predicate below counts both. Every
     // provider carries some default model (Grok hardcodes `grok-build`, Kimi
     // and Codex read their own config), so widening the guard would arm the
-    // filter for exactly the catalog-less CLIs it exists to protect.
+    // filter for exactly the catalog-less CLIs it exists to protect. (Kimi and
+    // Grok configs do carry `modelCatalog.models`, so they are protected by the
+    // same-source `default_model` branch instead, not by this guard.)
     let any_candidate_declares_models = settings.skip_undeclared_models
         && providers
             .iter()
@@ -2508,7 +2510,9 @@ async fn build_gateway_response(
             provider.meta.provider_type.as_deref(),
             &body,
         );
-        let served_tier = served_service_tier(&body).map(ToString::to_string);
+        // Pre-conversion body, same reason as the non-streaming branch below:
+        // the tier echo lives in the upstream dialect, not the converted one.
+        let served_tier = served_service_tier(&target_response_body).map(ToString::to_string);
 
         // Aggregation decided how the *upstream* answer is read, not how the
         // client-facing reply is rendered: a compaction turn whose client asked
@@ -2804,7 +2808,11 @@ async fn build_gateway_response(
         provider.meta.provider_type.as_deref(),
         &body,
     );
-    let served_tier = served_service_tier(&body).map(ToString::to_string);
+    // Read the tier off the *pre-conversion* upstream body: cross-protocol
+    // conversion re-renders the body in the client's dialect and the IR has no
+    // `service_tier` response field, so the converted body would silently drop
+    // the upstream's echo.
+    let served_tier = served_service_tier(&upstream_response_body).map(ToString::to_string);
     let stored_upstream_response_body =
         (upstream_response_body != body).then_some(upstream_response_body);
     let stored_upstream_response_body_bytes = stored_upstream_response_body
@@ -3928,6 +3936,10 @@ struct OpenAiChatSseAggregate {
     model: Option<String>,
     system_fingerprint: Option<Value>,
     usage: Option<Value>,
+    /// Last premium service tier a Chat chunk confirmed (last-wins). Rendered
+    /// into the aggregated body so the tier reader finds it before any
+    /// cross-protocol conversion re-renders the body.
+    service_tier: Option<String>,
     choices: HashMap<i64, OpenAiChatChoiceAggregate>,
 }
 
@@ -3999,6 +4011,9 @@ impl OpenAiChatSseAggregate {
         self.capture_top_level_fields(&value);
         if let Some(usage) = value.get("usage").filter(|usage| !usage.is_null()) {
             self.usage = Some(usage.clone());
+        }
+        if let Some(tier) = served_service_tier(data.as_bytes()) {
+            self.service_tier = Some(tier.to_string());
         }
         let Some(choices) = value.get("choices").and_then(Value::as_array) else {
             return;
@@ -4092,6 +4107,9 @@ impl OpenAiChatSseAggregate {
         response.insert("choices".to_string(), Value::Array(choices));
         if let Some(usage) = self.usage {
             response.insert("usage".to_string(), usage);
+        }
+        if let Some(service_tier) = self.service_tier {
+            response.insert("service_tier".to_string(), Value::String(service_tier));
         }
         if let Some(system_fingerprint) = self.system_fingerprint {
             response.insert("system_fingerprint".to_string(), system_fingerprint);
@@ -4950,7 +4968,15 @@ fn buffered_gateway_response(
         provider.meta.provider_type.as_deref(),
         &body,
     );
-    let served_tier = served_service_tier(&body).map(ToString::to_string);
+    // Prefer the pre-conversion upstream body for the tier echo: the callers
+    // that converted the body already pass the original in
+    // `upstream_response_body`, and the converted client body may be in a
+    // dialect the tier reader cannot parse.
+    let served_tier = upstream_response_body
+        .as_deref()
+        .or(Some(body.as_slice()))
+        .and_then(served_service_tier)
+        .map(ToString::to_string);
     let upstream_response_body_bytes = upstream_response_body
         .as_ref()
         .map(|body| body.len() as u64)
@@ -6076,7 +6102,17 @@ fn is_undeclared_model_skip(
         .declared_models
         .iter()
         .any(|declared| declared == upstream_model_id)
-        || provider.model_mapping.default_model.as_deref() == Some(upstream_model_id);
+        || provider.model_mapping.default_model.as_deref() == Some(upstream_model_id)
+        // A provider whose auto-review override resolves to this model serves
+        // it by explicit configuration (`settingsConfig.autoReviewModelOverride`
+        // takes precedence over `default_model` when the gateway rewrites an
+        // auto-review turn) — skipping it would refuse a model the site was
+        // explicitly set up to serve.
+        || provider
+            .model_mapping
+            .auto_review_model
+            .as_deref()
+            .is_some_and(|model| model == upstream_model_id);
     !declares
 }
 
@@ -14401,6 +14437,33 @@ data: {data}\r\n\r\n"
         ));
     }
 
+    /// An auto-review turn resolves its model from the provider's
+    /// `autoReviewModelOverride` first (`resolve_upstream_model_id`), so a
+    /// provider configured that way serves a model neither its declared
+    /// catalog nor its default names. Skipping it would 503 a site that was
+    /// explicitly set up to run auto-review.
+    #[test]
+    fn undeclared_model_skip_accepts_the_auto_review_override() {
+        let mut provider = declaring_provider("review-site", &["gpt-5.6-luna"]);
+        provider.model_mapping.default_model = Some("qwen3-coder".to_string());
+        provider.model_mapping.auto_review_model = Some("gpt-5-auto".to_string());
+
+        assert!(!is_undeclared_model_skip(
+            true,
+            true,
+            &provider,
+            "gpt-5-auto"
+        ));
+        // The union only widens: everything not named by any of the three
+        // sources is still skipped.
+        assert!(is_undeclared_model_skip(
+            true,
+            true,
+            &provider,
+            "gpt-5.6-astra"
+        ));
+    }
+
     #[test]
     fn forced_service_tier_fills_a_request_that_asked_for_standard() {
         let meta = service_tier_meta("gpt-5.6-sol", "priority");
@@ -17946,7 +18009,7 @@ data: {data}\r\n\r\n"
     async fn openai_chat_sse_aggregate_builds_chat_completion_json() {
         let sse = concat!(
             "data: {\"id\":\"chatcmpl_1\",\"object\":\"chat.completion.chunk\",\"created\":123,\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"reasoning_content\":\"think \",\"content\":\"hel\",\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"query\\\":\"}}]}}]}\n\n",
-            "data: {\"id\":\"chatcmpl_1\",\"object\":\"chat.completion.chunk\",\"created\":123,\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"done\",\"content\":\"lo\",\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"rust\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":5,\"total_tokens\":8}}\n\n",
+            "data: {\"id\":\"chatcmpl_1\",\"object\":\"chat.completion.chunk\",\"created\":123,\"model\":\"gpt-4o\",\"service_tier\":\"priority\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"done\",\"content\":\"lo\",\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"rust\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":5,\"total_tokens\":8}}\n\n",
             "data: [DONE]\n\n"
         );
         let stream = Box::pin(futures_util::stream::iter(vec![Ok(sse
@@ -17964,6 +18027,9 @@ data: {data}\r\n\r\n"
         assert_eq!(value["created"], 123);
         assert_eq!(value["model"], "gpt-4o");
         assert_eq!(value["usage"]["total_tokens"], 8);
+        // The upstream's tier echo must survive aggregation so the served-tier
+        // reader finds it on the pre-conversion body.
+        assert_eq!(value["service_tier"], "fast");
         assert_eq!(value["choices"][0]["finish_reason"], "tool_calls");
         assert_eq!(value["choices"][0]["message"]["role"], "assistant");
         assert_eq!(value["choices"][0]["message"]["content"], "hello");

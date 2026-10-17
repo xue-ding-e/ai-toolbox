@@ -911,6 +911,13 @@ impl PendingTurn {
                                 | "websocket_peer_timeout",
                             ) => GatewayFailureKind::Timeout,
                             Some("upstream_disconnected") => GatewayFailureKind::Connection,
+                            // A model lock is about the connection, not the
+                            // model: `finish_all` also reaches turns whose lane
+                            // was never hit by the lock's stream id, and those
+                            // must not be scored as the locked model's 5xx.
+                            Some("websocket_model_locked") => {
+                                GatewayFailureKind::UpstreamModelLocked
+                            }
                             _ => GatewayFailureKind::Upstream5xx,
                         }),
                     )

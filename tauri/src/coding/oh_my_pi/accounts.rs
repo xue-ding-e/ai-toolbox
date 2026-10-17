@@ -402,8 +402,10 @@ fn open_native_readonly(root: &Path) -> Result<Connection, String> {
 struct UsageCredentials {
     access: String,
     account_id: String,
+    // The native credential stores the plan type under the `orgName` key
+    // (registry/oauth/openai-codex.ts: orgId=accountId, orgName=planType).
     #[serde(rename = "orgName")]
-    plan: Option<String>,
+    plan_type: Option<String>,
 }
 
 fn usage_credentials(root: &Path, target: &str) -> Result<UsageCredentials, String> {
@@ -557,7 +559,7 @@ pub async fn get_omp_codex_account_usage(
         state.db(),
         credentials.access.trim(),
         Some(&credentials.account_id),
-        credentials.plan.as_deref(),
+        credentials.plan_type.as_deref(),
     )
     .await
     .map_err(|_| "Unable to query Codex quota. Check the connection or authenticate again in OMP, then retry manually.")?;
@@ -869,7 +871,7 @@ mod tests {
         let credentials = usage_credentials(dir.path(), "1").unwrap();
         assert_eq!(credentials.access, "synthetic-access");
         assert_eq!(credentials.account_id, "synthetic-account");
-        assert_eq!(credentials.plan.as_deref(), Some("prolite"));
+        assert_eq!(credentials.plan_type.as_deref(), Some("prolite"));
         assert_eq!(rows(&conn), before);
         assert_eq!(
             conn.query_row("SELECT revision FROM auth_change_revision", [], |r| r

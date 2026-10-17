@@ -7621,3 +7621,88 @@ fn response_matrix_responses_to_gemini_uses_new_kernel() {
     );
     assert_eq!(converted["usageMetadata"]["promptTokenCount"], 10);
 }
+
+#[test]
+fn chat_stream_tier_echo_survives_conversion_to_responses() {
+    // A Chat-type relay echoes `service_tier` on its final chunk. Codex speaks
+    // Responses, so the gateway converts the stream — the tier must re-appear
+    // in the synthesized `response.completed` snapshot or billing falls back to
+    // the requested tier (issue: served tier read off the converted body).
+    let output = collect_stream(
+        ConversionRoute::new(AiProtocol::OpenAiChat, AiProtocol::OpenAiResponses),
+        [
+            r#"data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"gpt-5","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"},"finish_reason":null}]}
+
+"#,
+            r#"data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"gpt-5","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"service_tier":"priority"}
+
+"#,
+            "data: [DONE]\n\n",
+        ]
+        .concat(),
+    );
+    let values = sse_data_values(&output);
+    let completed = values
+        .iter()
+        .rev()
+        .find(|value| value.get("type").and_then(Value::as_str) == Some("response.completed"))
+        .expect("converted stream must end with response.completed");
+    assert_eq!(
+        completed
+            .pointer("/response/service_tier")
+            .and_then(Value::as_str),
+        Some("fast"),
+        "tier echo must survive Chat->Responses stream conversion; output={output}"
+    );
+}
+
+#[test]
+fn responses_stream_tier_echo_survives_conversion_to_chat() {
+    let output = collect_stream(
+        ConversionRoute::new(AiProtocol::OpenAiResponses, AiProtocol::OpenAiChat),
+        [
+            r#"event: response.created
+data: {"type":"response.created","response":{"id":"resp_1","model":"gpt-5"}}
+
+"#,
+            r#"event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"hi","item_id":"msg_1","output_index":0,"content_index":0}
+
+"#,
+            r#"event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_1","model":"gpt-5","status":"completed","service_tier":"ultrafast","usage":{"input_tokens":5,"output_tokens":2,"total_tokens":7}}}
+
+"#,
+        ]
+        .concat(),
+    );
+    let values = sse_data_values(&output);
+    let tier_chunk = values
+        .iter()
+        .rev()
+        .find(|value| value.get("service_tier").is_some())
+        .unwrap_or_else(|| panic!("Chat target must re-render the tier echo; output={output}"));
+    assert_eq!(
+        tier_chunk.get("service_tier").and_then(Value::as_str),
+        Some("ultrafast")
+    );
+    // A `default` echo is not a premium confirmation and must not be rendered.
+    let output = collect_stream(
+        ConversionRoute::new(AiProtocol::OpenAiResponses, AiProtocol::OpenAiChat),
+        [
+            r#"event: response.created
+data: {"type":"response.created","response":{"id":"resp_1","model":"gpt-5"}}
+
+"#,
+            r#"event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_1","model":"gpt-5","status":"completed","service_tier":"default"}}
+
+"#,
+        ]
+        .concat(),
+    );
+    assert!(
+        !output.contains("service_tier"),
+        "a default echo is not a premium confirmation; output={output}"
+    );
+}

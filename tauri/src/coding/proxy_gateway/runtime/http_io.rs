@@ -825,7 +825,13 @@ async fn write_streaming_body(
 
     if let Some(cli_key) = response.cli_key {
         // The collector is consumed by `finish`, so read the confirmed tier first.
-        response.served_service_tier = usage_collector.service_tier().map(ToString::to_string);
+        // Keep a pre-read tier (a buffered reply re-rendered as SSE, e.g. a
+        // remote-compaction summary, whose upstream body was already parsed
+        // for the tier) when the stream itself carried no tier events.
+        let streamed_tier = usage_collector.service_tier().map(ToString::to_string);
+        if streamed_tier.is_some() || response.served_service_tier.is_none() {
+            response.served_service_tier = streamed_tier;
+        }
         response.token_usage = usage_collector.finish(cli_key);
     }
     response.stream_outcome = outcome;

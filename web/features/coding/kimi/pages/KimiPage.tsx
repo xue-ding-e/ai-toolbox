@@ -214,10 +214,13 @@ const KimiPage: React.FC = () => {
 
   // Alias keys of the applied provider's catalog — the options the swarm pool
   // may reference, since a pool key must resolve to a projected [models.<key>].
-  const appliedModelAliasKeys = React.useMemo(() => {
+  // `undefined` (no applied provider, or only the `__local__` bridge) means
+  // the catalog is UNKNOWN, not known-empty: the validator skips the
+  // resolvability check instead of blocking every pool save.
+  const appliedModelAliasKeys = React.useMemo((): string[] | undefined => {
     const appliedProvider = providers.find((provider) => provider.id === appliedProviderId);
     if (!appliedProvider) {
-      return [];
+      return undefined;
     }
     return parseKimiSettingsConfig(appliedProvider.settingsConfig)
       .catalogModels.map((model) => model.key.trim())

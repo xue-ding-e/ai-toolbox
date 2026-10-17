@@ -2159,6 +2159,7 @@ const GrokPage: React.FC = () => {
           open={importModalOpen}
           onClose={() => setImportModalOpen(false)}
           onImport={handleImportFavoriteProviders}
+          toolName="Grok"
           existingProviderIds={providers.map((provider) => buildFavoriteProviderStorageKey('grok', provider.id))}
           providerFilter={(provider) => isFavoriteProviderForSource('grok', provider)}
         />

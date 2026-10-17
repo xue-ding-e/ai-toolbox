@@ -1785,6 +1785,26 @@ pub async fn get_antigravity_settings_path_async(
         .join("settings.json"))
 }
 
+/// Antigravity CLI's skills dir: `<root>/skills`, following the custom root /
+/// `ANTIGRAVITY_CLI_HOME` overrides the module honors. In WSL Direct the
+/// effective root is the Linux one, so the UNC translation comes from the
+/// location's WSL arm rather than from `~` expansion.
+fn get_antigravity_cli_skills_path_from_location(location: &RuntimeLocationInfo) -> PathBuf {
+    if let Some(wsl) = &location.wsl {
+        let linux_skills_path = if location.source == "default" {
+            expand_home_from_user_root(
+                wsl.linux_user_root.as_deref(),
+                "~/.gemini/antigravity-cli/skills",
+            )
+        } else {
+            format!("{}/skills", wsl.linux_path.trim_end_matches('/'))
+        };
+        build_windows_unc_path(&wsl.distro, &linux_skills_path)
+    } else {
+        location.host_path.join("skills")
+    }
+}
+
 /// Global rules file managed by AI Toolbox for `agy`.
 ///
 /// This is NOT derived from the runtime root directory: `agy` reads global
@@ -2013,6 +2033,9 @@ pub fn get_tool_skills_path_sync(db: &crate::db::SqliteDbState, tool_key: &str) 
         "gemini_cli" => get_gemini_cli_runtime_location_sync(db)
             .ok()
             .map(|location| get_gemini_cli_skills_path_from_location(&location)),
+        "antigravity_cli" => get_antigravity_runtime_location_sync(db)
+            .ok()
+            .map(|location| get_antigravity_cli_skills_path_from_location(&location)),
         "hermes" => Some(
             get_cached_or_fallback_runtime_location("hermes")
                 .host_path
@@ -2151,6 +2174,10 @@ pub async fn get_tool_skills_path_async(
             .await
             .ok()
             .map(|location| get_gemini_cli_skills_path_from_location(&location)),
+        "antigravity_cli" => get_antigravity_runtime_location_async(db)
+            .await
+            .ok()
+            .map(|location| get_antigravity_cli_skills_path_from_location(&location)),
         "hermes" => get_cached_or_refresh_runtime_location_async(db, "hermes")
             .await
             .ok()

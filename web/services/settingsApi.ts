@@ -164,6 +164,17 @@ export interface AppSettings {
   /** Windows terminal preference for the Claude CLI launch: `cmd` | `powershell` | `wt` | `gitbash`. */
   preferred_terminal: string | null;
   cli_manual_paths: Record<string, string>;
+  /**
+   * Provider list sort mode per coding module ("custom" | "recent" |
+   * "created" | "name"). Mirrors the Rust `AppSettings` field; missing here a
+   * full-settings read/write cycle would drop the stored preferences (the
+   * transient read falls back to defaults and the write persists them).
+   */
+  provider_sort_modes: Record<string, string>;
+  /** Last-used RFC3339 timestamp per provider, keyed `<module_key>:<provider_id>`. */
+  provider_last_used: Record<string, string>;
+  /** Provider list layout per coding module ("list" | "card"). */
+  provider_view_modes: Record<string, string>;
 }
 
 // Default settings
@@ -232,6 +243,9 @@ export const defaultSettings: AppSettings = {
   claude_cli_launch_full_access: false,
   preferred_terminal: null,
   cli_manual_paths: {},
+  provider_sort_modes: {},
+  provider_last_used: {},
+  provider_view_modes: {},
 };
 
 /**
@@ -265,6 +279,9 @@ export const getSettings = async (): Promise<AppSettings> => {
         settings.sidebar_hidden_by_page ?? settings.sidebar_visibility_by_page
       ),
       cli_manual_paths: settings.cli_manual_paths ?? {},
+      provider_sort_modes: settings.provider_sort_modes ?? {},
+      provider_last_used: settings.provider_last_used ?? {},
+      provider_view_modes: settings.provider_view_modes ?? {},
     };
     lastKnownSettings = normalized;
     return normalized;

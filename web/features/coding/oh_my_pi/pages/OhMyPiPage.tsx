@@ -842,10 +842,6 @@ const OhMyPiPage: React.FC = () => {
     };
   }, [connectivityProviderId, ompProviders]);
 
-  const translateRuntimeLabel = React.useCallback((prefix: string, value: string): string => (
-    t(`${prefix}.${value}`, { defaultValue: value })
-  ), [t]);
-
   const upsertOmpFavoriteProvider = React.useCallback(async (
     providerKey: string,
     modelsProvider: Record<string, unknown>,
@@ -1904,7 +1900,10 @@ const OhMyPiPage: React.FC = () => {
       name: isSubscription ? provider.displayName + ' · ' + t('ohMyPi.subscription.yamlOverride') : provider.displayName,
       sdkName: getStringField(providerConfig, 'api') || provider.categories.join(', ') || 'omp',
       baseUrl: providerBaseUrl
-        || provider.sources.map((source) => translateRuntimeLabel('ohMyPi.sourceLabels', source)).join(' / ')
+        // Inline template (not via a prefix-taking helper) so the i18n key
+        // scanner sees `ohMyPi.sourceLabels.` as a live dynamic prefix — the
+        // helper indirection once hid it and `i18n:prune` deleted live copy.
+        || provider.sources.map((source) => t(`ohMyPi.sourceLabels.${source}`, { defaultValue: source })).join(' / ')
         || t('ohMyPi.provider.builtinHint'),
     };
     const modelDisplayList: ModelDisplayData[] = getProviderModelRecords(provider.modelsProvider).map((entry) => ({

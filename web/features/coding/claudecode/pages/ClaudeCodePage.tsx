@@ -1564,6 +1564,7 @@ const ClaudeCodePage: React.FC = () => {
           open={importModalOpen}
           onClose={() => setImportModalOpen(false)}
           onImport={handleImportFavoriteProviders}
+          toolName="Claude Code"
           existingProviderIds={providers.map((provider) => buildFavoriteProviderStorageKey('claudecode', provider.id))}
           providerFilter={(provider) => isFavoriteProviderForSource('claudecode', provider)}
         />

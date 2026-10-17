@@ -12,12 +12,18 @@ export interface AuthConfigModalProps {
   /** 文件在磁盘上的位置，只用于在弹窗底部显示。 */
   path?: string;
   /**
-   * 落盘。**整份覆盖**——用户在编辑器里删掉一个渠道就是要删掉它。
+   * 落盘。第二个参数是**打开瞬间解析出的原始对象**：后端靠它做条目级合并
+   * ——用户没动过的条目保留磁盘现值（OpenCode CLI 在编辑期间刷新的 token
+   * 不会被旧副本覆盖），改过的写新值，删掉的才删。不做条目级合并的消费者
+   * （如 OmO 的整份覆盖语义）忽略它即可。
    *
    * 各 CLI 的凭据语义不同（OmO 的值是 config value 语法、需要转义；OpenCode 的
    * 是字面量），所以转义与写入都在各自的后端命令里，这个组件不碰。
    */
-  onSave: (config: Record<string, unknown>) => Promise<void>;
+  onSave: (
+    config: Record<string, unknown>,
+    original: Record<string, unknown>,
+  ) => Promise<void>;
   onCancel: () => void;
   /** 保存成功后的刷新回调（重读配置 + 重查依赖凭据的列表）。 */
   onSaved: () => Promise<void> | void;
@@ -46,6 +52,10 @@ const AuthConfigModal: React.FC<AuthConfigModalProps> = ({
   const { t } = useTranslation();
   const { message } = App.useApp();
   const [value, setValue] = React.useState<Record<string, unknown>>({});
+  const [openedValue, setOpenedValue] = React.useState<Record<string, unknown>>({});
+  // 磁盘原文解析失败时置位：此时 openedValue 不可信，且 value 为空的保存
+  // 会整份清掉凭据文件，必须拦下（用户手输一份完整 JSON 重写仍被允许）。
+  const [openedUnparseable, setOpenedUnparseable] = React.useState(false);
   const [valid, setValid] = React.useState(true);
   const [saving, setSaving] = React.useState(false);
 
@@ -54,17 +64,23 @@ const AuthConfigModal: React.FC<AuthConfigModalProps> = ({
   React.useEffect(() => {
     if (!open) return;
     let parsed: Record<string, unknown> = {};
+    let unparseable = false;
     if (content?.trim()) {
       try {
         const candidate = JSON.parse(content);
         if (candidate && typeof candidate === 'object' && !Array.isArray(candidate)) {
           parsed = candidate as Record<string, unknown>;
+        } else {
+          unparseable = true;
         }
       } catch (error) {
         console.error('Failed to parse auth.json:', error);
+        unparseable = true;
       }
     }
     setValue(parsed);
+    setOpenedValue(parsed);
+    setOpenedUnparseable(unparseable);
     setValid(true);
   }, [open, content]);
 
@@ -73,9 +89,15 @@ const AuthConfigModal: React.FC<AuthConfigModalProps> = ({
       message.error(t('common.jsonInvalid'));
       return;
     }
+    // 磁盘原文坏到解析不出对象、编辑器又没被手填内容时，原样保存只会把凭据
+    // 文件整份清空——宁可拦下让用户先修复 JSON。
+    if (openedUnparseable && Object.keys(value).length === 0) {
+      message.error(t('common.authConfig.unparseableBlocked'));
+      return;
+    }
     setSaving(true);
     try {
-      await onSave(value);
+      await onSave(value, openedValue);
       message.success(t('common.success'));
       // 落盘成功后**立刻关弹窗**，刷新放后台跑。
       //

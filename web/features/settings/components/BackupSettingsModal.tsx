@@ -40,6 +40,10 @@ import {
   type BackupRepositoryConfigFE,
 } from '@/services';
 import { ManagementSegmented } from '@/features/coding/shared/management';
+import {
+  findRustRegexIncompatibility,
+  type RustRegexIssue,
+} from '../utils/rustRegexCompat';
 import ScrollFadeHint from './ScrollFadeHint';
 import styles from './BackupSettingsModal.module.less';
 
@@ -70,6 +74,19 @@ interface RepositoryFormValues {
 }
 
 const TOOL_ORDER = ['opencode', 'claude', 'claude_desktop', 'codex', 'grok', 'geminicli', 'antigravity', 'zcode', 'kimi', 'openclaw', 'pi', 'oh_my_pi', 'omo_native', 'hermes', 'dsh'];
+
+// Static keys (not template literals) so the i18n key scanner sees every one.
+const EXCLUDE_PATTERN_ISSUE_MESSAGE_KEYS: Record<RustRegexIssue, string> = {
+  lookAround: 'settings.backupSettings.customEntries.excludePatternUnsupported.lookAround',
+  backreference: 'settings.backupSettings.customEntries.excludePatternUnsupported.backreference',
+  namedBackreference:
+    'settings.backupSettings.customEntries.excludePatternUnsupported.namedBackreference',
+  subroutineCall:
+    'settings.backupSettings.customEntries.excludePatternUnsupported.subroutineCall',
+  literalQuote: 'settings.backupSettings.customEntries.excludePatternUnsupported.literalQuote',
+  unsupportedEscape:
+    'settings.backupSettings.customEntries.excludePatternUnsupported.unsupportedEscape',
+};
 
 const DEFAULT_REPOSITORY_FORM: RepositoryFormValues = {
   platform: 'github',
@@ -326,12 +343,18 @@ const BackupSettingsModal: React.FC<BackupSettingsModalProps> = ({
     }
   };
 
-  const extractSuggestion = (error: unknown): string | null => {
+  // Backend failures arrive as JSON `{message, suggestion}`; showing only the
+  // translated suggestion used to drop the concrete detail (entry name,
+  // pattern, URL) the message carries, so keep both halves.
+  const describeBackendError = (error: unknown): string => {
     try {
       const errorObj = JSON.parse(String(error));
-      return errorObj.suggestion ?? null;
+      const detail = typeof errorObj.message === 'string' ? errorObj.message : '';
+      const suggestion = typeof errorObj.suggestion === 'string' ? t(errorObj.suggestion) : '';
+      const parts = [detail, suggestion].filter(Boolean);
+      return parts.length > 0 ? parts.join(' — ') : String(error);
     } catch {
-      return null;
+      return String(error);
     }
   };
 
@@ -379,12 +402,7 @@ const BackupSettingsModal: React.FC<BackupSettingsModalProps> = ({
         return;
       }
       console.error('Failed to save backup settings:', error);
-      const suggestion = extractSuggestion(error);
-      message.error(
-        suggestion
-          ? `${t('settings.backupSettings.saveFailed')}: ${t(suggestion)}`
-          : `${t('settings.backupSettings.saveFailed')}: ${String(error)}`,
-      );
+      message.error(`${t('settings.backupSettings.saveFailed')}: ${describeBackendError(error)}`);
     } finally {
       setSaving(false);
     }
@@ -408,12 +426,7 @@ const BackupSettingsModal: React.FC<BackupSettingsModalProps> = ({
         return;
       }
       console.error('Repository connection test failed:', error);
-      const suggestion = extractSuggestion(error);
-      message.error(
-        suggestion
-          ? `${t('settings.webdav.testFailed')}: ${t(suggestion)}`
-          : `${t('settings.webdav.testFailed')}: ${String(error)}`,
-      );
+      message.error(`${t('settings.webdav.testFailed')}: ${describeBackendError(error)}`);
     } finally {
       setTestingRepository(false);
     }
@@ -561,13 +574,7 @@ const BackupSettingsModal: React.FC<BackupSettingsModalProps> = ({
       message.success(t('settings.webdav.testSuccess'));
     } catch (error) {
       console.error('WebDAV connection test failed:', error);
-
-      const suggestion = extractSuggestion(error);
-      message.error(
-        suggestion
-          ? `${t('settings.webdav.testFailed')}: ${t(suggestion)}`
-          : `${t('settings.webdav.testFailed')}: ${String(error)}`,
-      );
+      message.error(`${t('settings.webdav.testFailed')}: ${describeBackendError(error)}`);
     } finally {
       setTestingConnection(false);
     }
@@ -1144,14 +1151,18 @@ const BackupSettingsModal: React.FC<BackupSettingsModalProps> = ({
                               if (!pattern) {
                                 return Promise.resolve();
                               }
-                              try {
-                                new RegExp(pattern);
-                                return Promise.resolve();
-                              } catch {
+                              // Exclude patterns are compiled by the backend's
+                              // Rust regex engine, not by `new RegExp`: the JS
+                              // check used to accept look-around/backreferences
+                              // (save then failed for the whole form) and to
+                              // reject possessive quantifiers Rust supports.
+                              const issue = findRustRegexIncompatibility(pattern);
+                              if (issue) {
                                 return Promise.reject(new Error(
-                                  t('settings.backupSettings.customEntries.excludePatternInvalid'),
+                                  t(EXCLUDE_PATTERN_ISSUE_MESSAGE_KEYS[issue]),
                                 ));
                               }
+                              return Promise.resolve();
                             },
                           },
                         ]}

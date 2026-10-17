@@ -1283,6 +1283,7 @@ const ClaudeDesktopPage: React.FC = () => {
         open={importModalOpen}
         onClose={() => setImportModalOpen(false)}
         onImport={handleImportFavoriteProviders}
+        toolName="Claude Desktop"
         existingProviderIds={existingFavoriteProviderIds}
         providerFilter={(provider) => isFavoriteProviderForSource('claudedesktop', provider)}
       />

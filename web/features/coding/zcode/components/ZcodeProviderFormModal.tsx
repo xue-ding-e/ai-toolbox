@@ -163,7 +163,9 @@ const ZcodeProviderFormModal: React.FC<ZcodeProviderFormModalProps> = ({
       };
       // The DB row alone does not reach ZCode; every save must also project the
       // provider into the registry so the desktop app can see the new values.
-      if (provider) {
+      // Copy mode carries the *source* provider in `provider`, so branch on the
+      // edit flag: a copy must create a new row, never overwrite its source.
+      if (isEditing && provider) {
         const updated = await updateZcodeProvider({
           ...provider,
           name: payload.name,

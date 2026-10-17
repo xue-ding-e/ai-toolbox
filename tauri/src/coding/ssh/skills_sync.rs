@@ -127,6 +127,7 @@ const SKILLS_TARGETS_FROM_RUNTIME_LOCATION: &[&str] = &[
     "pi",
     "oh_my_pi",
     "gemini_cli",
+    "antigravity_cli",
     "zcode",
     "omo_native",
 ];

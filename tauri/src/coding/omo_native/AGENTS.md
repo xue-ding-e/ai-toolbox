@@ -12,6 +12,8 @@
 |---|---|---|
 | 用户侧 | `opencode.json` 里的 `oh-my-openagent` 插件 | `omo` 二进制 / `bun add -g omo-ai` |
 | 上游包 | `packages/omo-opencode` | `packages/omo-native`（+ `omo-senpi` / `senpi-task`） |
+
+> 包名口径：`omo-senpi` 与 `senpi-task` 是 **Native edition 的引擎/任务子包**，不是独立产品——代码注释里引用的 `packages/omo-senpi/src/...`、`packages/senpi-task/src/...` 路径都指上游 monorepo 里这两个子包（早期统称 senpi 引擎；`[senpi]` 这个 legacy harness 块拼写也由此而来）。命名以 `packages/omo-native` 为主，本仓库模块名 `omo_native`。
 | 配置块 | `[opencode]` | `[native]` |
 | 后端模块 | `tauri/src/coding/oh_my_openagent/` | `tauri/src/coding/omo_native/` |
 | 前端 | `web/features/coding/opencode/` 的 OMO 区块 | `web/features/coding/omo_native/` |
@@ -28,7 +30,7 @@
 ## Source of Truth
 
 - **统一配置文件 `~/.omo/omo.jsonc` 是两版共用**（JSONC，允许注释与尾逗号）。本模块只读写 `[native]` 块，**绝不触碰 `[opencode]` 块与共享 base 键**。写入必须保留注释，走 `crate::coding::omo_jsonc_patch` 的原地补丁。
-- 引擎状态目录 `<agentDir>`（默认 `~/.omo/agent`）：`settings.json`（默认模型）/ `models.json`（自定义 provider）/ `auth.json`（密钥，0600）/ `mcp.json`（`mcpServers`）/ `AGENTS.md`（全局提示词）/ `skills/` / `sessions/`。
+- 引擎状态目录 `<agentDir>`（默认 `~/.omo/agent`）：`settings.json`（默认模型；**引擎优先读 `settings.jsonc`**，存在即用之——所有读写走 `providers::resolve_omo_native_settings_file_name`，别再硬编码文件名）/ `models.json`（自定义 provider）/ `auth.json`（密钥，0600）/ `mcp.json`（`mcpServers`）/ `AGENTS.md`（全局提示词）/ `skills/` / `sessions/`。
 - 长期主数据在 SQLite JSONB 表 `omo_native_settings_config` / `omo_native_agents_config` / `omo_native_prompt_config`（schema v26）；数据库为空时页面先看到从本地文件读出的 `__local__` 桥接态。
 - 运行时根目录由 `runtime_location::get_omo_native_runtime_location_async()` 决议。
 

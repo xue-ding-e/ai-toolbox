@@ -629,6 +629,30 @@ mod tests {
     }
 
     #[test]
+    fn backup_custom_entry_with_null_exclude_patterns_survives() {
+        // An explicit null used to fail the whole entry's deserialization and
+        // the filter_map silently dropped the user's custom backup entry.
+        let settings = from_db_value(json!({
+            "backup_custom_entries": [
+                {
+                    "id": "entry-1",
+                    "name": "Hand edited",
+                    "source_path": "~/somewhere",
+                    "restore_path": "",
+                    "entry_type": "directory",
+                    "enabled": true,
+                    "exclude_patterns": null
+                }
+            ],
+        }));
+
+        assert_eq!(settings.backup_custom_entries.len(), 1);
+        assert!(settings.backup_custom_entries[0]
+            .exclude_patterns
+            .is_empty());
+    }
+
+    #[test]
     fn backup_custom_entries_are_loaded_and_normalized() {
         let settings = from_db_value(json!({
             "backup_custom_entries": [

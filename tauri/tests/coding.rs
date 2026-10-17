@@ -41,3 +41,5 @@ mod tools_path_utils;
 mod wsl_direct_status;
 #[path = "coding/omo_native/jsonc_isolation.rs"]
 mod omo_native_jsonc_isolation;
+#[path = "coding/zcode/import_identity.rs"]
+mod zcode_import_identity;

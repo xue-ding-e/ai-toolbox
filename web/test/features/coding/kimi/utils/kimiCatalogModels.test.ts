@@ -250,3 +250,28 @@ test('importModelsIntoKimiCatalog gives new rows the CLI-required context size',
   assert.equal(result[0].maxContextSize, 262144);
   assert.equal(result[0].displayName, 'X');
 });
+
+test('importModelsIntoKimiCatalog does not resurrect a second alias for a selected upstream', () => {
+  // Two rows already map the same upstream id. The ordered loop keeps the
+  // first; the trailing reference-equality check used to push the second one
+  // back, leaving the catalog with two rows for one selected upstream.
+  const current = [
+    model({ key: 'relay/a', model: 'a', provider: 'relay' }),
+    model({ key: 'pinned/a', model: 'a', provider: 'pinned' }),
+  ];
+  const result = importModelsIntoKimiCatalog(current, [{ id: 'a' }], [], ['a'], 'relay', 262144);
+
+  assert.deepEqual(result.map((row) => row.key), ['relay/a']);
+});
+
+test('importModelsIntoKimiCatalog leaves duplicate aliases alone when their upstream is not selected', () => {
+  // The fetch selected a different model, so the duplicated upstream is none
+  // of its business — both aliases survive untouched.
+  const current = [
+    model({ key: 'relay/a', model: 'a', provider: 'relay' }),
+    model({ key: 'pinned/a', model: 'a', provider: 'pinned' }),
+  ];
+  const result = importModelsIntoKimiCatalog(current, [{ id: 'b' }], [], ['b'], 'relay', 262144);
+
+  assert.deepEqual(result.map((row) => row.key), ['relay/b', 'relay/a', 'pinned/a']);
+});

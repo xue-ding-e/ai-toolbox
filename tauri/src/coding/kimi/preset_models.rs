@@ -119,8 +119,11 @@ fn parse_preset_models(provider: &Value) -> Vec<KimiPresetModel> {
 /// document on every base-URL blur. The index keeps the parsed entries plus the
 /// two lookup maps, so a lookup is a hash probe.
 struct CatalogIndex {
-    /// Normalized `api` URL -> entry.
-    by_url: HashMap<String, Value>,
+    /// Normalized `api` URL -> entries sharing that URL, in catalog order. The
+    /// bundled data carries three such URLs (e.g. `api.minimax.io/anthropic/v1`
+    /// for both `minimax` and `minimax-coding-plan`), and picking either entry
+    /// would be a guess, so an ambiguous exact match refuses like the host one.
+    by_url: HashMap<String, Vec<Value>>,
     /// Host -> entries, in catalog order. A host with more than one entry (six
     /// bundled hosts do, e.g. `api.z.ai` carries both `zai` and
     /// `zai-coding-plan`) is ambiguous, so the host fallback refuses to guess.
@@ -134,7 +137,7 @@ fn catalog_index() -> Option<&'static CatalogIndex> {
         .get_or_init(|| {
             let catalog = free_models::bundled_models_dev_catalog()?;
             let entries = catalog.as_object()?;
-            let mut by_url = HashMap::new();
+            let mut by_url: HashMap<String, Vec<Value>> = HashMap::new();
             let mut by_host: HashMap<String, Vec<Value>> = HashMap::new();
             for entry in entries.values() {
                 let Some(api) = entry.get("api").and_then(Value::as_str) else {
@@ -148,7 +151,7 @@ fn catalog_index() -> Option<&'static CatalogIndex> {
                     .entry(host_of(&normalized).to_string())
                     .or_default()
                     .push(entry.clone());
-                by_url.insert(normalized, entry.clone());
+                by_url.entry(normalized).or_default().push(entry.clone());
             }
             Some(CatalogIndex { by_url, by_host })
         })
@@ -157,12 +160,15 @@ fn catalog_index() -> Option<&'static CatalogIndex> {
 
 /// Look up the bundled catalog entry matching `base_url`.
 ///
-/// Exact match on the normalized URL wins. A host-only match is used solely
-/// when that host resolves to exactly one entry (so `api.moonshot.cn/v1` still
-/// finds `moonshotai-cn`); an ambiguous host returns nothing, because guessing
-/// would offer model ids the endpoint may not serve. Returns an empty list when
-/// nothing matches — callers show no preset hint rather than a wrong one, so
-/// there is deliberately no name-based fallback.
+/// Exact match on the normalized URL wins. A URL carried by more than one
+/// catalog entry is ambiguous and returns nothing — falling through to the
+/// host probe could not help, since the same entries share that host. A
+/// host-only match is used solely when that host resolves to exactly one entry
+/// (so `api.moonshot.cn/v1` still finds `moonshotai-cn`); an ambiguous host
+/// returns nothing, because guessing would offer model ids the endpoint may
+/// not serve. Returns an empty list when nothing matches — callers show no
+/// preset hint rather than a wrong one, so there is deliberately no name-based
+/// fallback.
 pub fn preset_models_for_base_url(base_url: &str) -> Vec<KimiPresetModel> {
     let normalized = normalize_base_url(base_url);
     if normalized.is_empty() {
@@ -172,8 +178,11 @@ pub fn preset_models_for_base_url(base_url: &str) -> Vec<KimiPresetModel> {
         return Vec::new();
     };
 
-    if let Some(entry) = index.by_url.get(&normalized) {
-        return parse_preset_models(entry);
+    if let Some(entries) = index.by_url.get(&normalized) {
+        if entries.len() == 1 {
+            return parse_preset_models(&entries[0]);
+        }
+        return Vec::new();
     }
     match index.by_host.get(host_of(&normalized)) {
         Some(entries) if entries.len() == 1 => parse_preset_models(&entries[0]),
@@ -229,6 +238,17 @@ mod tests {
         // offer model ids the endpoint may not serve.
         assert!(preset_models_for_base_url("https://api.z.ai/api/paas/v5").is_empty());
         assert!(preset_models_for_base_url("https://open.bigmodel.cn/api/paas/v5").is_empty());
+    }
+
+    #[test]
+    fn preset_lookup_refuses_an_ambiguous_exact_url() {
+        // `api.minimax.io/anthropic/v1` is declared by both `minimax` and
+        // `minimax-coding-plan` (same for the firepass/fireworks pair and the
+        // minimimax-cn pair). The exact match used to silently keep whichever
+        // entry the HashMap insert happened to write last.
+        assert!(preset_models_for_base_url("https://api.minimax.io/anthropic/v1").is_empty());
+        assert!(preset_models_for_base_url("https://api.fireworks.ai/inference/v1").is_empty());
+        assert!(preset_models_for_base_url("https://api.minimaxi.com/anthropic/v1").is_empty());
     }
 
     #[test]

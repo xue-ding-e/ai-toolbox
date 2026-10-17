@@ -53,6 +53,11 @@ pub enum UnifiedStreamEvent {
     Finish {
         reason: Option<String>,
         usage: Option<Value>,
+        /// Service tier the upstream confirmed in its terminal stream event.
+        /// Carried across the IR so the client-facing stream still reveals it
+        /// after conversion — the gateway's usage collector reads the tier off
+        /// the converted stream, and the IR `Response` has no tier field.
+        service_tier: Option<String>,
     },
 }
 
@@ -64,6 +69,11 @@ pub struct StreamKernel {
     buffer: String,
     utf8_remainder: Vec<u8>,
     terminated_by_error: bool,
+    /// Last service tier the upstream confirmed in a source stream event
+    /// (last-wins, mirroring `SseUsageCollector`). Captured here because the
+    /// tier never passes through the IR, and the client-facing stream is what
+    /// the collector observes after conversion.
+    confirmed_service_tier: Option<String>,
 }
 
 impl StreamKernel {
@@ -80,6 +90,7 @@ impl StreamKernel {
             buffer: String::new(),
             utf8_remainder: Vec::new(),
             terminated_by_error: false,
+            confirmed_service_tier: None,
         }
     }
 
@@ -153,6 +164,12 @@ impl StreamKernel {
                 .target
                 .write(target, UnifiedStreamEvent::StreamError { code, message });
         }
+        // Last-wins, same policy as `SseUsageCollector`: the terminal snapshot
+        // is the upstream's final word on the served tier. Captured before the
+        // source parse consumes the value.
+        if let Some(tier) = confirmed_service_tier_from_value(&value) {
+            self.confirmed_service_tier = Some(tier.to_string());
+        }
         let source = self.source_protocol();
         let events = self.source.parse(source, parsed.event.as_deref(), value);
         if events
@@ -161,8 +178,15 @@ impl StreamKernel {
         {
             self.terminated_by_error = true;
         }
+        let confirmed_service_tier = self.confirmed_service_tier.clone();
         events
             .into_iter()
+            .map(|mut event| {
+                if let UnifiedStreamEvent::Finish { service_tier, .. } = &mut event {
+                    *service_tier = confirmed_service_tier.clone();
+                }
+                event
+            })
             .flat_map(|event| self.target.write(target, event))
             .collect()
     }
@@ -180,9 +204,16 @@ impl StreamKernel {
             return Vec::new();
         }
         let target = self.target_protocol();
+        let confirmed_service_tier = self.confirmed_service_tier.clone();
         self.source
             .finish(self.source_protocol())
             .into_iter()
+            .map(|mut event| {
+                if let UnifiedStreamEvent::Finish { service_tier, .. } = &mut event {
+                    *service_tier = confirmed_service_tier.clone();
+                }
+                event
+            })
             .flat_map(|event| self.target.write(target, event))
             .collect()
     }
@@ -314,6 +345,7 @@ impl SourceStreamState {
                 out.push(UnifiedStreamEvent::Finish {
                     reason: Some(reason),
                     usage: Some(usage),
+                    service_tier: None,
                 });
                 self.chat_emitted_finish = true;
             }
@@ -471,12 +503,14 @@ impl SourceStreamState {
                     out.push(UnifiedStreamEvent::Finish {
                         reason: Some(finish_reason),
                         usage: Some(usage),
+                        service_tier: None,
                     });
                 } else {
                     self.pending_chat_finish_reason = Some(finish_reason.clone());
                     out.push(UnifiedStreamEvent::Finish {
                         reason: Some(finish_reason),
                         usage: None,
+                        service_tier: None,
                     });
                 }
                 self.chat_emitted_finish = true;
@@ -562,6 +596,7 @@ impl SourceStreamState {
                     "stop".to_string()
                 }),
                 usage: None,
+                service_tier: None,
             });
         }
         out
@@ -1041,6 +1076,7 @@ impl SourceStreamState {
                 vec![UnifiedStreamEvent::Finish {
                     reason,
                     usage: response.get("usage").cloned(),
+                    service_tier: None,
                 }]
             }
             _ => Vec::new(),
@@ -1163,6 +1199,7 @@ impl SourceStreamState {
                                 .pending_anthropic_usage
                                 .take()
                                 .map(|usage| anthropic_usage_value_to_unified(&usage)),
+                            service_tier: None,
                         }]
                     })
                     .unwrap_or_default()
@@ -1174,6 +1211,7 @@ impl SourceStreamState {
                     vec![UnifiedStreamEvent::Finish {
                         reason: None,
                         usage: Some(anthropic_usage_value_to_unified(&usage)),
+                        service_tier: None,
                     }]
                 })
                 .unwrap_or_default(),
@@ -1224,6 +1262,7 @@ impl SourceStreamState {
             out.push(UnifiedStreamEvent::Finish {
                 reason: Some("refusal".to_string()),
                 usage: gemini_stream_usage(value.get("usageMetadata")),
+                service_tier: None,
             });
             return out;
         }
@@ -1305,6 +1344,7 @@ impl SourceStreamState {
                         self.gemini_seen_tool_call,
                     ),
                     usage: gemini_stream_usage(value.get("usageMetadata")),
+                    service_tier: None,
                 });
             }
         }
@@ -1326,6 +1366,7 @@ impl SourceStreamState {
                     .to_string(),
                 ),
                 usage: gemini_stream_usage(value.get("usageMetadata")),
+                service_tier: None,
             });
         }
         out
@@ -1702,6 +1743,25 @@ fn anthropic_stop_reason(reason: &str) -> &'static str {
     }
 }
 
+/// Canonical service tier a source-dialect stream event confirmed, if any.
+///
+/// Accepts the same spellings and shapes the gateway's own usage collector
+/// reads (`/service_tier` bare Chat chunk, `/response/service_tier` Responses
+/// event) but with a local normalization table: the transformer layer must not
+/// depend on the runtime `types` module, and only OpenAI-family dialects carry
+/// the field. `default` / unknown values yield `None` — an upstream that never
+/// implements the echo is indistinguishable from one that served standard.
+fn confirmed_service_tier_from_value(value: &Value) -> Option<&'static str> {
+    let tier = ["/service_tier", "/response/service_tier"]
+        .iter()
+        .find_map(|path| value.pointer(path)?.as_str())?;
+    match tier.trim() {
+        "priority" | "fast" => Some("fast"),
+        "ultrafast" => Some("ultrafast"),
+        _ => None,
+    }
+}
+
 fn stream_error_from_value(event_name: Option<&str>, value: &Value) -> Option<(String, String)> {
     let is_error_event = event_name == Some("error")
         || value.get("event").and_then(Value::as_str) == Some("error")
@@ -1779,6 +1839,9 @@ struct TargetStreamState {
     responses_message_text: String,
     pending_responses_finish_reason: Option<String>,
     pending_responses_encrypted_content: Option<String>,
+    /// Service tier the source stream confirmed, staged for the terminal
+    /// `response.completed` snapshot this target renders.
+    pending_responses_service_tier: Option<String>,
     pending_gemini_reasoning_signature: Option<String>,
     pending_gemini_tool_signatures: HashMap<usize, String>,
     pending_gemini_tools: HashMap<usize, TargetGeminiToolState>,
@@ -1862,6 +1925,7 @@ impl TargetStreamState {
             UnifiedStreamEvent::Finish {
                 reason: Some("stop".to_string()),
                 usage: None,
+                service_tier: None,
             },
         )
     }
@@ -2386,6 +2450,12 @@ impl TargetStreamState {
         if let Some(usage) = usage.as_ref() {
             response["usage"] = chat_usage_to_responses(Some(usage));
         }
+        if let Some(service_tier) = self.pending_responses_service_tier.as_ref() {
+            // Re-render the source dialect's tier echo so the gateway's usage
+            // collector (which observes this converted stream) still bills the
+            // confirmed tier.
+            response["service_tier"] = json!(service_tier);
+        }
         out.push(sse_event(
             Some("response.completed"),
             &json!({
@@ -2778,7 +2848,11 @@ impl TargetStreamState {
                     ));
                 }
             }
-            UnifiedStreamEvent::Finish { reason, usage } => {
+            UnifiedStreamEvent::Finish {
+                reason,
+                usage,
+                service_tier: _,
+            } => {
                 if reason.as_deref() == Some("error") {
                     return self.write_stream_error(
                         AiProtocol::AnthropicMessages,
@@ -2786,6 +2860,8 @@ impl TargetStreamState {
                         "Response failed".to_string(),
                     );
                 }
+                // Anthropic has no `service_tier` response field to render it
+                // into; the tier is OpenAI-family only.
                 return self.finish_anthropic_message(reason, usage, false);
             }
         }
@@ -2862,7 +2938,11 @@ impl TargetStreamState {
                 ));
                 out
             }
-            UnifiedStreamEvent::Finish { reason, usage } => {
+            UnifiedStreamEvent::Finish {
+                reason,
+                usage,
+                service_tier,
+            } => {
                 if reason.as_deref() == Some("error") {
                     return self.write_stream_error(
                         AiProtocol::OpenAiChat,
@@ -2877,18 +2957,25 @@ impl TargetStreamState {
                 self.finished = true;
                 // OpenAI include_usage wire: usage-only chunk with empty choices before finish.
                 // Normalize source-protocol usage keys (input_tokens/output_tokens) into Chat shape.
-                if let Some(usage) = usage {
-                    let chat_usage = llm_usage_to_unified_value(&unified_value_to_usage(&usage));
-                    out.push(sse_event(
-                        None,
-                        &json!({
-                            "id": if self.id.is_empty() { "chatcmpl_gateway" } else { &self.id },
-                            "object": "chat.completion.chunk",
-                            "model": self.model,
-                            "choices": [],
-                            "usage": chat_usage
-                        }),
-                    ));
+                // The tier echo rides on this top-level chunk (the same place
+                // OpenAI puts it), re-rendered from the source dialect so the
+                // gateway's usage collector — which observes the converted
+                // stream — still bills the confirmed tier.
+                let mut usage_chunk = json!({
+                    "id": if self.id.is_empty() { "chatcmpl_gateway" } else { &self.id },
+                    "object": "chat.completion.chunk",
+                    "model": self.model,
+                    "choices": []
+                });
+                if let Some(usage) = usage.as_ref() {
+                    usage_chunk["usage"] =
+                        llm_usage_to_unified_value(&unified_value_to_usage(usage));
+                }
+                if let Some(service_tier) = service_tier.as_ref() {
+                    usage_chunk["service_tier"] = json!(service_tier);
+                }
+                if usage.is_some() || service_tier.is_some() {
+                    out.push(sse_event(None, &usage_chunk));
                 }
                 out.push(self.chat_chunk(
                     json!({}),
@@ -3094,7 +3181,12 @@ impl TargetStreamState {
                 }
                 out
             }
-            UnifiedStreamEvent::Finish { reason, usage } => {
+            UnifiedStreamEvent::Finish {
+                reason,
+                usage,
+                service_tier,
+            } => {
+                self.pending_responses_service_tier = service_tier;
                 self.finish_responses_response(reason, usage, false)
             }
         }
@@ -3159,7 +3251,13 @@ impl TargetStreamState {
                 tool.arguments.push_str(&arguments);
                 self.flush_gemini_tool_calls(false)
             }
-            UnifiedStreamEvent::Finish { reason, usage } => {
+            UnifiedStreamEvent::Finish {
+                reason,
+                usage,
+                service_tier: _,
+            } => {
+                // Gemini has no `service_tier` response field to render it
+                // into; the tier is OpenAI-family only.
                 self.finish_gemini_response(reason, usage, false)
             }
         }

@@ -81,6 +81,9 @@ function createSettings(overrides: Partial<AppSettings> = {}): AppSettings {
     claude_cli_launch_full_access: false,
     preferred_terminal: null,
     cli_manual_paths: {},
+    provider_sort_modes: {},
+    provider_last_used: {},
+    provider_view_modes: {},
     ...overrides,
   };
 }

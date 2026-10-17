@@ -229,15 +229,70 @@ pub async fn rebuild_session_usage(
 ///
 /// Split from [`rebuild_session_usage`] so a test can rebuild against fixture
 /// roots instead of the machine's real CLI directories.
+///
+/// The rebuild refuses to run against an empty source set for a CLI that
+/// already has session usage: `clear_imported_usage` deletes by `cli_key`
+/// regardless of what the scan found, so a root that resolved to nothing (the
+/// CLI home points at an unmounted WSL, the sessions directory was never
+/// created) would wipe that CLI's imported history and import nothing back.
 fn rebuild_sources(
     db: &SqliteDbState,
     sources: &[(GatewayUsageTool, PathBuf)],
     cli_keys: &[GatewayUsageTool],
     now: i64,
 ) -> Result<GatewaySessionUsageImportResult, String> {
+    // Guard on the files the scan actually finds, not on the source list: a
+    // root can resolve to a path that exists but holds nothing the parser
+    // reads (unmounted WSL root, never-created sessions directory) — clearing
+    // by cli_key regardless would wipe that CLI's imported history and import
+    // nothing back.
+    let scanned: Vec<_> = sources
+        .iter()
+        .flat_map(|(cli_key, root)| {
+            session_files(*cli_key, root)
+                .into_iter()
+                .map(move |path| (*cli_key, path))
+        })
+        .collect();
+    if scanned.is_empty() {
+        let existing = count_imported_usage(db, cli_keys)?;
+        if existing > 0 {
+            return Err(format!(
+                "No session files found for the selected CLI(s), but {existing} imported \
+                 session usage record(s) exist. Refusing to rebuild: an empty source set would \
+                 delete them. Check the CLI's session directory (root override, WSL mount) and \
+                 retry."
+            ));
+        }
+        // Nothing to clear and nothing to import: the no-op keeps its meaning
+        // rather than failing on a fresh installation.
+        return Ok(GatewaySessionUsageImportResult::default());
+    }
     create_rebuild_backup(db)?;
     clear_imported_usage(db, cli_keys)?;
     sync_sources(db, sources, now)
+}
+
+/// How many session-sourced detail rows the given CLIs currently hold.
+fn count_imported_usage(
+    db: &SqliteDbState,
+    cli_keys: &[GatewayUsageTool],
+) -> Result<u64, String> {
+    db.with_conn(|conn| {
+        let mut total: u64 = 0;
+        for cli_key in cli_keys {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM proxy_request_logs
+                     WHERE data_source = 'session' AND app_type = ?1",
+                    params![cli_key.as_str()],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())?;
+            total += count.max(0) as u64;
+        }
+        Ok(total)
+    })
 }
 
 fn create_rebuild_backup(db: &SqliteDbState) -> Result<(), String> {
@@ -295,12 +350,77 @@ fn clear_imported_usage(db: &SqliteDbState, cli_keys: &[GatewayUsageTool]) -> Re
                     params![app_type],
                 )
                 .map_err(|error| error.to_string())?;
+            // Preserve each ledger record's matched-proxy id across the clear:
+            // the proxy detail rows may already be rolled up and pruned, and
+            // `find_matching_proxy` only searches live rows. Without the
+            // preserved ids a rebuild re-imports calls the (now archived)
+            // proxy already paid for — double counting in the daily rollups.
+            //
+            // A state row is `<cli>:<identity>` and holds many records; the
+            // marker re-groups them by source so the re-import finds each
+            // match under the file it came from.
+            let mut preserved: HashMap<String, serde_json::Map<String, serde_json::Value>> =
+                HashMap::new();
+            {
+                let mut statement = transaction
+                    .prepare(
+                        "SELECT s.id, json(s.data)
+                         FROM gateway_session_usage_state s
+                         WHERE s.id LIKE ?1",
+                    )
+                    .map_err(|error| error.to_string())?;
+                let rows = statement
+                    .query_map(params![format!("{app_type}:%")], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })
+                    .map_err(|error| error.to_string())?;
+                for row in rows {
+                    let (id, data) = row.map_err(|error| error.to_string())?;
+                    let Ok(state) = serde_json::from_str::<SourceState>(&data) else {
+                        continue;
+                    };
+                    for (record_id, record) in state.records {
+                        if let Some(proxy_id) = record.matched_proxy_id {
+                            preserved
+                                .entry(id.clone())
+                                .or_default()
+                                .insert(
+                                    record_id,
+                                    serde_json::json!({ "matched_proxy_id": proxy_id }),
+                                );
+                        }
+                    }
+                }
+            }
             transaction
                 .execute(
                     "DELETE FROM gateway_session_usage_state WHERE id LIKE ?1",
                     params![format!("{app_type}:%")],
                 )
                 .map_err(|error| error.to_string())?;
+            let mut insert = transaction
+                .prepare(
+                    "INSERT OR REPLACE INTO gateway_session_usage_state (id, data, created_at, updated_at)
+                     VALUES (?1, jsonb(?2), ?3, ?3)",
+                )
+                .map_err(|error| error.to_string())?;
+            let timestamp = Utc::now().to_rfc3339();
+            for (source_id, records) in preserved {
+                // The marker is a minimal valid `SourceState` holding only the
+                // matched-proxy facts. `sync_sources` folds its records into
+                // the file's fresh state, so the re-import re-derives the
+                // match (`retained_proxy_id` handles the archived-proxy case)
+                // instead of inserting a second detail row.
+                insert
+                    .execute(
+                        params![
+                            format!("archived-match:{source_id}"),
+                            serde_json::json!({ "records": records }).to_string(),
+                            timestamp
+                        ],
+                    )
+                    .map_err(|error| error.to_string())?;
+            }
         }
         transaction.commit().map_err(|error| error.to_string())
     })
@@ -565,6 +685,25 @@ fn source_identity(cli_key: GatewayUsageTool, path: &Path) -> String {
                 return suffix.to_string();
             }
         }
+        // Codex compresses rollouts in place (`x.jsonl` -> `x.jsonl.zst`, the
+        // original then deleted). `Path::file_stem` only strips the LAST
+        // extension, so `rollout-...-<uuid>.jsonl.zst` yields a stem ending in
+        // `.jsonl` and the 36-char tail is never the UUID. Strip the known
+        // double extension first, or the identity drifts on every compression
+        // cycle (old ledger rows orphaned, file re-scanned as a new source).
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        if let Some(zst_stem) = file_name.strip_suffix(".jsonl.zst") {
+            if zst_stem.len() >= 36 {
+                if let Some(suffix) = zst_stem.get(zst_stem.len() - 36..) {
+                    if uuid::Uuid::parse_str(suffix).is_ok() {
+                        return suffix.to_string();
+                    }
+                }
+            }
+        }
     }
     if matches!(
         stem,
@@ -715,8 +854,39 @@ fn read_codex_parent_snapshots(
     use crate::coding::session_manager::codex_rollout;
     let mut snapshots = Vec::new();
     // Several index keys (thread id, rollout id, file stem) can point at the
-    // same file, so a lineage must contribute each rollout exactly once.
-    let mut seen_rollouts = HashSet::new();
+    // same file, so a lineage must contribute each rollout exactly once. The
+    // parent list is filename-sorted (base page first), so the FIRST time a
+    // path arrives it may carry no upper bound (a base page resolved on its
+    // own is `Lineage::single`) while a LATER arrival carries the bound its
+    // child recorded. Keeping the first appearance verbatim made the whole
+    // ancestor page read to EOF; merging the tighter bound is what the child
+    // is actually allowed to see.
+    let mut seen_rollouts: HashMap<std::path::PathBuf, Option<u64>> = HashMap::new();
+    let keep_segment =
+        |segment: codex_rollout::LineageSegment,
+         seen: &mut HashMap<std::path::PathBuf, Option<u64>>| {
+            match seen.get_mut(&segment.path) {
+                // First sighting: record path + bound as-is.
+                None => {
+                    seen.insert(segment.path.clone(), segment.end_byte_offset);
+                    true
+                }
+                // Repeat sighting: keep the segment only if it tightens the
+                // bound (a bound appearing where there was none, or a smaller
+                // bound). `None` twice means the same unlimited read.
+                Some(recorded) => {
+                    let tighter = match (*recorded, segment.end_byte_offset) {
+                        (None, Some(_)) => true,
+                        (Some(current), Some(next)) => next < current,
+                        (_, None) => false,
+                    };
+                    if tighter {
+                        *recorded = segment.end_byte_offset;
+                    }
+                    tighter
+                }
+            }
+        };
     for parent_path in parent_paths {
         let lineage = match codex_rollout::sessions_root_of(parent_path) {
             Some(root) => codex_rollout::resolve_lineage(&root, parent_path),
@@ -726,7 +896,7 @@ fn read_codex_parent_snapshots(
             segments: lineage
                 .segments
                 .into_iter()
-                .filter(|segment| seen_rollouts.insert(segment.path.clone()))
+                .filter(|segment| keep_segment(segment.clone(), &mut seen_rollouts))
                 .collect(),
         };
         snapshots.extend(parsers::read_codex_lineage_snapshots(
@@ -796,7 +966,20 @@ fn sync_sources(
     for (cli_key, path) in files {
         result.scanned_files += 1;
         let source_id = format!("{}:{}", cli_key.as_str(), source_identity(cli_key, &path));
-        let old_state = states.get(&source_id).cloned().unwrap_or_default();
+        let mut old_state = states.get(&source_id).cloned().unwrap_or_default();
+        // A rebuild preserved this source's matched-proxy ids under an
+        // `archived-match:` marker (the ledger rows themselves were cleared).
+        // Fold them back in so `persist_records` treats them as the record's
+        // previous match — the archived proxy's contribution stays excluded
+        // instead of being imported as a second session row.
+        if let Some(marker) = states.get(&format!("archived-match:{source_id}")) {
+            for (record_id, record) in &marker.records {
+                old_state
+                    .records
+                    .entry(record_id.clone())
+                    .or_insert_with(|| record.clone());
+            }
+        }
         let processed = (|| {
             let metadata = fs::metadata(&path).map_err(|error| error.to_string())?;
             let stamp = modified_nanos(&metadata);

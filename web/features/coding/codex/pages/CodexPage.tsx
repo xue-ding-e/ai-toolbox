@@ -2801,6 +2801,7 @@ const CodexPage: React.FC = () => {
           open={importModalOpen}
           onClose={() => setImportModalOpen(false)}
           onImport={handleImportFavoriteProviders}
+          toolName="Codex"
           existingProviderIds={providers.map((provider) => buildFavoriteProviderStorageKey('codex', provider.id))}
           providerFilter={(provider) => isFavoriteProviderForSource('codex', provider)}
         />

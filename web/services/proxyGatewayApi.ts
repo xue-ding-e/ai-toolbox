@@ -863,6 +863,17 @@ export const importProxyGatewaySessionUsage = async (
   return invoke<GatewaySessionUsageImportResult>('proxy_gateway_import_session_usage', { input });
 };
 
+/**
+ * Backup, clear and re-import session usage from the CLI transcripts. The
+ * backend refuses to run when a CLI's sources resolve to nothing but imported
+ * rows exist, so an unmounted root cannot wipe history.
+ */
+export const rebuildProxyGatewaySessionUsage = async (
+  input: GatewaySessionUsageImportInput
+): Promise<GatewaySessionUsageImportResult> => {
+  return invoke<GatewaySessionUsageImportResult>('proxy_gateway_rebuild_session_usage', { input });
+};
+
 export const getProxyGatewayDataSourceBreakdown = async (
   input: DataSourceBreakdownInput = {}
 ): Promise<DataSourceBreakdownItem[]> => {

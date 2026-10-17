@@ -213,6 +213,12 @@ const ZcodeOfficialAccountCard: React.FC<ZcodeOfficialAccountCardProps> = ({
           id: sortableId ?? 'zcode-official-account',
           name: t('common.officialAccount.headingTitle'),
         }}
+        // The account cell is not a provider and must not answer a locate
+        // query: `apply_zcode_official_account` writes the applied fact on the
+        // account, the page then points 定位 at nothing — an id-bearing cell
+        // would be found, but it is deliberately not the target.
+        locateAnchor={false}
+        memberKind="official-account"
         // 🔗 官方账号 (n): the heading, built from the same two exports the block
         // draws its own heading from, so the two layouts cannot drift apart.
         namePrefix={<OfficialAccountHeadingIcon />}

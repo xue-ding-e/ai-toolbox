@@ -276,7 +276,8 @@ pub async fn read_omo_native_runtime_config(
         Err(error) => (json!({}), json!({}), json!({}), false, Some(error)),
     };
 
-    let settings_path = agent_dir.join(constants::OMO_NATIVE_SETTINGS_FILE);
+    let settings_path =
+        agent_dir.join(providers::resolve_omo_native_settings_file_name(&agent_dir));
     let model_settings = default_selection_from_settings(&read_settings_object(&settings_path));
 
     Ok(OmoNativeRuntimeConfig {
@@ -333,7 +334,7 @@ async fn save_omo_native_model_settings_internal(
     input: &OmoNativeModelSettingsInput,
 ) -> Result<(), String> {
     let dir = providers::agent_dir_for(db).await?;
-    let settings_path = dir.join(constants::OMO_NATIVE_SETTINGS_FILE);
+    let settings_path = dir.join(providers::resolve_omo_native_settings_file_name(&dir));
     let mut settings = read_settings_object(&settings_path);
     let settings_object = settings
         .as_object_mut()

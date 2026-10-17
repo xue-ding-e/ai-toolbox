@@ -515,6 +515,16 @@ const ZcodePage: React.FC = () => {
             settingsConfig: payload.settingsConfig,
             notes: payload.notes,
           });
+          // The DB row alone does not reach ZCode: project the imported
+          // provider into the registry so the desktop app sees it (the same
+          // create-then-project sequence the form runs).
+          await saveZcodeProvider({
+            id: created.id,
+            name: created.name,
+            category: created.category,
+            settingsConfig: created.settingsConfig,
+            notes: created.notes,
+          });
           // Keep the imported row in the store so it survives a later delete.
           try {
             await upsertFavoriteProvider(
@@ -566,13 +576,22 @@ const ZcodePage: React.FC = () => {
           continue;
         }
         try {
-          await createZcodeProvider({
+          const created = await createZcodeProvider({
             name: mapped.name,
             category: 'custom',
             settingsConfig: buildZcodeSettingsConfigFromImport(mapped),
             // Remembers where the row came from, so re-importing the same
             // source provider is recognised instead of duplicated.
             sourceProviderId: item.providerId,
+          });
+          // Project the imported provider into the registry (see the favorite
+          // import above) — the desktop app never sees a DB-only row.
+          await saveZcodeProvider({
+            id: created.id,
+            name: created.name,
+            category: created.category,
+            settingsConfig: created.settingsConfig,
+            notes: created.notes,
           });
           ok += 1;
         } catch (error) {
@@ -609,11 +628,20 @@ const ZcodePage: React.FC = () => {
           continue;
         }
         try {
-          await createZcodeProvider({
+          const created = await createZcodeProvider({
             name: mapped.name,
             category: 'custom',
             settingsConfig: buildZcodeSettingsConfigFromImport(mapped),
             sourceProviderId,
+          });
+          // Project the imported provider into the registry (see the favorite
+          // import above) — the desktop app never sees a DB-only row.
+          await saveZcodeProvider({
+            id: created.id,
+            name: created.name,
+            category: created.category,
+            settingsConfig: created.settingsConfig,
+            notes: created.notes,
           });
           ok += 1;
         } catch (error) {
@@ -937,8 +965,13 @@ const ZcodePage: React.FC = () => {
   );
 
   const batchSelectableIds = React.useMemo(
-    () => visibleProviders.map((provider) => provider.id),
-    [visibleProviders],
+    // The default pointer lives in the registry, outside the provider rows, so
+    // the applied provider is protected from batch deletion — same rule as the
+    // other CLIs (SOP §4.0.2-H).
+    () => visibleProviders
+      .filter((provider) => provider.id !== appliedProviderId)
+      .map((provider) => provider.id),
+    [visibleProviders, appliedProviderId],
   );
   const providerBatch = useProviderBatchSelection({
     allIds: batchSelectableIds,
@@ -1186,6 +1219,10 @@ const ZcodePage: React.FC = () => {
       setFormModalOpen(true);
     },
     onDelete: () => void handleDeleteProvider(provider),
+    deleteDisabledReason: provider.id === appliedProviderId
+      ? t('zcode.provider.deleteDisabledDefault')
+      : undefined,
+    dragDisabled: providerDragDisabled,
     onToggleDisabled: () => void handleToggleProviderDisabled(provider, !provider.isDisabled),
     selectable: providerBatch.selectionMode && providerBatch.isSelectable(provider.id),
     selected: providerBatch.selectedIds.has(provider.id),
@@ -1306,6 +1343,7 @@ const ZcodePage: React.FC = () => {
           sortMode={sortMode}
           sortModes={PROVIDER_SORT_MODES}
           onSortModeChange={setSortMode}
+          dragDisabledBySort={sortMode !== 'custom'}
           viewMode={viewMode}
           onViewModeChange={setViewMode}
           locateProviderId={locateProviderId}
@@ -1570,6 +1608,7 @@ const ZcodePage: React.FC = () => {
         open={importModalOpen}
         onClose={() => setImportModalOpen(false)}
         onImport={(imported) => void handleImportFavoriteProviders(imported)}
+        toolName="ZCode"
         existingProviderIds={providers.map((provider) =>
           buildFavoriteProviderStorageKey('zcode', provider.id),
         )}

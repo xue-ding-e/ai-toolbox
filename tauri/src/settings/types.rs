@@ -56,6 +56,16 @@ impl Default for BackupCustomEntryType {
     }
 }
 
+/// `#[serde(default)]` only covers a MISSING key; an explicit `null` (hand
+/// edit, older writer) would fail the whole entry and the adapter's filter_map
+/// would silently drop the user's custom backup entry. Read null as empty.
+fn null_as_empty_string_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<Vec<String>>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 /// User-defined local file/directory that should be included in backups
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct BackupCustomEntry {
@@ -70,7 +80,7 @@ pub struct BackupCustomEntry {
     /// the `/`-separated path relative to the entry root; a matched directory
     /// prunes its whole subtree. Only applied to directory entries at pack
     /// time, so restore stays consistent by construction.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty_string_vec")]
     pub exclude_patterns: Vec<String>,
 }
 

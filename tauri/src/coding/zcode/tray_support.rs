@@ -124,6 +124,10 @@ pub async fn get_zcode_prompt_tray_data<R: Runtime>(
     let items = commands::list_zcode_prompt_configs(app.state())
         .await?
         .into_iter()
+        // The local-file bridge record is a mirror of the on-disk prompt, not a
+        // selectable tray entry — applying it would look up a DB row that does
+        // not exist and answer "not found" (same filter as the other CLIs).
+        .filter(|item| item.id != crate::coding::local_bridge::LOCAL_CONFIG_ID)
         .map(|item| TrayPromptItem {
             id: item.id,
             display_name: item.name,

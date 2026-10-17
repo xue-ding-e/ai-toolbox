@@ -1,5 +1,5 @@
 import React from 'react';
-import { Checkbox, DatePicker, Empty, Input, Pagination, Select, Table } from 'antd';
+import { Checkbox, DatePicker, Empty, Input, Modal, Pagination, Select, Table } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { save } from '@tauri-apps/plugin-dialog';
 import {
@@ -24,6 +24,7 @@ import {
   exportProxyGatewayRequestLogDetail,
   getProxyGatewayRequestLogDetail,
   importProxyGatewaySessionUsage,
+  rebuildProxyGatewaySessionUsage,
   listProxyGatewayRequestLogs,
   type GatewayUsageTool,
   GATEWAY_USAGE_TOOLS,
@@ -314,6 +315,7 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
   const [loading, setLoading] = React.useState(false);
   const [detailLoading, setDetailLoading] = React.useState(false);
   const [importing, setImporting] = React.useState(false);
+  const [rebuilding, setRebuilding] = React.useState(false);
   const [exportingDetail, setExportingDetail] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<string | null>(null);
@@ -482,6 +484,46 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
     } finally {
       setImporting(false);
     }
+  };
+
+  /**
+   * Backup, clear and re-import. Destructive enough to confirm first: the
+   * backend takes a database backup and refuses an empty source set, but the
+   * confirmation states what a rebuild means so the button is not a mystery.
+   */
+  const handleRebuildSessionUsage = async () => {
+    Modal.confirm({
+      title: t('gateway.page.requests.rebuildConfirmTitle'),
+      content: t('gateway.page.requests.rebuildConfirmContent'),
+      okText: t('gateway.page.requests.rebuildConfirmOk'),
+      okButtonProps: { danger: true },
+      cancelText: t('common.cancel'),
+      onOk: async () => {
+        setRebuilding(true);
+        setError(null);
+        setNotice(null);
+        try {
+          const result = await rebuildProxyGatewaySessionUsage({ cli_key: 'all' });
+          setNotice(t(result.failed_files > 0
+            ? 'gateway.page.requests.importPartialFailure'
+            : 'gateway.page.requests.rebuildDone', {
+            inserted: formatInteger(result.inserted_records),
+            updated: formatInteger(result.updated_records),
+            skipped: formatInteger(result.skipped_records),
+            files: formatInteger(result.scanned_files),
+            failed: formatInteger(result.failed_files),
+            count: result.failed_files,
+          }));
+          setNoticeKind(result.failed_files > 0 ? 'warning' : 'success');
+          setPage(1);
+          setImportRefreshRevision((revision) => revision + 1);
+        } catch (rebuildError) {
+          setError(t('gateway.page.requests.importFailed', { error: formatGatewayError(rebuildError) }));
+        } finally {
+          setRebuilding(false);
+        }
+      },
+    });
   };
 
   const handleExportDetail = async () => {
@@ -1080,6 +1122,15 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
           >
             {importing ? <Loader2 size={13} className={styles.spin} aria-hidden="true" /> : <Database size={13} aria-hidden="true" />}
             <span>{t('gateway.page.requests.importSessions')}</span>
+          </button>
+          <button
+            type="button"
+            className={styles.importButton}
+            disabled={rebuilding || importing}
+            onClick={() => void handleRebuildSessionUsage()}
+          >
+            {rebuilding ? <Loader2 size={13} className={styles.spin} aria-hidden="true" /> : <RefreshCw size={13} aria-hidden="true" />}
+            <span>{t('gateway.page.requests.rebuildSessions')}</span>
           </button>
           <button
             type="button"

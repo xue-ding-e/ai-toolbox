@@ -78,7 +78,7 @@ sequenceDiagram
 - `proxy_gateway/session_import/zcode.rs`：从同一个 `db.sqlite` 的 `model_usage` 表导入用量（`attempt_index = 0 AND status = 'completed'`）。**两边共用同一个文件路径常量**，改路径要同时改。
 - `coding/tools`：MCP / Skills 注册表通过 `zcode` 工具名发现本模块。
 - 托盘：`tray_support.rs` 提供 ZCode 的托盘项；新增需要主窗口的入口必须先判断 `lightweight::is_lightweight_mode()`。
-- WSL/SSH：默认映射覆盖 `v2/provider_config.json`、`v2/credentials.json`、`cli/config.json`、`AGENTS.md`、`skills/`。**注意 `credentials.json` 含密文，跨机同步后能否解密取决于两端密钥推导输入（用户名/家目录）是否一致**。
+- WSL/SSH：默认映射覆盖 `v2/provider_config.json`、`cli/config.json`、`AGENTS.md`、`skills/`。**`v2/credentials.json` 不在默认映射里**（密文跨机同步后能否解密取决于两端密钥推导输入（用户名/家目录）是否一致，所以有目的地排除；同步弹窗的提示也说明了这个原因）。
 
 ## 最小验证
 

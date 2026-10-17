@@ -154,7 +154,9 @@ export async function verifyZcodeCardView({ send, evaluate, baseUrl, artifactRoo
   check(
     'the account cell is drawn in the shared cell frame',
     await evaluate(`(() => {
-      const anchor = document.querySelector('[data-provider-id="${officialCardId}"]');
+      // The account cell is not a locate target, so it is found by its
+      // data-provider-kind hook rather than by data-provider-id.
+      const anchor = document.querySelector('[data-provider-kind="official-account"]');
       const surface = anchor.firstElementChild;
       return {
         // The shared shell, by its own contract rather than by a class name:
@@ -356,7 +358,7 @@ export async function verifyZcodeCardView({ send, evaluate, baseUrl, artifactRoo
   );
   check(
     'the row keeps a handle of its own to be dragged by',
-    await evaluate(`Boolean(document.querySelector('[data-provider-id="${officialCardId}"] [data-provider-card-handle]'))`),
+    await evaluate(`Boolean(document.querySelector('[data-provider-kind="official-account"] [data-provider-card-handle]'))`),
   );
   // Pressing the body opens the manager; pressing the handle and moving the card
   // must not. The handle is a `<span>`, so "is this a control?" cannot be

@@ -2402,6 +2402,7 @@ const DshPage: React.FC = () => {
           open={importModalOpen}
           onClose={() => setImportModalOpen(false)}
           onImport={handleImportFavoriteProviders}
+          toolName="dsh"
           existingProviderIds={existingFavoriteProviderIds}
           providerFilter={(provider) => isFavoriteProviderForSource('dsh', provider)}
         />

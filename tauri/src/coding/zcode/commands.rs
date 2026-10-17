@@ -422,6 +422,92 @@ fn next_sort_index(db: &SqliteDbState) -> Result<i64, String> {
     })
 }
 
+/// Mirrors `buildZcodeProviderId` on the frontend: lowercase the name, collapse
+/// every run of non-alphanumerics into one `-`, trim the ends.
+pub fn zcode_provider_id_slug(name: &str) -> String {
+    let mut slug = String::new();
+    for ch in name.trim().to_lowercase().chars() {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch);
+        } else if !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    let slug = slug.trim_matches('-');
+    if slug.is_empty() {
+        "provider".to_string()
+    } else {
+        slug.to_string()
+    }
+}
+
+/// Derives the row id and settings for a create call that carried no row id.
+///
+/// Imports hand over a `settings_config` whose `providerId` is the registry
+/// identity the row will be projected under. Reusing it as the row id keeps the
+/// two ids identical, which `select_zcode_provider` and the tray both address
+/// rows by — a generated row id would leave "set as default" unable to find the
+/// registry entry and `sync_applied_flag_with_selection` unable to find the row.
+/// An empty `providerId` is filled from the display name so an imported row is
+/// usable without a manual edit; rows whose settings cannot be parsed keep the
+/// generated-id fallback.
+pub fn derive_zcode_row_id_and_settings(
+    db: &SqliteDbState,
+    provider: &ZcodeProviderInput,
+) -> Result<(String, String), String> {
+    let mut settings_config = provider.settings_config.clone();
+    let mut row_id = match serde_json::from_str::<Value>(&settings_config) {
+        Ok(mut settings) if settings.is_object() => {
+            let existing_id = settings
+                .get("providerId")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    format!("custom:{}", zcode_provider_id_slug(&provider.name))
+                });
+            if projection::is_managed_provider_id(&existing_id)
+                && !projection::is_reserved_provider_id(&existing_id)
+            {
+                settings
+                    .as_object_mut()
+                    .expect("checked object above")
+                    .insert("providerId".to_string(), Value::String(existing_id.clone()));
+                settings_config = serde_json::to_string(&settings)
+                    .map_err(|error| format!("Failed to serialize ZCode provider settings: {error}"))?;
+                existing_id
+            } else {
+                return Ok((crate::coding::db_id::db_new_id(), settings_config));
+            }
+        }
+        _ => return Ok((crate::coding::db_id::db_new_id(), settings_config)),
+    };
+    // The registry id must be unique per row: re-importing a favorite whose
+    // source row still exists would otherwise overwrite it through the shared
+    // id. Suffix the copy and mirror the suffix into the settings it projects.
+    let base = row_id.clone();
+    let mut suffix = 2;
+    loop {
+        let taken = db
+            .with_conn(|conn| db_get(conn, DbTable::ZcodeProvider, &row_id))?
+            .is_some();
+        if !taken {
+            return Ok((row_id, settings_config));
+        }
+        row_id = format!("{base}-{suffix}");
+        suffix += 1;
+        if let Ok(mut settings) = serde_json::from_str::<Value>(&settings_config) {
+            settings
+                .as_object_mut()
+                .expect("checked object above")
+                .insert("providerId".to_string(), Value::String(row_id.clone()));
+            settings_config = serde_json::to_string(&settings)
+                .map_err(|error| format!("Failed to serialize ZCode provider settings: {error}"))?;
+        }
+    }
+}
+
 /// Creates or updates a provider row. The registry projection happens in
 /// [`save_zcode_provider`], which holds the write lock.
 #[tauri::command]
@@ -432,13 +518,17 @@ pub async fn create_zcode_provider(
 ) -> Result<super::types::ZcodeProvider, String> {
     let _guard = CONFIG_WRITE_LOCK.lock().await;
     let db = state.inner();
-    let id = provider.id.clone().unwrap_or_else(crate::coding::db_id::db_new_id);
+    let (id, settings_config) = if provider.id.is_some() {
+        (provider.id.clone().expect("checked above"), provider.settings_config.clone())
+    } else {
+        derive_zcode_row_id_and_settings(db, &provider)?
+    };
     let now = Local::now().to_rfc3339();
     let sort_index = next_sort_index(db)?;
     let content = super::types::ZcodeProviderContent {
         name: provider.name,
         category: provider.category,
-        settings_config: provider.settings_config,
+        settings_config,
         source_provider_id: provider.source_provider_id,
         website_url: provider.website_url,
         notes: provider.notes,
@@ -697,16 +787,34 @@ pub async fn select_zcode_provider_internal_without_events(
     let _guard = CONFIG_WRITE_LOCK.lock().await;
     let path = zcode_provider_config_path(db)?;
     let mut base = projection::read_provider_config_base(&path);
-    if !projection::list_provider_ids(&base).contains(&provider_id.to_string()) {
+    let registry_id = if projection::list_provider_ids(&base).contains(&provider_id.to_string())
+    {
+        provider_id.to_string()
+    } else {
+        // The argument may be a DB row id instead of a registry id: rows created
+        // by older imports used generated row ids while their settings carry the
+        // registry identity. Resolve through the stored settings so "set as
+        // default" keeps working for those rows.
+        let stored = db
+            .with_conn(|conn| db_get(conn, DbTable::ZcodeProvider, provider_id))?
+            .ok_or_else(|| {
+                format!("Provider '{provider_id}' is not present in the ZCode registry.")
+            })?;
+        let settings: super::types::ZcodeSettingsConfig =
+            serde_json::from_str(&super::adapter::from_db_value_provider(stored).settings_config)
+                .map_err(|error| format!("Invalid ZCode provider settings: {error}"))?;
+        settings.provider_id
+    };
+    if !projection::list_provider_ids(&base).contains(&registry_id) {
         return Err(format!(
             "Provider '{provider_id}' is not present in the ZCode registry."
         ));
     }
-    projection::set_default_model_selection(&mut base, provider_id, model_id);
+    projection::set_default_model_selection(&mut base, &registry_id, model_id);
     projection::atomic_write_json(&path, &base)?;
     // The card's "default" badge and the startup reapply pass both read this
     // flag, so the registry write and the DB row must move together.
-    sync_applied_flag_with_selection(db, provider_id)
+    sync_applied_flag_with_selection(db, &registry_id)
 }
 
 /// Lists provider templates from the installed ZCode built-in catalog.

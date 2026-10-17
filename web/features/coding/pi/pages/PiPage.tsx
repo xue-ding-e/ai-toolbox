@@ -814,10 +814,6 @@ const PiPage: React.FC = () => {
     };
   }, [connectivityProviderId, piProviders]);
 
-  const translateRuntimeLabel = React.useCallback((prefix: string, value: string): string => (
-    t(`${prefix}.${value}`, { defaultValue: value })
-  ), [t]);
-
   const upsertPiFavoriteProvider = React.useCallback(async (
     providerKey: string,
     modelsProvider: Record<string, unknown>,
@@ -1841,7 +1837,10 @@ const PiPage: React.FC = () => {
       sdkName: getStringField(providerConfig, 'api') || provider.categories.join(', ') || 'pi',
       baseUrl: providerBaseUrl
         || credentialPreview
-        || provider.sources.map((source) => translateRuntimeLabel('pi.sourceLabels', source)).join(' / ')
+        // Inline template (not via a prefix-taking helper) so the i18n key
+        // scanner sees `pi.sourceLabels.` as a live dynamic prefix — the
+        // helper indirection once hid it and `i18n:prune` deleted live copy.
+        || provider.sources.map((source) => t(`pi.sourceLabels.${source}`, { defaultValue: source })).join(' / ')
         || t('pi.provider.builtinHint'),
     };
     const modelDisplayList: ModelDisplayData[] = getProviderModelRecords(provider.modelsProvider).map((entry) => ({

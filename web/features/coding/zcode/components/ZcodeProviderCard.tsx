@@ -58,6 +58,10 @@ interface ZcodeProviderCardProps {
   /** Switches one model on or off in ZCode's catalog. */
   onToggleModelDisabled?: (modelId: string, isDisabled: boolean) => void;
   onReorderModels?: (orderedModelIds: string[]) => void;
+  /** Hides the drag handle while the list order cannot be changed (non-custom sort or search). */
+  dragDisabled?: boolean;
+  /** Disables the delete button and explains why on hover. */
+  deleteDisabledReason?: string;
   /** Connectivity test for the whole catalog; hidden while it cannot run. */
   onTestModels?: () => void;
   testModelsDisabled?: boolean;
@@ -101,6 +105,8 @@ const ZcodeProviderCard: React.FC<ZcodeProviderCardProps> = ({
   onSetPrimaryModel,
   onToggleModelDisabled,
   onReorderModels,
+  dragDisabled = false,
+  deleteDisabledReason,
   onTestModels,
   testModelsDisabled = false,
   testModelsDisabledTooltip,
@@ -247,7 +253,9 @@ const ZcodeProviderCard: React.FC<ZcodeProviderCardProps> = ({
       isDisabled: provider.isDisabled,
       onToggleDisabled,
       // Card-level drag handle: the provider order is what is being sorted here.
-      draggable: !selectable,
+      // The sensors are removed while the list cannot be reordered, and the
+      // handle must disappear with them (otherwise it renders but drags nothing).
+      draggable: !selectable && !dragDisabled,
       sortableId: provider.id,
       connectivityStatus,
       selectable,
@@ -260,6 +268,7 @@ const ZcodeProviderCard: React.FC<ZcodeProviderCardProps> = ({
       onCopy,
       onDelete,
       deleteConfirm: false,
+      deleteDisabledReason,
     },
     nameTags,
     modelSection,

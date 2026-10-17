@@ -25,7 +25,10 @@ interface KimiCommonConfigModalProps {
 const KimiCommonConfigModal: React.FC<KimiCommonConfigModalProps> = ({
   open,
   config,
-  modelAliasKeys = [],
+  // Deliberately no `= []` default: `undefined` means the applied catalog is
+  // unknown and the swarm validator must skip the resolvability check; a
+  // default would coerce it back to "known empty" and block every save.
+  modelAliasKeys,
   onCancel,
   onSubmit,
 }) => {
@@ -54,7 +57,7 @@ const KimiCommonConfigModal: React.FC<KimiCommonConfigModalProps> = ({
   // Pool options come from the applied provider's catalog; a key already stored
   // in the pool must stay selectable even when the catalog no longer lists it.
   const poolOptions = useMemo(() => {
-    const keys = new Set<string>(modelAliasKeys);
+    const keys = new Set<string>(modelAliasKeys ?? []);
     for (const model of swarmConfig.models) {
       if (model.trim()) {
         keys.add(model.trim());

@@ -62,7 +62,8 @@ const SIDEBAR_ICON_BY_SECTION_ID: Record<string, React.ReactNode> = {
 /**
  * OmO Native 页面。
  *
- * 与其余 coding tab 同构：页头 + **三个区块**（供应商列表 / 全局提示词 / 会话管理）。
+ * 与其余 coding tab 同构：页头（含「模型设置」默认渠道下拉）+ **六个区块**
+ * （供应商列表 / 引擎内建渠道 / 扩展 / 全局提示词 / 其他配置 / 会话管理）。
  * 早先这里还挂着「生效配置」「Agent·Category 方案」「MCP 与 Skills」「更多选项」
  * 四个 Native 专属区块，2026-10-07 按统一页面形态移除：
  *

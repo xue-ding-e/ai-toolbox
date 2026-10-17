@@ -1092,17 +1092,35 @@ fn set_local_extension_enabled(
             )
         })?,
     };
-    // 只有 `-pattern` 属于这个开关。用户自己的 `!pattern`（手工排除）或
-    // `+pattern`（强制包含）保持不动：删掉会在用户背后改变加载内容。
+    // 用户手写的 `!glob`（手工排除）保持不动——它可能还盖着别的扩展；启用时
+    // 用引擎自己的 `+` 强制包含去赢它（读侧 `isEnabledByOverrides` 的顺序就是
+    // `!` → `+` → `-`），而不是删掉用户的行。
+    let excluded_by_user_glob = entries.iter().any(|entry| {
+        entry.as_str().is_some_and(|value| {
+            let (prefix, payload) = split_pattern_prefix(value);
+            prefix == Some('!') && glob_matches(payload, &pattern)
+        })
+    });
     entries.retain(|entry| {
         let Some(value) = entry.as_str() else {
             return true;
         };
         let (prefix, payload) = split_pattern_prefix(value);
-        prefix != Some('-') || normalize_exact_pattern(payload) != pattern
+        let exact_match = normalize_exact_pattern(payload) == pattern;
+        match prefix {
+            // `-pattern` 是这个开关自己写的标记，重开时先摘掉。
+            Some('-') => !exact_match,
+            // 启用且确有 `!` glob 挡着时，`+pattern` 覆盖行由开关重写（先摘旧
+            // 副本保证幂等）。禁用时用户的 `+` 原样保留——`-` 本来就赢它。
+            Some('+') => !(enabled && excluded_by_user_glob && exact_match),
+            _ => true,
+        }
     });
     if !enabled {
         entries.push(Value::String(format!("-{pattern}")));
+    } else if excluded_by_user_glob {
+        // 不补 `+` 的话，读侧仍被用户的 `!` 判成禁用——开关看起来点了没反应。
+        entries.push(Value::String(format!("+{pattern}")));
     }
     if entries.is_empty() {
         settings_object.remove(spec.extensions_dir);
@@ -2336,6 +2354,53 @@ User packages:
         assert!(entries.contains(&Value::String("!extensions/foo.ts".to_string())));
         assert!(entries.contains(&Value::String("+extensions/foo.ts".to_string())));
         assert!(entries.contains(&Value::String("-extensions/foo.ts".to_string())));
+    }
+
+    #[test]
+    fn enabling_overrides_a_user_written_bang_glob_with_a_plus_entry() {
+        // 读侧认 `!` glob，写侧以前只摘 `-pattern`：用户手写 `!extensions/*.ts`
+        // 后开关显示「已禁用」，点启用却什么都不改，看起来点了没反应。
+        let mut settings: Value =
+            serde_json::from_str(r#"{ "extensions": ["!extensions/*.ts"] }"#)
+                .expect("parse");
+        let object = settings.as_object_mut().expect("object");
+
+        set_local_extension_enabled(
+            &TEST_SPEC,
+            object,
+            "foo.ts",
+            CliExtensionKind::LocalFile,
+            true,
+        )
+        .expect("enable");
+
+        let entries = object["extensions"].as_array().expect("array");
+        // 用户的 glob 原样保留（它可能还盖着别的文件）；用引擎自己的
+        // `+` 强制包含去赢它——读侧顺序就是 `!` → `+` → `-`。
+        assert!(entries.contains(&Value::String("!extensions/*.ts".to_string())));
+        assert!(entries.contains(&Value::String("+extensions/foo.ts".to_string())));
+        assert!(is_local_extension_enabled(
+            object.get("extensions"),
+            "extensions/foo.ts",
+        ));
+
+        // 幂等：再点一次启用不能堆出第二条 `+`。
+        set_local_extension_enabled(
+            &TEST_SPEC,
+            object,
+            "foo.ts",
+            CliExtensionKind::LocalFile,
+            true,
+        )
+        .expect("enable again");
+        let entries = object["extensions"].as_array().expect("array");
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| entry.as_str() == Some("+extensions/foo.ts"))
+                .count(),
+            1
+        );
     }
 
     #[test]

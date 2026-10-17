@@ -40,11 +40,18 @@ export const loadProviderListState = (): Promise<ProviderListState> => {
     statePromise = getProviderListState()
       .then((state) => {
         cachedState = normalize(state);
-        return cachedState;
       })
       // A failed read settles to defaults rather than rejecting: callers render
       // the default order/layout, which is always a valid view.
-      .catch(() => EMPTY_STATE);
+      .catch(() => {
+        cachedState = EMPTY_STATE;
+      })
+      // Re-reads resolve from the CURRENT cache, not the load-time snapshot:
+      // writers patch `cachedState` in place, and a KeepAlive LRU eviction can
+      // remount a page long after this load settled — handing such a remount
+      // the frozen snapshot would silently revert every write since then
+      // (view mode, sort order) while the backend still holds the new value.
+      .then(() => cachedState);
   }
   return statePromise;
 };

@@ -835,6 +835,7 @@ const OmoNativeProvidersSection: React.FC<OmoNativeProvidersSectionProps> = ({
         open={importModalOpen}
         onClose={() => setImportModalOpen(false)}
         onImport={(imported) => void handleImportFavoriteProviders(imported)}
+        toolName="OmO Native"
         existingProviderIds={customProviders.map((provider) =>
           buildFavoriteProviderStorageKey('omo_native', provider.key),
         )}

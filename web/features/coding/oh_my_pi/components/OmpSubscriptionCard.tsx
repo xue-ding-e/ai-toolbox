@@ -2,7 +2,7 @@ import React from 'react';
 import { Alert, Button, Modal, Space, Typography, message } from 'antd';
 import { CopyOutlined, ReloadOutlined } from '@ant-design/icons';
 import { open } from '@tauri-apps/plugin-dialog';
-import { readTextFile, stat } from '@tauri-apps/plugin-fs';
+import { readTextFile } from '@tauri-apps/plugin-fs';
 import { useTranslation } from 'react-i18next';
 import { OpenCodeStyleCard } from '@/features/coding/shared/providerCardVariants';
 import { OfficialAccountsSection } from '@/features/coding/shared/officialAccounts';
@@ -180,13 +180,14 @@ const OmpSubscriptionCard: React.FC<Props> = ({ rootPath, provider, defaultModel
     // Credentials exist only in this operation's local scope, never UI state or logs.
     let authJson = '';
     try {
-      const info = await stat(selected);
-      if (!info.isFile || info.size > 256 * 1024) {
-        return { ...accountState, error: t('ohMyPi.subscription.invalidAuthFile') };
-      }
-      if (!active.current || rootPath !== currentRoot.current) return accountState;
       authJson = await readTextFile(selected);
       if (!active.current || rootPath !== currentRoot.current) return accountState;
+      // The backend limit is measured on the decoded string's UTF-8 bytes
+      // (`raw.len()`), not the on-disk file size — a UTF-16/BOM file's size and
+      // its decoded byte count disagree, so measure the same thing here.
+      if (new TextEncoder().encode(authJson).length > 256 * 1024) {
+        return { ...accountState, error: t('ohMyPi.subscription.invalidAuthFile') };
+      }
       return await importOmpCodexAccount(rootPath, authJson);
     } finally {
       authJson = '';

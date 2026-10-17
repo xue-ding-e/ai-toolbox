@@ -2,6 +2,8 @@ import type { CcSwitchProviderCandidate } from '@/services/ccSwitchApi';
 import type { OpenCodeAllApiHubProvider } from '@/services/opencodeApi';
 import type { ZcodeSettingsConfig } from '@/types/zcode';
 
+import { buildZcodeProviderId } from './zcodeSettingsConfig.ts';
+
 /**
  * A provider pulled from an external source, reduced to what ZCode stores.
  *
@@ -84,12 +86,17 @@ export function extractZcodeProviderFromAllApiHub(
  *
  * Both import sources hand over an endpoint and a key, never a catalog, so the
  * model list starts empty and the user fills it with 获取模型 — the same place
- * every other CLI's import leaves them. `providerId` is blank because the
- * backend assigns the managed id when the row is written.
+ * every other CLI's import leaves them.
+ *
+ * The provider id is derived from the name here so the row's identity is known
+ * before it is written: the backend reuses it as the row id (with a uniqueness
+ * suffix when the name is taken), which is what keeps "set as default" able to
+ * find the registry entry. The backend still fills a blank id as a guard for
+ * rows whose settings predate this.
  */
 export function buildZcodeSettingsConfigFromImport(imported: ZcodeImportedProvider): string {
   const settings: ZcodeSettingsConfig = {
-    providerId: '',
+    providerId: buildZcodeProviderId(imported.name),
     providerName: imported.name,
     config: {
       access: {

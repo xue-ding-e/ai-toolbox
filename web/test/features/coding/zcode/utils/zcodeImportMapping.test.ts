@@ -114,8 +114,11 @@ test('the stored settings config keeps the endpoint, the key and the format', ()
     }),
   );
 
+  // The registry identity is derived from the name up front (mirroring the
+  // form flow); a blank providerId used to degrade the card and make every
+  // later write fail the backend's managed-id projection.
   assert.deepEqual(settings, {
-    providerId: '',
+    providerId: 'custom:my-relay',
     providerName: 'My Relay',
     config: {
       access: { type: 'api-key', apiKey: 'sk-1' },

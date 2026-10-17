@@ -828,6 +828,143 @@ fn rebuild_reimports_session_usage_and_keeps_proxy_rows() {
     .unwrap();
 }
 
+/// A rebuild preserves the ledger's matched-proxy ids: after the proxy detail
+/// rows are rolled up and pruned, `find_matching_proxy` has nothing left to
+/// match against, so the only thing standing between the re-import and a
+/// doubled daily rollup is the marker the clear writes.
+#[test]
+fn a_rebuild_keeps_matches_for_archived_proxy_rows() {
+    let root = tempfile::tempdir().unwrap();
+    let sessions = root.path().join("sessions");
+    fs::create_dir_all(&sessions).unwrap();
+    write_codex_cache_write_session(
+        &sessions.join(format!("rollout-{PARENT}.jsonl")),
+        // The matching counters (7211 cache-write), not the mismatch case's
+        // 7210: this session must be recognized as the proxy row's twin.
+        &[codex_cache_write_event(230436, 223222, 7211, 808)],
+    );
+
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    insert_codex_cache_write_pricing(&db);
+    insert_codex_cache_write_proxy(&db);
+    // The session import matches the proxy row and suppresses the native one.
+    let result = run_sync(&db, GatewayCliKey::Codex, &sessions);
+    assert_eq!(result.inserted_records, 0, "the proxy row represents the call");
+    assert_eq!(count(&db), 1);
+
+    // Archive the proxy row. The production pruner keeps its tokens in the
+    // daily rollup under the real provider and deletes the detail row; the
+    // rollup cutoff is wall-clock based, so the test simulates the second half
+    // directly — the point is that no live proxy row remains to match.
+    let detail_rows = |db: &SqliteDbState| -> u64 {
+        db.with_conn(|conn| {
+            let total: i64 = conn
+                .query_row("SELECT COUNT(*) FROM proxy_request_logs", [], |row| row.get(0))
+                .map_err(|error| error.to_string())?;
+            Ok(total.max(0) as u64)
+        })
+        .unwrap()
+    };
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO usage_daily_rollups
+                (date, app_type, provider_id, model, request_count, success_count,
+                 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                 total_cost_usd, avg_latency_ms)
+             VALUES ('2027-01-15','codex','provider','gpt-6-astra',1,1,3,808,223222,7211,'0.353790',0)",
+            [],
+        )
+        .map_err(|error| error.to_string())?;
+        conn.execute(
+            "DELETE FROM proxy_request_logs WHERE request_id = 'codex-cache-write-proxy'",
+            [],
+        )
+        .map_err(|error| error.to_string())?;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(detail_rows(&db), 0, "the proxy detail row is pruned");
+
+    // Rebuild: the marker must carry the match across the clear, or the same
+    // call is imported as a second (session-sourced) detail row.
+    let rebuilt = rebuild_sources(
+        &db,
+        &[(GatewayUsageTool::Codex, sessions.clone())],
+        &[GatewayUsageTool::Codex],
+        NOW,
+    )
+    .unwrap();
+    assert_eq!(rebuilt.inserted_records, 0, "the archived match survives");
+    assert_eq!(detail_rows(&db), 0, "no second detail row appears");
+
+    // And the marker's record re-lands in the real source state with the match.
+    let states = load_states(&db).unwrap();
+    let source_id = format!(
+        "codex:{}",
+        source_identity(GatewayUsageTool::Codex, &sessions.join(format!("rollout-{PARENT}.jsonl")))
+    );
+    let state = states.get(&source_id).expect("state re-imported");
+    assert_eq!(
+        state
+            .records
+            .values()
+            .find_map(|record| record.matched_proxy_id.clone()),
+        Some("codex-cache-write-proxy".to_string()),
+        "the re-imported record keeps the archived proxy match"
+    );
+}
+
+/// A rebuild whose source resolution came back empty must not clear what the
+/// previous import wrote: the CLI home may point at a directory that exists
+/// but is unreachable (unmounted WSL, moved sessions root), and the delete
+/// path keys on `cli_key`, not on what the scan found.
+#[test]
+fn a_rebuild_without_sources_refuses_to_clear_existing_usage() {
+    let root = tempfile::tempdir().unwrap();
+    let sessions = root.path().join("sessions");
+    fs::create_dir_all(&sessions).unwrap();
+    let filename = format!("rollout-{PARENT}.jsonl");
+    write_jsonl(
+        &sessions.join(&filename),
+        &[
+            json!({"type":"session_meta","payload":{"id":PARENT}}),
+            token_event(100, 100, 10, THEN),
+        ],
+    );
+
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    run_sync(&db, GatewayCliKey::Codex, &sessions);
+    assert_eq!(count(&db), 1);
+
+    // The root exists but holds nothing the parser reads (or resolved to
+    // nothing at all): the rebuild must refuse rather than wipe the import.
+    let empty_root = root.path().join("unmounted");
+    fs::create_dir_all(&empty_root).unwrap();
+    let error = rebuild_sources(
+        &db,
+        &[(GatewayUsageTool::Codex, empty_root.clone())],
+        &[GatewayUsageTool::Codex],
+        NOW,
+    )
+    .unwrap_err();
+    assert!(
+        error.contains("Refusing to rebuild"),
+        "the refusal names its reason: {error}"
+    );
+    assert_eq!(count(&db), 1, "the imported history survives the refusal");
+
+    // A machine with no imports at all rebuilds as a no-op, not an error.
+    let fresh = SqliteDbState::in_memory_for_test().unwrap();
+    let result = rebuild_sources(
+        &fresh,
+        &[(GatewayUsageTool::Codex, empty_root.clone())],
+        &[GatewayUsageTool::Codex],
+        NOW,
+    )
+    .unwrap();
+    assert_eq!(result.inserted_records, 0);
+}
+
 #[test]
 fn codex_archive_keeps_the_same_import_identity() {
     let root = tempfile::tempdir().unwrap();
@@ -849,6 +986,40 @@ fn codex_archive_keeps_the_same_import_identity() {
     assert_eq!(
         run_sync(&db, GatewayCliKey::Codex, &archive).inserted_records,
         0
+    );
+    assert_eq!(count(&db), 1);
+}
+
+/// Codex compresses rollouts in place (`x.jsonl` -> `x.jsonl.zst`, then the
+/// original is deleted). `Path::file_stem` only strips the last extension, so
+/// the ledger key used to drift from the UUID to the whole stem across a
+/// compression cycle — the old state row orphaned, the same transcript
+/// re-scanned as a brand-new source.
+#[test]
+fn codex_zst_rollout_keeps_the_same_import_identity() {
+    let root = tempfile::tempdir().unwrap();
+    let sessions = root.path().join("sessions");
+    fs::create_dir_all(&sessions).unwrap();
+    let plain = sessions.join(format!("rollout-{PARENT}.jsonl"));
+    write_jsonl(
+        &plain,
+        &[
+            json!({"type":"session_meta","payload":{"id":PARENT}}),
+            token_event(100, 100, 10, THEN),
+        ],
+    );
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    run_sync(&db, GatewayCliKey::Codex, &sessions);
+
+    // The parser only reads JSONL; the zst copy stands in for the compressed
+    // file the CLI publishes. The identity is decided from the path, so a
+    // rename is enough to reproduce the drift.
+    let compressed = sessions.join(format!("rollout-{PARENT}.jsonl.zst"));
+    fs::rename(&plain, &compressed).unwrap();
+    assert_eq!(
+        run_sync(&db, GatewayCliKey::Codex, &sessions).inserted_records,
+        0,
+        "the compressed rollout keeps its pre-compression identity"
     );
     assert_eq!(count(&db), 1);
 }

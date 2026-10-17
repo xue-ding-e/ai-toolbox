@@ -64,7 +64,11 @@ const flashWhenArrived = (card: HTMLElement) => {
   let stillFrames = 0;
   const step = () => {
     const rect = card.getBoundingClientRect();
-    const inView = rect.top >= 0 && rect.bottom <= window.innerHeight;
+    // `height > 0` keeps a hidden card (a collapsed ancestor reports zero
+    // rects) from counting as in-view: `top >= 0 && bottom <= innerHeight`
+    // is trivially true for an all-zero rect, and the flash would be spent
+    // on a card nobody can see.
+    const inView = rect.height > 0 && rect.top >= 0 && rect.bottom <= window.innerHeight;
     stillFrames = inView && Math.abs(rect.top - previousTop) < 0.5 ? stillFrames + 1 : 0;
     previousTop = rect.top;
     if (stillFrames < 2 && performance.now() - startedAt < SCROLL_SETTLE_DEADLINE_MS) {
@@ -447,6 +451,17 @@ const ProviderListSection: React.FC<ProviderListSectionProps> = ({
                       style={toolbarButtonStyle}
                       icon={<AimOutlined />}
                       onClick={handleLocateClick}
+                      // rc-collapse's Panel handles keydown itself and toggles
+                      // the section on Enter WITHOUT preventDefault, so the
+                      // button's synthetic click still fires after it: one
+                      // keypress would collapse the panel and then run locate
+                      // against the panel it just closed. Ending the keydown
+                      // here keeps the keyboard path equal to the pointer one.
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.stopPropagation();
+                        }
+                      }}
                     >
                       {t('common.provider.locate')}
                     </Button>

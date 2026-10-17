@@ -51,19 +51,27 @@ export const zcodeModalityValuesFor = (ruleKind: ZcodeModelRuleKind): string[] =
  * - **Do not drop them on save.** A row written by ZCode (or by an older build
  *   of this app) carries them, and re-saving must not silently delete them.
  */
-export const ZCODE_SYSTEM_PROPERTY_KEYS = ['supportsToolCall', 'requiresMfjsToolSchema'] as const;
+export const ZCODE_SYSTEM_PROPERTY_KEYS = [
+  'supportsToolCall',
+  'requiresMfjsToolSchema',
+  'outputFormat',
+] as const;
 
 /** Copies the system properties present on `existing`, leaving absent ones absent. */
 export const pickZcodeSystemProperties = (
   existing: ZcodeModelProperties | undefined,
 ): Pick<ZcodeModelProperties, (typeof ZCODE_SYSTEM_PROPERTY_KEYS)[number]> => {
-  const carried: Partial<ZcodeModelProperties> = {};
-  for (const key of ZCODE_SYSTEM_PROPERTY_KEYS) {
-    if (existing?.[key] !== undefined) {
-      carried[key] = existing[key];
-    }
+  const carried: ZcodeModelProperties = {};
+  if (existing?.supportsToolCall !== undefined) {
+    carried.supportsToolCall = existing.supportsToolCall;
   }
-  return carried as Pick<ZcodeModelProperties, (typeof ZCODE_SYSTEM_PROPERTY_KEYS)[number]>;
+  if (existing?.requiresMfjsToolSchema !== undefined) {
+    carried.requiresMfjsToolSchema = existing.requiresMfjsToolSchema;
+  }
+  if (existing?.outputFormat !== undefined) {
+    carried.outputFormat = existing.outputFormat;
+  }
+  return carried;
 };
 
 /**

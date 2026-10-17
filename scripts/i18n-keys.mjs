@@ -49,6 +49,11 @@ const DEFAULT_DYNAMIC_PROTECTED_PREFIXES = [
   'opencode.ohMyOpenCode.agentsMeta.',
   'opencode.ohMyOpenCode.categoriesMeta.',
   'opencode.ohMyOpenCodeSlim.agents.',
+  // Rendered by the shared CliExtensionsSection as
+  // `${i18nPrefix}.extensions.${descriptionKeySuffix}` — two stacked variables
+  // the scanner cannot expand, so the family needs blanket protection (Pi's
+  // recommended-extension descriptions live here).
+  'pi.extensions.',
   'settings.backup.builtinMappings.',
 ];
 
@@ -60,7 +65,10 @@ const DEFAULT_DYNAMIC_IDENTIFIER_VALUES_BY_FILE = {
     i18nPrefix: ['opencode', 'openclaw'],
   },
   'web/components/common/OfficialProviderCard/index.tsx': {
-    i18nPrefix: ['opencode'],
+    // OpenCode mounts it with the default 'opencode'; OmO Native's builtin
+    // providers section mounts it with 'omoNative'. A prefix missing here
+    // made `i18n:prune` delete the omoNative copy the card still renders.
+    i18nPrefix: ['opencode', 'omoNative'],
   },
   'web/components/common/ProviderCard/index.tsx': {
     i18nPrefix: ['opencode', 'openclaw'],

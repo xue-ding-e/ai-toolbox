@@ -179,6 +179,9 @@ export function buildKimiCatalogModelsFromPresets(
  *   upstream, so transient upstream fluctuations never wipe rows silently.
  * - A fetched id whose alias key already exists is skipped, preserving the
  *   user's customizations.
+ * - A selected upstream id lands in the catalog exactly once: the ordered
+ *   loop keeps the first row that already maps it, and the trailing loop does
+ *   not resurrect a second alias for the same upstream.
  * - New rows get the alias key `<providerKey>/<upstreamId>` — the same shape
  *   `kimi provider catalog add` writes — and the CLI-required fallback context
  *   size, since the models API does not report one.
@@ -247,14 +250,16 @@ export function importModelsIntoKimiCatalog(
     rows.push(row);
   }
 
-  // Rows the fetch did not mention keep their previous relative order.
+  // Rows the fetch did not mention keep their previous relative order. A row
+  // whose upstream id was already placed must not come back as a second alias
+  // for the same upstream — the import flow treats the upstream id as the row
+  // identity (the ordered loop keeps the first matching row intact), so the
+  // trailing loop dedupes by upstream id, not by row reference.
   for (const item of current) {
-    if (removed.has(item.model.trim())) {
+    if (removed.has(item.model.trim()) || placedKeys.has(item.model.trim())) {
       continue;
     }
-    if (!rows.includes(item)) {
-      rows.push(item);
-    }
+    rows.push(item);
   }
 
   return rows;

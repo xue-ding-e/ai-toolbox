@@ -92,6 +92,20 @@ test('system properties survive a save that does not expose them', () => {
   });
 });
 
+test('the outputFormat system property survives a save too', () => {
+  // `outputFormat` is the third smart-only system field; it was missing from
+  // the carry list, so saving any row ZCode wrote with an output format
+  // silently dropped the key and the model stopped declaring text output.
+  const existing = {
+    outputFormat: { supportsText: true, supportsReasoning: true },
+    contextWindow: 200_000,
+  };
+
+  assert.deepEqual(pickZcodeSystemProperties(existing), {
+    outputFormat: { supportsText: true, supportsReasoning: true },
+  });
+});
+
 test('an absent system property stays absent rather than becoming false', () => {
   // "Not set" and "set to false" are different to ZCode: an absent key lets its
   // catalog decide, an explicit false overrides it.

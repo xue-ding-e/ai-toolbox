@@ -31,6 +31,19 @@ pub(super) async fn agent_dir_for(db: &SqliteDbState) -> Result<std::path::PathB
     agent_dir(db).await
 }
 
+/// The settings file the engine itself reads from `agent_dir`: upstream
+/// (`setup-model-choices-import.js`) prefers `settings.jsonc` when it exists
+/// and falls back to `settings.json`. Every read/write of the default-model
+/// keys must go through this so the app and the engine never edit two
+/// different files.
+pub fn resolve_omo_native_settings_file_name(agent_dir: &Path) -> &'static str {
+    if agent_dir.join(constants::OMO_NATIVE_SETTINGS_FILE_FALLBACK).exists() {
+        constants::OMO_NATIVE_SETTINGS_FILE_FALLBACK
+    } else {
+        constants::OMO_NATIVE_SETTINGS_FILE
+    }
+}
+
 fn read_json_object(path: &Path) -> Result<Option<Value>, String> {
     if !path.exists() {
         return Ok(None);
@@ -587,6 +600,24 @@ fn read_skill_description(skill_dir: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settings_file_prefers_the_engine_jsonc_fallback() {
+        // Upstream reads `settings.jsonc` when it exists; without this
+        // resolution the app would keep patching `settings.json` while the
+        // engine reads a different file.
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert_eq!(
+            resolve_omo_native_settings_file_name(dir.path()),
+            "settings.json",
+            "no file on disk yet: writes start in the plain json file"
+        );
+        std::fs::write(dir.path().join("settings.jsonc"), "{}").expect("write jsonc");
+        assert_eq!(
+            resolve_omo_native_settings_file_name(dir.path()),
+            "settings.jsonc"
+        );
+    }
 
     #[test]
     fn escape_doubles_dollar_and_bang() {

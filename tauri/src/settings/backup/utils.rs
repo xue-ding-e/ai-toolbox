@@ -1325,8 +1325,12 @@ pub async fn list_backup_file_filter_path_options(
 
     // 与 `write_external_configs_to_backup_zip` 里打包 OmO 的那 5 个文件**逐字对应**：
     // 少一个，用户在备份设置里就筛不掉它（2026-10-07 复查发现整块缺失）。
+    // settings 走引擎自己的 jsonc→json 回退：实际在用的是哪个就列哪个。
+    let omo_native_agent_dir = runtime_location::get_omo_native_runtime_location_async(db)
+        .await?
+        .host_path;
     for file_name in [
-        omo_native::constants::OMO_NATIVE_SETTINGS_FILE,
+        omo_native::resolve_omo_native_settings_file_name(&omo_native_agent_dir),
         omo_native::constants::OMO_NATIVE_MODELS_FILE,
         omo_native::constants::OMO_NATIVE_AUTH_FILE,
         omo_native::constants::OMO_NATIVE_MCP_FILE,
@@ -3674,8 +3678,12 @@ async fn write_external_configs_to_backup_zip<W: Write + Seek>(
         )?;
     }
 
+    // settings 走引擎自己的 jsonc→json 回退，与可过滤选项清单保持同一份名字。
+    let omo_native_agent_dir = runtime_location::get_omo_native_runtime_location_async(db)
+        .await?
+        .host_path;
     for file_name in [
-        omo_native::constants::OMO_NATIVE_SETTINGS_FILE,
+        omo_native::resolve_omo_native_settings_file_name(&omo_native_agent_dir),
         omo_native::constants::OMO_NATIVE_MODELS_FILE,
         omo_native::constants::OMO_NATIVE_AUTH_FILE,
         omo_native::constants::OMO_NATIVE_MCP_FILE,

@@ -1777,7 +1777,9 @@ pub async fn resolve_dynamic_paths_with_db(
                         "omo-native-prompt" => {
                             crate::coding::omo_native::constants::OMO_NATIVE_PROMPT_FILE
                         }
-                        _ => crate::coding::omo_native::constants::OMO_NATIVE_SETTINGS_FILE,
+                        _ => crate::coding::omo_native::providers::resolve_omo_native_settings_file_name(
+                            &location.host_path,
+                        ),
                     };
                     mapping.local_path = location
                         .host_path

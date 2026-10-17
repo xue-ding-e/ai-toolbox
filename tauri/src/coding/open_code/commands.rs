@@ -1064,13 +1064,19 @@ pub async fn get_opencode_preview(
     })
 }
 
-/// 保存整份 `auth.json`（OpenCode 的官方渠道凭据文件）。
+/// 保存 `auth.json`（OpenCode 的官方渠道凭据文件）。
 ///
 /// 「官方Auth认证渠道」标题栏的 `auth.json` 入口用它——本应用是配置管理器，
 /// 密钥要能在应用内**查看并编辑**，而不是只丢一个「用资源管理器打开」的入口
 /// （2026-10-07 用户要求，与 OmO Native 的同类入口一致）。
 ///
-/// ⚠️ **整份覆盖**：用户在编辑器里删掉一个渠道就是要删掉它。
+/// ⚠️ **条目级合并，不是整份覆盖**：`original` 是编辑器打开那一刻的内容，
+/// `config` 是提交内容。以磁盘当前内容为基底合并：
+/// - 提交里有、打开时也有的条目：用户没改过的保留磁盘现值（CLI 在弹窗打开
+///   期间刷新的 OAuth token 不被旧快照覆盖），改过的写提交值；
+/// - 打开时有、提交里没有的条目：用户在编辑器里删掉它——移除；
+/// - 磁盘有、打开时没有的条目：打开后才出现（如 CLI 新登录），保留。
+/// `original` 为空对象时退化为整份覆盖（新建文件或旧版调用方语义）。
 ///
 /// ⚠️ **不做 config value 转义**（与 OmO 不同）：OpenCode 的 `auth.json` 值按
 /// 字面量使用，`$` 不会被插值，写进去什么就是什么。
@@ -1078,6 +1084,7 @@ pub async fn get_opencode_preview(
 pub async fn save_opencode_auth_config(
     app: tauri::AppHandle,
     config: Value,
+    original: Value,
 ) -> Result<(), String> {
     if !config.is_object() {
         return Err("auth.json must be a JSON object".to_string());
@@ -1088,10 +1095,61 @@ pub async fn save_opencode_auth_config(
         fs::create_dir_all(parent)
             .map_err(|e| format!("Failed to create {}: {}", parent.display(), e))?;
     }
-    let text =
-        serde_json::to_string_pretty(&config).map_err(|e| format!("Failed to serialize: {e}"))?;
-    fs::write(auth_path, format!("{text}\n"))
-        .map_err(|e| format!("Failed to write auth.json: {e}"))?;
+
+    let original_object = original.as_object().filter(|object| !object.is_empty());
+    let submitted_object = config
+        .as_object()
+        .ok_or("auth.json must be a JSON object".to_string())?;
+    let current: Value = fs::read_to_string(auth_path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .filter(Value::is_object)
+        .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+    let merged = if original_object.is_some() {
+        let mut merged = current.clone();
+        let merged_object = merged
+            .as_object_mut()
+            .ok_or("auth.json must be a JSON object".to_string())?;
+        for key in merged_object.keys().cloned().collect::<Vec<_>>() {
+            let disk_value = merged_object.get(&key).cloned();
+            let opened_value = original_object.and_then(|object| object.get(&key));
+            match submitted_object.get(&key) {
+                Some(submitted) => {
+                    // The user kept this entry as it opened; prefer the disk
+                    // value so a token the CLI refreshed mid-edit survives.
+                    let untouched = opened_value.is_some_and(|opened| opened == submitted);
+                    if untouched {
+                        if let Some(value) = disk_value {
+                            merged_object.insert(key, value);
+                        }
+                    } else {
+                        merged_object.insert(key, submitted.clone());
+                    }
+                }
+                None => {
+                    // Deleted in the editor; entries the CLI added after open
+                    // were never shown, so they stay.
+                    if opened_value.is_some() {
+                        merged_object.remove(&key);
+                    }
+                }
+            }
+        }
+        for (key, value) in submitted_object {
+            merged_object.entry(key.clone()).or_insert_with(|| value.clone());
+        }
+        merged
+    } else {
+        config.clone()
+    };
+
+    let text = serde_json::to_string_pretty(&merged)
+        .map_err(|e| format!("Failed to serialize: {e}"))?;
+    crate::coding::mcp::yaml_sync::atomic_write_bytes(
+        auth_path,
+        format!("{text}\n").as_bytes(),
+    )
+    .map_err(|e| format!("Failed to write auth.json: {e}"))?;
 
     let _ = app.emit("config-changed", "opencode");
     #[cfg(target_os = "windows")]

@@ -1968,6 +1968,7 @@ const OpenClawPage: React.FC = () => {
               open={favoriteImportModalOpen}
               onClose={() => setFavoriteImportModalOpen(false)}
               onImport={handleImportFavoriteProviders}
+              toolName="OpenClaw"
               existingProviderIds={providerEntries.map(([id]) => buildFavoriteProviderStorageKey('openclaw', id))}
               providerFilter={(provider) => isFavoriteProviderForSource('openclaw', provider)}
             />

@@ -2975,6 +2975,7 @@ const OpenCodePage: React.FC = () => {
               open={importModalOpen}
               onClose={() => setImportModalOpen(false)}
               onImport={handleImportProviders}
+              toolName="OpenCode"
               onOverwrite={handleOverwriteProvider}
               existingProviderIds={existingFavoriteProviderIds}
               providerFilter={(provider) => isFavoriteProviderForSource('opencode', provider)}
@@ -3009,7 +3010,9 @@ const OpenCodePage: React.FC = () => {
               open={authModalOpen}
               content={authContent}
               path={authConfigPath}
-              onSave={saveOpenCodeAuthConfig}
+              onSave={async (submitted, original) => {
+                await saveOpenCodeAuthConfig(submitted, original);
+              }}
               onCancel={() => setAuthModalOpen(false)}
               onSaved={async () => {
                 // 改完凭据要重查官方渠道列表——它是按 auth.json 的键派生的。

@@ -254,8 +254,17 @@ const wait = milliseconds => new Promise(resolve => setTimeout(resolve, millisec
  * "locate" action uses — rather than by the words on a card: the official card
  * displays the shared heading, so a text anchor would find the wrong thing.
  */
-const cardsInProviderSection = () =>
-  [...document.querySelectorAll('#zcode-providers [data-provider-id]')];
+const cardsInProviderSection = () => {
+  // Provider cells carry `data-provider-id`; the official-account cell is not
+  // a locate target and deliberately carries none. To keep every cardFor-based
+  // helper working on it, the cell element is augmented with the same
+  // `dataset.providerId` spelling the provider cells have.
+  const providerCards = [...document.querySelectorAll('#zcode-providers [data-provider-id]')];
+  const accountCell = document.querySelector('#zcode-providers [data-provider-kind="official-account"]');
+  if (!accountCell) return providerCards;
+  accountCell.dataset.providerId = OFFICIAL_ACCOUNT_CARD_ID;
+  return [...providerCards, accountCell];
+};
 
 const cardFor = providerId =>
   cardsInProviderSection().find(card => card.dataset.providerId === providerId);
@@ -539,14 +548,22 @@ window.zcodeOfficialAccountFixture = {
     if (!grid) return null;
     return [...grid.children].map((item) => {
       const rect = item.getBoundingClientRect();
-      // A provider cell *is* the element carrying the anchor; the account card
-      // sits inside a wrapper that spans the row, so the anchor is below it in
-      // that one case. Both spellings, or half the grid reads as unidentified.
+      // A provider cell *is* the element carrying the anchor. The account card
+      // is not a locate target and deliberately carries no anchor (its cell
+      // would otherwise answer a 定位 query the page meant to decline); its
+      // stable hook is `data-provider-kind`. Both spellings, or half the grid
+      // reads as unidentified.
       const anchor = item.matches('[data-provider-id]')
         ? item
         : item.querySelector('[data-provider-id]');
+      const kind = item.matches('[data-provider-kind]')
+        ? item
+        : item.querySelector('[data-provider-kind]');
       return {
-        id: anchor?.getAttribute('data-provider-id') ?? null,
+        id: anchor?.getAttribute('data-provider-id')
+          ?? (kind?.getAttribute('data-provider-kind') === 'official-account'
+            ? OFFICIAL_ACCOUNT_CARD_ID
+            : null),
         left: Math.round(rect.left),
         right: Math.round(rect.right),
       };

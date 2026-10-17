@@ -230,6 +230,10 @@ pub struct OpenCodeDiagnosticsConfig {
     pub headers: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub body: Option<serde_json::Value>,
+    /// Persisted "send test image" switch from the connectivity dialog; without
+    /// this field the favorite-provider round trip silently dropped it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vision_probe: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

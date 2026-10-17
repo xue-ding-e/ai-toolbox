@@ -764,6 +764,81 @@ async fn a_locked_model_turn_does_not_penalize_model_health() {
     );
 }
 
+/// The lock exemption must not depend on the lock's error carrying the locked
+/// turn's `stream_id`: `finish_all` ends every in-flight turn when the socket
+/// closes, and a turn that never got the explicit `UpstreamModelLocked` marker
+/// used to fall through to the `Upstream5xx` fallback — penalizing a model the
+/// lock was not about.
+#[tokio::test]
+async fn a_lock_spares_every_in_flight_model_on_the_connection() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let (_directory, context, provider_id) = test_context(
+        &format!("http://{}/v1", listener.local_addr().unwrap()),
+        "openai_responses",
+        true,
+    );
+    // The lock error carries no stream_id, so it is scoped to the connection —
+    // the natural shape for a relay refusing the second model on one socket.
+    let upstream = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
+        for _ in 0..2 {
+            receive_json(&mut socket).await;
+        }
+        send_json(
+            &mut socket,
+            json!({
+                "type": "error",
+                "status": 400,
+                "error": {
+                    "type": "new_api_error",
+                    "code": "invalid_request",
+                    "message": "responses websocket connection is locked to model \"model-a\"",
+                },
+            }),
+        )
+        .await;
+        let _ = socket.next().await;
+    });
+    let (mut client, gateway) = gateway_connection(context.clone()).await;
+    send_json(
+        &mut client,
+        json!({"type":"response.create","model":"model-a","input":"hello","stream_id":"a"}),
+    )
+    .await;
+    send_json(
+        &mut client,
+        json!({"type":"response.create","model":"model-b","input":"hello","stream_id":"b"}),
+    )
+    .await;
+    // The lock breaks the connection; the client sees the rewritten error and
+    // the close frame, exactly like the single-turn case.
+    let _ = receive_json(&mut client).await;
+    assert!(matches!(
+        timeout(Duration::from_secs(5), client.next())
+            .await
+            .unwrap(),
+        Some(Ok(Message::Close(_)))
+    ));
+    gateway.await.unwrap();
+    upstream.await.unwrap();
+
+    // Neither model carries blame: the locked one by the explicit marker, the
+    // other by the category fallback in `PendingTurn::finish`.
+    let registry = context.health_registry.as_ref().unwrap().lock().unwrap();
+    for model in ["model-a", "model-b"] {
+        let key = ProviderModelHealthKey {
+            cli_key: GatewayCliKey::Codex,
+            provider_id: provider_id.clone(),
+            upstream_model_id: model.to_string(),
+        };
+        assert!(
+            registry.model_entry(&key).is_none(),
+            "a connection-level lock must not create a health entry for {model}"
+        );
+    }
+}
+
 /// The rewrite keys off the relay's message text, because every rejection shares
 /// the generic `invalid_request` code. A different 400 must travel byte-identical
 /// and keep the socket open — and must still count against the model, so the

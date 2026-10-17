@@ -1,6 +1,7 @@
 import React from 'react';
 import { Modal, Form, Input, Select, Space, Button, Alert, message, Typography } from 'antd';
 import ImeSafeAutoComplete from '@/components/common/ImeSafeAutoComplete';
+import ImeSafeInput from '@/components/common/ImeSafeInput';
 import {
   CloudDownloadOutlined,
   EyeInvisibleOutlined,
@@ -1168,7 +1169,10 @@ const GrokProviderFormModal: React.FC<GrokProviderFormModalProps> = ({
             label={t('grok.provider.apiKey')}
             rules={[{ required: true, message: t('common.error') }]}
           >
-            <Input
+            {/* ImeSafeInput: the value is written back from hook state on
+                every keystroke (the sanitizer in useGrokConfigState), which on
+                WebKit ends an IME composition mid-word — issue #409. */}
+            <ImeSafeInput
               type={showApiKey ? 'text' : 'password'}
               placeholder={t('grok.provider.apiKeyPlaceholder')}
               addonAfter={
@@ -1190,7 +1194,7 @@ const GrokProviderFormModal: React.FC<GrokProviderFormModalProps> = ({
             rules={[{ required: true, message: t('common.error') }]}
             help={<Text type="secondary" style={{ fontSize: 12 }}>{t('grok.provider.baseUrlHelp')}</Text>}
           >
-            <Input
+            <ImeSafeInput
               placeholder="https://api.x.ai/v1"
             />
           </Form.Item>

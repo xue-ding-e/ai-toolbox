@@ -6,9 +6,9 @@
   Provider（`models.json` + `auth.json`）、引擎内建渠道（只读）、全局提示词
   （`<agentDir>/AGENTS.md`）、`omo.jsonc` 共享键、会话。
 
-## 页面形态：五个区块（2026-10-07 起）
+## 页面形态：六个区块（2026-10-07 起）
 
-与其余 coding tab 同构：**`CodingPageHeader` + 供应商列表 + 引擎内建渠道 + 全局提示词 + 其他配置 + 会话管理**。
+与其余 coding tab 同构：**`CodingPageHeader`（含「模型设置」默认渠道下拉）+ 供应商列表 + 引擎内建渠道 + 扩展 + 全局提示词 + 其他配置 + 会话管理**。
 
 > ⚠️ **这个清单不是「本 CLI 特有的三个」，而是全仓页面的并集减去本 CLI 没有的。**
 > 2026-10-07 第一次收敛时按「默认三区块」的旧规则做，结果砍掉了「其他配置」
@@ -19,6 +19,7 @@
 |---|---|---|
 | 供应商列表 | `OmoNativeProvidersSection`（`ProviderListSection` + `OpenCodeStyleCard`） | `models.json` 的 `providers` + `auth.json` |
 | 引擎内建渠道 | `OmoNativeBuiltinProvidersSection`（共享 `OfficialProviderCard`）+ 标题栏 `auth.json` 入口 | `omo --list-models` + `omo auth check --json`，**只读**；**只列已配置凭据的**。`auth.json` 入口打开 `OmoNativeAuthConfigModal`（**应用内可编辑**，不跳资源管理器） |
+| 扩展 | `OmoNativeExtensionsSection`（共享 `CliExtensionsSection`，`i18nPrefix="omoNative"`） | `settings.json` 的 packages / extensions 过滤器 + `omo list` |
 | 全局提示词 | 共享 `GlobalPromptSettings` | `<agentDir>/AGENTS.md` |
 | 其他配置 | `OmoNativeOtherConfigSection` | `omo.jsonc` 顶层共享键（原地补丁） |
 | 会话管理 | 共享 `SessionManagerPanel` | `<agentDir>/sessions/` |

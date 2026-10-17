@@ -383,8 +383,9 @@ export const getOpenCodeAuthConfigPath = async (): Promise<string> => {
  */
 export const saveOpenCodeAuthConfig = async (
   config: Record<string, unknown>,
+  original: Record<string, unknown>,
 ): Promise<void> => {
-  await invoke('save_opencode_auth_config', { config });
+  await invoke('save_opencode_auth_config', { config, original });
 };
 
 // ============================================================================
