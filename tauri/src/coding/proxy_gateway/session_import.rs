@@ -34,6 +34,8 @@ mod open_code;
 mod parsers;
 mod pi;
 mod prime_agent;
+mod qoder_cli;
+mod qoder_ide;
 mod qwencode;
 mod reconciliation;
 mod workbuddy_family;
@@ -58,6 +60,15 @@ struct SessionUsageRecord {
     created_at: i64,
     session_id: String,
     reported_cost_usd: Option<String>,
+    /// Working directory the CLI ran in, when the transcript records one. Proxy
+    /// rows never carry it; usage-only tools without a readable cwd stay `None`
+    /// and land in the "unknown project" bucket.
+    project_path: Option<String>,
+    /// Credits the provider billed for this call, when the transcript reports
+    /// them. Only Qoder does today: its built-in routing writes zero tokens to
+    /// disk and records Credits instead, so this is the only usage measure
+    /// available there. Stored for every tool but not rendered yet.
+    credits: Option<f64>,
 }
 
 impl SessionUsageRecord {
@@ -88,7 +99,9 @@ impl SessionUsageRecord {
             self.usage.cache_read_tokens.unwrap_or(0),
             self.usage.cache_creation_tokens.unwrap_or(0),
             self.reported_cost_usd,
-            self.metadata
+            self.metadata,
+            self.project_path,
+            self.credits,
         ]);
         format!("{:x}", Sha256::digest(value.to_string().as_bytes()))
     }
@@ -533,6 +546,10 @@ fn import_cli_keys(selection: GatewaySessionImportCli) -> Vec<GatewayUsageTool> 
         GatewaySessionImportCli::WorkbuddyAi => vec![GatewayUsageTool::WorkbuddyAi],
         GatewaySessionImportCli::Codebuddy => vec![GatewayUsageTool::Codebuddy],
         GatewaySessionImportCli::Minimax => vec![GatewayUsageTool::Minimax],
+        GatewaySessionImportCli::QoderIde => vec![GatewayUsageTool::QoderIde],
+        GatewaySessionImportCli::QoderIdeCn => vec![GatewayUsageTool::QoderIdeCn],
+        GatewaySessionImportCli::QoderCli => vec![GatewayUsageTool::QoderCli],
+        GatewaySessionImportCli::QoderCliCn => vec![GatewayUsageTool::QoderCliCn],
     }
 }
 
@@ -559,8 +576,25 @@ fn default_session_roots(db: &SqliteDbState, cli_key: GatewayUsageTool) -> Vec<P
         GatewayUsageTool::Codex => (".codex", "sessions"),
         GatewayUsageTool::Grok => (".grok", "sessions"),
         GatewayUsageTool::Kimi => (".kimi-code", "sessions"),
+        // Antigravity keeps the transcript mirror in `brain/` and the real
+        // token usage in `conversations/*.db`, both beside each other in the
+        // profile directory. Every root below is that profile directory; the
+        // CLI, the desktop app and the IDE each keep their own.
+        GatewayUsageTool::Antigravity => {
+            if let Some(location) = &location {
+                roots.push(location.host_path.clone());
+            }
+            if let Some(home) = dirs::home_dir() {
+                for profile in ["antigravity-cli", "antigravity", "antigravity-ide"] {
+                    let root = home.join(".gemini").join(profile);
+                    if !roots.contains(&root) {
+                        roots.push(root);
+                    }
+                }
+            }
+            return roots;
+        }
         GatewayUsageTool::Gemini => (".gemini", "tmp"),
-        GatewayUsageTool::Antigravity => (".gemini/antigravity-cli", "brain"),
         GatewayUsageTool::Pi => {
             if let Some(location) = &location {
                 if let Ok(root) = crate::coding::session_manager::resolve_pi_sessions_root(location)
@@ -700,6 +734,23 @@ fn default_session_roots(db: &SqliteDbState, cli_key: GatewayUsageTool) -> Vec<P
             }
             return roots;
         }
+        // The two IDE editions keep one database each; both are read through
+        // the same parser but filed under separate tool keys.
+        GatewayUsageTool::QoderIde | GatewayUsageTool::QoderIdeCn => {
+            roots.extend(qoder_ide::database_paths(cli_key));
+            return roots;
+        }
+        // Both CLI editions write the same transcript shape under their own
+        // config root; the desktop app shares the same tree, so its sessions
+        // are covered here and never counted twice.
+        GatewayUsageTool::QoderCli => {
+            roots.push(qoder_cli_root("QODER_CONFIG_DIR", ".qoder"));
+            return roots;
+        }
+        GatewayUsageTool::QoderCliCn => {
+            roots.push(qoder_cli_root("QODERCN_CONFIG_DIR", ".qoder-cn"));
+            return roots;
+        }
     };
     if let Some(location) = location {
         if cli_key == GatewayUsageTool::Kimi {
@@ -717,6 +768,16 @@ fn default_session_roots(db: &SqliteDbState, cli_key: GatewayUsageTool) -> Vec<P
         if !roots.contains(&default) {
             roots.push(default);
         }
+        // Gemini CLI keeps a second tree beside `tmp/`: the desktop/IDE
+        // integration writes its sessions under `.gemini/gemini-cli`. The
+        // session file matcher accepts both roots because it keys on the
+        // `session-*` basename, not on the parent directory.
+        if cli_key == GatewayUsageTool::Gemini {
+            let extended = home.join(".gemini").join("gemini-cli");
+            if !roots.contains(&extended) {
+                roots.push(extended);
+            }
+        }
     }
     if cli_key == GatewayUsageTool::Codex {
         let archives = roots
@@ -726,6 +787,22 @@ fn default_session_roots(db: &SqliteDbState, cli_key: GatewayUsageTool) -> Vec<P
         roots.extend(archives);
     }
     roots
+}
+
+/// Qoder CLI's transcript tree, read from `<config dir>/projects`.
+///
+/// Both builds ship the same code and read their config directory from the
+/// environment: the international CLI honours `QODER_CONFIG_DIR`, the CN build
+/// `QODERCN_CONFIG_DIR` (no underscore — verified in both shipped binaries).
+/// Without the variable they fall back to `~/.qoder` and `~/.qoder-cn`.
+fn qoder_cli_root(variable: &str, default: &str) -> PathBuf {
+    if let Some(root) = std::env::var_os(variable) {
+        return PathBuf::from(root).join("projects");
+    }
+    dirs::home_dir()
+        .unwrap_or_default()
+        .join(default)
+        .join("projects")
 }
 
 /// MiMoCode keeps an OpenCode-derived store under a per-platform data
@@ -794,6 +871,8 @@ fn source_identity(cli_key: GatewayUsageTool, path: &Path) -> String {
             | GatewayUsageTool::OpenClaw
             | GatewayUsageTool::Antigravity
             | GatewayUsageTool::PrimeAgent
+            | GatewayUsageTool::QoderCli
+            | GatewayUsageTool::QoderCliCn
     ) {
         // Generic basenames (audit, updates, wire, session) occur in many
         // directories. The file cursor is physical; invocation IDs are native.
@@ -857,17 +936,24 @@ fn source_identity(cli_key: GatewayUsageTool, path: &Path) -> String {
     stem.to_string()
 }
 
-fn session_files(cli_key: GatewayUsageTool, root: &Path) -> Vec<PathBuf> {
-    // ZCode/Devin/MiniMax/MiMoCode keep one SQLite database rather than a
-    // transcript tree, so their "root" is that file. Without this the walk
-    // below silently returns nothing and the tool looks like it has no usage.
-    if matches!(
+/// Tools whose root is one SQLite database rather than a transcript tree.
+fn reads_sqlite_database(cli_key: GatewayUsageTool) -> bool {
+    matches!(
         cli_key,
         GatewayUsageTool::Zcode
             | GatewayUsageTool::Devin
             | GatewayUsageTool::Minimax
             | GatewayUsageTool::Mimocode
-    ) {
+            | GatewayUsageTool::QoderIde
+            | GatewayUsageTool::QoderIdeCn
+    )
+}
+
+fn session_files(cli_key: GatewayUsageTool, root: &Path) -> Vec<PathBuf> {
+    // These tools keep one SQLite database rather than a transcript tree, so
+    // their "root" is that file. Without this the walk below silently returns
+    // nothing and the tool looks like it has no usage.
+    if reads_sqlite_database(cli_key) {
         return root
             .is_file()
             .then(|| vec![root.to_path_buf()])
@@ -926,13 +1012,18 @@ fn session_files(cli_key: GatewayUsageTool, root: &Path) -> Vec<PathBuf> {
                 GatewayUsageTool::Musecode => musecode::is_session_file(&path),
                 GatewayUsageTool::Cmdcode => cmdcode::is_session_file(&path),
                 GatewayUsageTool::Qwencode => qwencode::is_usage_file(&path),
+                // Every `*.jsonl` under the project tree is a session, including
+                // `<session>/subagents/*.jsonl` children.
+                GatewayUsageTool::QoderCli | GatewayUsageTool::QoderCliCn => extension == "jsonl",
                 GatewayUsageTool::Workbuddy
                 | GatewayUsageTool::WorkbuddyAi
                 | GatewayUsageTool::Codebuddy => extension == "jsonl",
                 // SQLite tools are never reached by this walk.
-                GatewayUsageTool::Devin | GatewayUsageTool::Minimax | GatewayUsageTool::Mimocode => {
-                    false
-                }
+                GatewayUsageTool::Devin
+                | GatewayUsageTool::Minimax
+                | GatewayUsageTool::Mimocode
+                | GatewayUsageTool::QoderIde
+                | GatewayUsageTool::QoderIdeCn => false,
             };
             accepted.then_some(path)
         })
@@ -1081,8 +1172,29 @@ fn sync_sources(
                 .map(|proxy_id| (proxy_id.clone(), id.clone()))
         })
         .collect::<HashMap<_, _>>();
+    // Antigravity needs all of its profiles at once to dedupe a conversation
+    // UUID that appears in more than one of them, so the first source triggers
+    // one sync over the whole set.
+    let antigravity_roots = sources
+        .iter()
+        .filter(|(cli_key, _)| *cli_key == GatewayUsageTool::Antigravity)
+        .map(|(_, root)| root.clone())
+        .collect::<Vec<_>>();
+    let mut antigravity_synced = antigravity_roots.is_empty();
     let mut files = sources
         .iter()
+        // Qoder IDE's database is read only by `qoder_ide::sync_database`
+        // below. `session_files` still reports that database so cost
+        // reconciliation can price it, but handing it to the generic
+        // transcript loop parses binary as JSON and counts a failed file on
+        // every sync. ZCode keeps going through `parse_file`, which has its own
+        // database branch, so it stays in this loop.
+        .filter(|(cli_key, _)| {
+            !matches!(
+                *cli_key,
+                GatewayUsageTool::QoderIde | GatewayUsageTool::QoderIdeCn
+            )
+        })
         .flat_map(|(cli_key, root)| {
             session_files(*cli_key, root)
                 .into_iter()
@@ -1251,8 +1363,17 @@ fn sync_sources(
                 }
             }
         }
-        if *cli_key == GatewayUsageTool::Antigravity {
-            match antigravity::sync_databases(db, root, &mut states, &mut claimed_proxies, now) {
+        if *cli_key == GatewayUsageTool::Antigravity && !antigravity_synced {
+            // Every Antigravity profile is read in one call so the same
+            // conversation UUID in several profiles is imported once.
+            antigravity_synced = true;
+            match antigravity::sync_databases(
+                db,
+                &antigravity_roots,
+                &mut states,
+                &mut claimed_proxies,
+                now,
+            ) {
                 Ok(changes) => result.merge(changes),
                 Err(error) => {
                     result.failed_files += 1;
@@ -1267,6 +1388,8 @@ fn sync_sources(
                 | GatewayUsageTool::Mimocode
                 | GatewayUsageTool::Devin
                 | GatewayUsageTool::Minimax
+                | GatewayUsageTool::QoderIde
+                | GatewayUsageTool::QoderIdeCn
         ) {
             // These tools keep usage in SQLite rather than in a transcript
             // tree; the root resolver points at the database file itself.
@@ -1298,6 +1421,21 @@ fn sync_sources(
                 GatewayUsageTool::Devin => (
                     devin::sync_database(db, root, &mut states, &mut claimed_proxies, now),
                     "Devin",
+                ),
+                GatewayUsageTool::QoderIde | GatewayUsageTool::QoderIdeCn => (
+                    qoder_ide::sync_database(
+                        db,
+                        *cli_key,
+                        root,
+                        &mut states,
+                        &mut claimed_proxies,
+                        now,
+                    ),
+                    if *cli_key == GatewayUsageTool::QoderIde {
+                        "Qoder IDE"
+                    } else {
+                        "Qoder CN IDE"
+                    },
                 ),
                 _ => (
                     minimax::sync_database(db, root, &mut states, &mut claimed_proxies, now),
@@ -1638,11 +1776,11 @@ fn write_record(conn: &Connection, record: &SessionUsageRecord) -> Result<(), St
             input_cost_usd, output_cost_usd, cache_read_cost_usd, cache_creation_cost_usd, total_cost_usd,
             latency_ms, first_token_ms, duration_ms, status_code, error_message,
             session_id, provider_type, is_streaming, cost_multiplier, created_at, data_source,
-            usage_metadata, usage_request_count, extra_tokens
+            usage_metadata, usage_request_count, extra_tokens, project_path, credits
          ) VALUES (
             ?1, 'session', ?2, ?3, ?3, ?4, ?5, ?6, ?7,
             ?8, ?9, ?10, ?11, ?12, 0, NULL, 0, 200, NULL, ?13, 'session', 0, '1.0', ?14, 'session',
-            jsonb(?15), ?16, ?17
+            jsonb(?15), ?16, ?17, ?18, ?19
          ) ON CONFLICT(request_id) DO UPDATE SET
             model = excluded.model, request_model = excluded.request_model,
             input_tokens = excluded.input_tokens, output_tokens = excluded.output_tokens,
@@ -1651,14 +1789,16 @@ fn write_record(conn: &Connection, record: &SessionUsageRecord) -> Result<(), St
             cache_read_cost_usd = excluded.cache_read_cost_usd, cache_creation_cost_usd = excluded.cache_creation_cost_usd,
             total_cost_usd = excluded.total_cost_usd, session_id = excluded.session_id, created_at = excluded.created_at,
             usage_metadata = excluded.usage_metadata, usage_request_count = excluded.usage_request_count,
-            extra_tokens = excluded.extra_tokens
+            extra_tokens = excluded.extra_tokens, project_path = excluded.project_path,
+            credits = excluded.credits
          WHERE proxy_request_logs.data_source = 'session'",
         params![record.request_id, record.cli_key.as_str(), record.model, input as i64, output as i64, read as i64, creation as i64,
             format_decimal_cost(costs.input_cost_usd), format_decimal_cost(costs.output_cost_usd),
             format_decimal_cost(costs.cache_read_cost_usd), format_decimal_cost(costs.cache_creation_cost_usd),
             total, record.session_id, record.created_at,
             serde_json::to_string(&metadata).map_err(|error| error.to_string())?,
-            record.call_count() as i64, record.extra_tokens() as i64],
+            record.call_count() as i64, record.extra_tokens() as i64,
+            record.project_path, record.credits],
     ).map_err(|error| error.to_string())?;
     Ok(())
 }
@@ -1731,6 +1871,10 @@ fn reconcile_late_proxy_rows(
                     .and_then(|record| record.envelope_id.clone()),
             },
             reported_cost_usd: None,
+            // Only used to re-find a proxy match; the project never enters the
+            // matcher and this row is not written back.
+            project_path: None,
+            credits: None,
         };
         let matched = db.with_conn(|conn| find_matching_proxy(conn, &record, None))?;
         let Some(proxy_id) = matched.filter(|proxy_id| !claimed_proxies.contains_key(proxy_id))

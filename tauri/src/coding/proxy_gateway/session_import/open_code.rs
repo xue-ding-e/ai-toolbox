@@ -42,6 +42,9 @@ struct SessionRow {
     fork_session_id: Option<String>,
     time_created: i64,
     watermark: i64,
+    /// OpenCode stores the working directory on the session row, not on each
+    /// message; V1 keeps it in `directory`, V2 keeps it in the same column.
+    project_path: Option<String>,
 }
 
 /// The V2 session's own usage totals. Auxiliary calls that never get a message
@@ -158,29 +161,62 @@ fn session_difference_record(
         created_at: session.watermark / 1000,
         session_id: session.id.clone(),
         reported_cost_usd: None,
+        project_path: session.project_path.clone(),
+        credits: None,
     })
+}
+
+/// The qualified `s.directory` reference when the session table carries it.
+/// `open_connect`'s read-only fixture stores omit the column, so the caller
+/// substitutes `NULL` rather than failing the scan.
+fn session_directory_column(
+    source: &Connection,
+    table: &str,
+) -> Result<Option<&'static str>, String> {
+    let mut statement = source
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(|error| error.to_string())?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|error| error.to_string())?;
+    for column in columns {
+        if column.map_err(|error| error.to_string())?.eq_ignore_ascii_case("directory") {
+            return Ok(Some("s.directory"));
+        }
+    }
+    Ok(None)
 }
 
 /// Recent native writes may only exist in WAL, so the cursor is derived from the
 /// session row and its messages; the main file's mtime is not a valid watermark.
 fn select_sessions(source: &Connection, schema: SessionSchema) -> Result<Vec<SessionRow>, String> {
+    // `directory` only exists on stores the CLI itself created; a trimmed or
+    // fixture database may predate it, so the project column falls back to a
+    // literal instead of failing the whole read.
+    let table = match schema {
+        SessionSchema::V1 => "session",
+        SessionSchema::V2 => "session_v2",
+    };
+    let directory = session_directory_column(source, table)?.unwrap_or("NULL");
     let sql = match schema {
         // V1 sessions never fork, so the boundary column stays a literal rather
         // than a requirement on the native table.
-        SessionSchema::V1 => {
+        SessionSchema::V1 => format!(
             "SELECT s.id, NULL, 0,
-                    MAX(s.time_updated, COALESCE(MAX(m.time_updated), s.time_updated))
+                    MAX(s.time_updated, COALESCE(MAX(m.time_updated), s.time_updated)),
+                    {directory}
              FROM session s LEFT JOIN message m ON m.session_id = s.id
              GROUP BY s.id ORDER BY 4"
-        }
-        SessionSchema::V2 => {
+        ),
+        SessionSchema::V2 => format!(
             "SELECT s.id, s.fork_session_id, s.time_created,
-                    MAX(s.time_updated, COALESCE(MAX(m.time_updated), s.time_updated))
+                    MAX(s.time_updated, COALESCE(MAX(m.time_updated), s.time_updated)),
+                    {directory}
              FROM session_v2 s LEFT JOIN session_message m ON m.session_id = s.id
              GROUP BY s.id ORDER BY 4"
-        }
+        ),
     };
-    let mut statement = source.prepare(sql).map_err(|error| error.to_string())?;
+    let mut statement = source.prepare(&sql).map_err(|error| error.to_string())?;
     let rows = statement
         .query_map([], |row| {
             Ok(SessionRow {
@@ -188,6 +224,9 @@ fn select_sessions(source: &Connection, schema: SessionSchema) -> Result<Vec<Ses
                 fork_session_id: row.get(1)?,
                 time_created: row.get(2)?,
                 watermark: row.get(3)?,
+                project_path: row
+                    .get::<_, Option<String>>(4)?
+                    .filter(|path| !path.trim().is_empty()),
             })
         })
         .map_err(|error| error.to_string())?
@@ -310,12 +349,13 @@ fn read_session(
             parsed.pending = true;
             continue;
         }
-        if let Some(record) = parsers::parse_value(
+        if let Some(record) = parsers::parse_value_with_project(
             tool,
             &value,
             &session.id,
             0,
             created_at / 1000,
+            session.project_path.as_deref(),
         ) {
             parsed.records.push(record);
         }

@@ -116,7 +116,11 @@
           "cost": "Cost",
           "successRate": "Success",
           "latency": "Avg latency",
-          "cacheHitRate": "Cache hit rate"
+          "cacheHitRate": "Cache hit rate",
+          "project": "Project",
+          "sessions": "Sessions",
+          "topModel": "Top model",
+          "lastActive": "Last active"
         },
         "empty": "No statistics yet",
         "loadFailed": "Failed to load gateway statistics: {{error}}",
@@ -149,7 +153,11 @@
         "pricingOutput": "Output {{value}}",
         "pricingCacheRead": "Cache read {{value}}",
         "pricingCacheCreation": "Cache creation {{value}}",
-        "pricingUnavailable": "No price matched this model, so the amount only counts reported or priced usage."
+        "pricingUnavailable": "No price matched this model, so the amount only counts reported or priced usage.",
+        "projectStats": "Projects",
+        "unknownProject": "Unknown project",
+        "unknownProjectHint": "No working directory recorded",
+        "projectEmpty": "No session usage with a recorded project in this range"
       },
       "pricing": {
         "open": "Pricing config",
@@ -882,7 +890,11 @@
         "workbuddy": "WorkBuddy",
         "workbuddy_ai": "WorkBuddy Intl.",
         "codebuddy": "CodeBuddy",
-        "minimax": "MiniMax Code"
+        "minimax": "MiniMax Code",
+        "qoder_ide": "Qoder Desktop",
+        "qoder_ide_cn": "Qoder CN Desktop",
+        "qodercli": "Qoder CLI",
+        "qodercli_cn": "Qoder CN"
       },
       "cliStatus": {
         "direct": "Direct",

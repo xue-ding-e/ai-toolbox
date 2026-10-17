@@ -794,7 +794,10 @@ fn codex_token_usage_record_is_counted_once_and_deducts_its_legacy_mirror() {
     assert_eq!(summary.total_output_tokens, 50);
     let logs =
         usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true).unwrap();
-    assert_eq!(logs.data[0].trace_id, format!("SESSION:codex:{PARENT}:resp-one"));
+    assert_eq!(
+        logs.data[0].trace_id,
+        format!("SESSION:codex:{PARENT}:resp-one")
+    );
 }
 
 #[test]
@@ -962,7 +965,10 @@ fn a_rebuild_keeps_matches_for_archived_proxy_rows() {
     insert_codex_cache_write_proxy(&db);
     // The session import matches the proxy row and suppresses the native one.
     let result = run_sync(&db, GatewayCliKey::Codex, &sessions);
-    assert_eq!(result.inserted_records, 0, "the proxy row represents the call");
+    assert_eq!(
+        result.inserted_records, 0,
+        "the proxy row represents the call"
+    );
     assert_eq!(count(&db), 1);
 
     // Archive the proxy row. The production pruner keeps its tokens in the
@@ -972,7 +978,9 @@ fn a_rebuild_keeps_matches_for_archived_proxy_rows() {
     let detail_rows = |db: &SqliteDbState| -> u64 {
         db.with_conn(|conn| {
             let total: i64 = conn
-                .query_row("SELECT COUNT(*) FROM proxy_request_logs", [], |row| row.get(0))
+                .query_row("SELECT COUNT(*) FROM proxy_request_logs", [], |row| {
+                    row.get(0)
+                })
                 .map_err(|error| error.to_string())?;
             Ok(total.max(0) as u64)
         })
@@ -1014,7 +1022,10 @@ fn a_rebuild_keeps_matches_for_archived_proxy_rows() {
     let states = load_states(&db).unwrap();
     let source_id = format!(
         "codex:{}",
-        source_identity(GatewayUsageTool::Codex, &sessions.join(format!("rollout-{PARENT}.jsonl")))
+        source_identity(
+            GatewayUsageTool::Codex,
+            &sessions.join(format!("rollout-{PARENT}.jsonl"))
+        )
     );
     let state = states.get(&source_id).expect("state re-imported");
     assert_eq!(
@@ -1169,6 +1180,35 @@ fn gemini_json_and_jsonl_use_fresh_input_and_keep_paid_rewound_messages() {
     assert_eq!(summary.total_input_tokens, 60);
     assert_eq!(summary.total_cache_read_tokens, 240);
     assert_eq!(summary.total_output_tokens, 55);
+}
+
+/// Gemini CLI also writes a tree beside `~/.gemini/tmp`: the desktop/IDE
+/// integration keeps its sessions under `.gemini/gemini-cli`. The session file
+/// matcher keys on the `session-*` basename, so a root pointed there imports
+/// exactly like `tmp/` does.
+#[test]
+fn gemini_sessions_under_the_gemini_cli_root_are_imported() {
+    let root = tempfile::tempdir().unwrap();
+    let chats = root.path().join("project").join("chats");
+    fs::create_dir_all(&chats).unwrap();
+    write_jsonl(
+        &chats.join("session-2026-05-10T06-52-a00e324c.jsonl"),
+        &[
+            json!({"$set":{"sessionId":"cli-root"}}),
+            gemini_message("cli", 7),
+        ],
+    );
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    assert_eq!(
+        run_sync(&db, GatewayUsageTool::Gemini, root.path()).inserted_records,
+        1
+    );
+    // A non-session file in the same tree stays ignored.
+    fs::write(chats.join("conversation_summaries.json"), "{}").unwrap();
+    assert_eq!(
+        run_sync(&db, GatewayUsageTool::Gemini, root.path()).inserted_records,
+        0
+    );
 }
 
 #[test]
@@ -2331,18 +2371,22 @@ fn qwencode_merges_per_request_files_with_the_session_rollup_remainder() {
     fs::create_dir_all(&usage).unwrap();
     write_jsonl(
         &usage.join("token-usage-2026-09-20.jsonl"),
-        &[json!({"schemaVersion":1,"id":"req-1","sessionId":"qwen-session",
+        &[
+            json!({"schemaVersion":1,"id":"req-1","sessionId":"qwen-session",
             "model":"qwen-model","timestamp":THEN,
             "inputTokens":1000,"cachedTokens":400,"outputTokens":50,"thoughtsTokens":10,
-            "localDate":"2026-09-20"})],
+            "localDate":"2026-09-20"}),
+        ],
     );
     // The rollup covers the whole session: 1500 prompt/60 out, of which the
     // request file already reported 1000 prompt/60 out.
     write_jsonl(
         &root.path().join("usage_record.jsonl"),
-        &[json!({"version":1,"sessionId":"qwen-session","timestamp":THEN,
+        &[
+            json!({"version":1,"sessionId":"qwen-session","timestamp":THEN,
             "models":{"qwen-model":{"inputTokens":1500,"cachedTokens":400,"outputTokens":50,
-                "thoughtsTokens":10}}})],
+                "thoughtsTokens":10}}}),
+        ],
     );
     let db = SqliteDbState::in_memory_for_test().unwrap();
     let result = run_sync(&db, GatewayUsageTool::Qwencode, root.path());
@@ -2355,4 +2399,380 @@ fn qwencode_merges_per_request_files_with_the_session_rollup_remainder() {
     assert_eq!(summary.total_input_tokens, 600 + 500);
     assert_eq!(summary.total_cache_read_tokens, 400);
     assert_eq!(summary.total_output_tokens, 60);
+}
+
+/// The project dimension reads the cwd each CLI records and groups usage by it.
+/// Claude repeats `cwd` on every row, Codex records it once in `session_meta`,
+/// and the rollup keeps the split after the detail rows are pruned.
+#[test]
+fn project_stats_group_usage_by_the_recorded_working_directory() {
+    let root = tempfile::tempdir().unwrap();
+    let projects = root.path().join("projects");
+    fs::create_dir_all(&projects).unwrap();
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    let mut repo_a = claude_message("msg-a", 10);
+    repo_a["cwd"] = json!("D:/work/repo-a");
+    let mut repo_b = claude_message("msg-b", 20);
+    repo_b["cwd"] = json!("D:/work/repo-b");
+    let mut repo_b_again = claude_message("msg-c", 5);
+    repo_b_again["cwd"] = json!("D:/work/repo-b");
+    write_jsonl(
+        &projects.join("session.jsonl"),
+        &[repo_a, repo_b, repo_b_again],
+    );
+    run_sync(&db, GatewayUsageTool::Claude, root.path());
+
+    let stats = usage_stats::project_stats(&db, None, None, None, true).unwrap();
+    let by_path = stats
+        .iter()
+        .map(|item| (item.project_path.as_str(), item))
+        .collect::<std::collections::HashMap<_, _>>();
+    assert_eq!(by_path.len(), 2, "unknown rows must not be invented");
+    let repo_b = by_path["D:/work/repo-b"];
+    assert_eq!(repo_b.request_count, 2);
+    assert_eq!(repo_b.session_count, 1);
+    // Each row is 100 fresh input + 80 cache read + 20 cache creation + output.
+    assert_eq!(repo_b.total_tokens, 425);
+    assert_eq!(repo_b.top_model.as_deref(), Some("usage-test-model"));
+    assert_eq!(repo_b.cli_keys, vec![GatewayUsageTool::Claude]);
+    assert!(repo_b.last_active.is_some());
+
+    // Proxy traffic has no project: a session-disabled read is empty, and the
+    // project dimension never leaks the gateway's own requests.
+    assert!(usage_stats::project_stats(&db, None, None, None, false)
+        .unwrap()
+        .is_empty());
+
+    // The CLI filter narrows the same aggregation.
+    assert!(
+        usage_stats::project_stats(&db, None, None, Some(GatewayUsageTool::Codex), true)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+fn qoder_cli_assistant(request: &str, model: &str, credits: f64, timestamp: &str) -> Value {
+    json!({
+        "type": "assistant",
+        "sessionId": "qoder-session",
+        "cwd": "D:/work/qoder-repo",
+        "timestamp": timestamp,
+        "message": {
+            "id": format!("chatcmpl-{request}"),
+            "model": model,
+            "usage": {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "cache_creation_input_tokens": 0,
+                "credits": credits,
+                "request_id": request,
+            },
+        },
+    })
+}
+
+#[test]
+fn qoder_cli_keeps_zero_token_calls_and_reads_the_working_directory() {
+    let root = tempfile::tempdir().unwrap();
+    let project = root.path().join("D--work-qoder-repo");
+    fs::create_dir_all(&project).unwrap();
+    write_jsonl(
+        &project.join("session.jsonl"),
+        &[
+            json!({"type":"runtime-config","sessionId":"qoder-session","model":"qfmodel"}),
+            json!({"type":"user","sessionId":"qoder-session","cwd":"D:/work/qoder-repo",
+                "timestamp":"2026-10-17T12:00:00.000Z","message":{"role":"user","content":"hi"}}),
+            // A row without usage is not a model call.
+            json!({"type":"assistant","sessionId":"qoder-session","cwd":"D:/work/qoder-repo",
+                "timestamp":"2026-10-17T12:00:01.000Z","message":{"id":"chatcmpl-plain","model":"qfmodel"}}),
+            qoder_cli_assistant("req-1", "qfmodel", 0.25, "2026-10-17T12:00:02.000Z"),
+            // The same provider response repeated while streaming is one call.
+            qoder_cli_assistant("req-1", "qfmodel", 0.25, "2026-10-17T12:00:03.000Z"),
+            // The credit-limit notice is not a reply.
+            json!({"type":"assistant","sessionId":"qoder-session","cwd":"D:/work/qoder-repo",
+                "timestamp":"2026-10-17T12:00:04.000Z",
+                "message":{"id":"chatcmpl-synthetic","model":"<synthetic>","usage":{}}}),
+        ],
+    );
+
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    let result = run_sync(&db, GatewayUsageTool::QoderCli, root.path());
+    assert_eq!(
+        result.parsed_records, 1,
+        "one provider response is one call"
+    );
+
+    // Qoder's local routing writes zero token buckets; the calls are recorded
+    // but no token count is invented for them.
+    let summary = usage_stats::usage_summary(&db, None, None, None, true).unwrap();
+    assert_eq!(summary.total_requests, 1);
+    assert_eq!(summary.total_tokens, 0);
+    let project = usage_stats::project_stats(&db, None, None, None, true).unwrap();
+    assert_eq!(project.len(), 1);
+    assert_eq!(project[0].project_path, "D:/work/qoder-repo");
+    assert_eq!(project[0].session_count, 1);
+    assert_eq!(project[0].cli_keys, vec![GatewayUsageTool::QoderCli]);
+}
+
+#[test]
+fn qoder_cli_reads_the_nested_cache_creation_pair_and_the_config_model() {
+    let root = tempfile::tempdir().unwrap();
+    let file = root.path().join("nested.jsonl");
+    write_jsonl(
+        &file,
+        &[
+            json!({"type":"runtime-config","sessionId":"qoder-session","model":"configured-model"}),
+            json!({"type":"assistant","sessionId":"qoder-session","cwd":"D:/work/qoder-repo",
+            "timestamp":"2026-10-17T12:00:02.000Z",
+            "message":{"id":"chatcmpl-nested","usage":{
+                "input_tokens":1000,
+                "output_tokens":50,
+                "cache_read_input_tokens":200,
+                "cache_creation":{"ephemeral_5m_input_tokens":30,"ephemeral_1h_input_tokens":20},
+            }}}),
+        ],
+    );
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    run_sync(&db, GatewayUsageTool::QoderCli, root.path());
+    let summary = usage_stats::usage_summary(&db, None, None, None, true).unwrap();
+    // The transcript's `input_tokens` is the provider's prompt count and
+    // already contains both cache buckets, so the stored fresh input is
+    // 1000 - 200 - 50. Matching the reference collector here is what keeps the
+    // same call from counting its cached tokens twice.
+    assert_eq!(summary.total_input_tokens, 750);
+    assert_eq!(summary.total_output_tokens, 50);
+    assert_eq!(summary.total_cache_read_tokens, 200);
+    assert_eq!(summary.total_cache_creation_tokens, 50);
+    // The runtime-config header supplies the model when the call row omits it.
+    let models = usage_stats::model_stats(&db, None, None, None, true).unwrap();
+    assert_eq!(models.len(), 1);
+    assert_eq!(models[0].model, "configured-model");
+}
+
+#[test]
+fn qoder_cn_transcripts_stay_separate_from_the_international_cli() {
+    let root = tempfile::tempdir().unwrap();
+    write_jsonl(
+        &root.path().join("cn.jsonl"),
+        &[qoder_cli_assistant(
+            "req-cn",
+            "dfmodel",
+            0.5,
+            "2026-10-17T12:00:02.000Z",
+        )],
+    );
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    run_sync(&db, GatewayUsageTool::QoderCliCn, root.path());
+    let summary =
+        usage_stats::usage_summary(&db, None, None, Some(GatewayUsageTool::QoderCli), true)
+            .unwrap();
+    assert_eq!(summary.total_requests, 0, "the two editions never merge");
+    let summary =
+        usage_stats::usage_summary(&db, None, None, Some(GatewayUsageTool::QoderCliCn), true)
+            .unwrap();
+    assert_eq!(summary.total_requests, 1);
+}
+
+fn qoder_ide_fixture(path: &Path) {
+    let native = Connection::open(path).unwrap();
+    native
+        .execute_batch(
+            "CREATE TABLE chat_session (session_id TEXT PRIMARY KEY, cwd TEXT);
+             CREATE TABLE chat_message (
+                message_id TEXT PRIMARY KEY, session_id TEXT, request_id TEXT,
+                token_info TEXT, model_info TEXT, gmt_create INTEGER);
+             INSERT INTO chat_session VALUES ('ide-session', 'D:/work/ide-repo');
+             INSERT INTO chat_message VALUES (
+                'msg-1', 'ide-session', 'req-1',
+                '{\"prompt_tokens\":1000,\"completion_tokens\":120,\"cached_tokens\":400}',
+                '{\"model_key\":\"ide-model\"}', 1800000000000);",
+        )
+        .unwrap();
+}
+
+#[test]
+fn qoder_ide_subtracts_the_cached_prompt_and_files_each_edition_apart() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("local.db");
+    qoder_ide_fixture(&path);
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    // An IDE tool's root is the database file itself, not a directory.
+    let result = run_sync(&db, GatewayUsageTool::QoderIde, &path);
+    assert_eq!(
+        result.failed_files, 0,
+        "a database tool must never be read as JSON"
+    );
+
+    let summary = usage_stats::usage_summary(&db, None, None, None, true).unwrap();
+    assert_eq!(summary.total_requests, 1);
+    // `prompt_tokens` includes the cached part, so the fresh input is 600.
+    assert_eq!(summary.total_input_tokens, 600);
+    assert_eq!(summary.total_output_tokens, 120);
+    assert_eq!(summary.total_cache_read_tokens, 400);
+    assert_eq!(
+        usage_stats::project_stats(&db, None, None, None, true).unwrap()[0].project_path,
+        "D:/work/ide-repo"
+    );
+
+    // The CN edition is a different key, so an international read never sees it.
+    let cn = usage_stats::usage_summary(&db, None, None, Some(GatewayUsageTool::QoderIdeCn), true)
+        .unwrap();
+    assert_eq!(cn.total_requests, 0);
+}
+
+/// One request can be split across several `chat_message` rows. The reference
+/// collector sums them and counts the distinct request id once; overwriting
+/// would silently drop every earlier row's tokens.
+#[test]
+fn qoder_ide_sums_the_rows_of_one_request_instead_of_overwriting_them() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("local.db");
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE chat_session (session_id TEXT PRIMARY KEY, cwd TEXT);
+             CREATE TABLE chat_message (
+                message_id TEXT PRIMARY KEY, session_id TEXT, request_id TEXT,
+                token_info TEXT, model_info TEXT, gmt_create INTEGER);
+             INSERT INTO chat_session VALUES ('ide-session', 'D:/work/ide-repo');
+             INSERT INTO chat_message VALUES
+                ('msg-a', 'ide-session', 'req-1',
+                 '{\"prompt_tokens\":600,\"completion_tokens\":40,\"cached_tokens\":100}',
+                 '{\"model_key\":\"ide-model\"}', 1800000000000),
+                ('msg-b', 'ide-session', 'req-1',
+                 '{\"prompt_tokens\":400,\"completion_tokens\":60,\"cached_tokens\":50}',
+                 '{\"model_key\":\"ide-model\"}', 1800000001000);",
+        )
+        .unwrap();
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    run_sync(&db, GatewayUsageTool::QoderIde, &path);
+    let summary = usage_stats::usage_summary(&db, None, None, None, true).unwrap();
+    assert_eq!(summary.total_requests, 1, "one request id is one call");
+    assert_eq!(summary.total_input_tokens, 850, "600-100 plus 400-50");
+    assert_eq!(summary.total_output_tokens, 100);
+    assert_eq!(summary.total_cache_read_tokens, 150);
+}
+
+/// A trimmed database without `message_id` falls back to `rowid`, which is an
+/// integer column. Reading it as TEXT fails the whole scan, so the query casts
+/// it instead.
+#[test]
+fn qoder_ide_falls_back_to_the_integer_rowid_when_message_id_is_absent() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("local.db");
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE chat_message (
+                token_info TEXT, gmt_create INTEGER);
+             INSERT INTO chat_message VALUES
+                ('{\"prompt_tokens\":100,\"completion_tokens\":10}', 1800000000000),
+                ('{\"prompt_tokens\":200,\"completion_tokens\":20}', 1800000001000);",
+        )
+        .unwrap();
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    let result = run_sync(&db, GatewayUsageTool::QoderIde, &path);
+    assert_eq!(result.failed_files, 0);
+    let summary = usage_stats::usage_summary(&db, None, None, None, true).unwrap();
+    assert_eq!(summary.total_requests, 2, "each row is its own message");
+    assert_eq!(summary.total_input_tokens, 300);
+}
+
+#[test]
+fn qoder_ide_without_the_chat_message_table_is_a_no_op() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("local.db");
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch("CREATE TABLE chat_session_messages (session_id TEXT, payload_json TEXT);")
+        .unwrap();
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    let result = run_sync(&db, GatewayUsageTool::QoderIde, &path);
+    assert_eq!(result.inserted_records, 0);
+    assert_eq!(
+        result.failed_files, 0,
+        "a database tool must never be read as JSON"
+    );
+    assert_eq!(count(&db), 0);
+}
+
+#[test]
+fn qoder_tool_keys_serialize_exactly_as_their_app_type() {
+    // The frontend filters on `as_str()` and localizes with
+    // `settings.gateway.cli.<key>`. `rename_all = "snake_case"` would derive
+    // `qoder_cli`, which silently breaks both, so the serde name is pinned
+    // here.
+    for tool in [
+        GatewayUsageTool::QoderIde,
+        GatewayUsageTool::QoderIdeCn,
+        GatewayUsageTool::QoderCli,
+        GatewayUsageTool::QoderCliCn,
+    ] {
+        let json = serde_json::to_string(&tool).unwrap();
+        assert_eq!(json, format!("\"{}\"", tool.as_str()));
+    }
+    assert_eq!(
+        serde_json::from_str::<GatewayUsageTool>("\"qodercli\"").unwrap(),
+        GatewayUsageTool::QoderCli
+    );
+    assert_eq!(
+        serde_json::from_str::<GatewaySessionImportCli>("\"qodercli_cn\"").unwrap(),
+        GatewaySessionImportCli::QoderCliCn
+    );
+}
+
+#[test]
+fn qoder_credits_are_stored_beside_zero_tokens() {
+    let root = tempfile::tempdir().unwrap();
+    write_jsonl(
+        &root.path().join("qd.jsonl"),
+        &[
+            qoder_cli_assistant("req-a", "qfmodel", 0.25, "2026-10-17T12:00:02.000Z"),
+            qoder_cli_assistant("req-b", "qfmodel", 0.75, "2026-10-17T12:00:03.000Z"),
+        ],
+    );
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    run_sync(&db, GatewayUsageTool::QoderCli, root.path());
+
+    // Credits are the only usage measure Qoder records; they are persisted so
+    // history survives until a consumer renders them.
+    let credits = db
+        .with_conn(|conn| {
+            let mut query = conn
+                .prepare("SELECT credits FROM proxy_request_logs ORDER BY request_id")
+                .map_err(|error| error.to_string())?;
+            let rows = query
+                .query_map([], |row| row.get::<_, Option<f64>>(0))
+                .map_err(|error| error.to_string())?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|error| error.to_string())
+        })
+        .unwrap();
+    assert_eq!(credits, vec![Some(0.25), Some(0.75)]);
+
+    // Tools that never report credits leave the column NULL rather than 0, so
+    // "not reported" stays distinguishable from "free".
+    let root2 = tempfile::tempdir().unwrap();
+    write_jsonl(
+        &root2.path().join("claude.jsonl"),
+        &[
+            json!({"type":"assistant", "sessionId":"claude-session", "timestamp":THEN,
+            "cwd": "D:/work/repo",
+            "message":{"id":"msg-credits","model":"usage-test-model",
+                "usage":{"input_tokens":100,"output_tokens":10}}}),
+        ],
+    );
+    run_sync(&db, GatewayUsageTool::Claude, root2.path());
+    let claude_credits: Option<f64> = db
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT credits FROM proxy_request_logs WHERE app_type = 'claude'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())
+        })
+        .unwrap();
+    assert_eq!(claude_credits, None);
 }

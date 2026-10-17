@@ -36,6 +36,47 @@ fn session_identity(path: &Path) -> String {
         .into_owned()
 }
 
+fn session_dir(path: &Path) -> &Path {
+    path.ancestors()
+        .find(|ancestor| ancestor.file_name().is_some_and(|name| name == "agents"))
+        .and_then(Path::parent)
+        .or_else(|| path.parent())
+        .unwrap_or(path)
+}
+
+/// Kimi Code records the working directory in the session's `state.json`
+/// (`cwd`); older Python Kimi only has the `kimi.json` work-dir registry, keyed
+/// by an MD5 of the project path, so the registry is reversed here.
+fn project_of(tool: GatewayUsageTool, path: &Path) -> Option<String> {
+    let directory = session_dir(path);
+    for name in ["state.json", "summary.json"] {
+        let Ok(text) = std::fs::read_to_string(directory.join(name)) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<Value>(&text) else {
+            continue;
+        };
+        if let Some(project) = string(&value, &["/cwd", "/work_dir", "/working_directory"]) {
+            return Some(project);
+        }
+    }
+    if tool != GatewayUsageTool::KimiCli {
+        return None;
+    }
+    // Legacy layout: <root>/sessions/<md5(project)>/<session>/wire.jsonl.
+    let key = directory.parent()?.file_name()?.to_str()?;
+    let root = directory.parent()?.parent()?.parent()?;
+    let text = std::fs::read_to_string(root.join("kimi.json")).ok()?;
+    let value: Value = serde_json::from_str(&text).ok()?;
+    value
+        .get("work_dirs")?
+        .as_array()?
+        .iter()
+        .filter_map(|item| item.get("path").and_then(Value::as_str))
+        .find(|project| format!("{:x}", md5::compute(project.as_bytes())) == key)
+        .map(str::to_string)
+}
+
 pub(super) fn parse(
     tool: GatewayUsageTool,
     path: &Path,
@@ -57,6 +98,7 @@ pub(super) fn parse(
     let mut records = BTreeMap::<String, SessionUsageRecord>::new();
     let mut occurrences = HashMap::<String, usize>::new();
     let mut steps = HashMap::<String, u64>::new();
+    let project_path = project_of(tool, path);
     let pending = read_jsonl(path, |index, line| {
         if let Some(tree) = string(&line, &["/tree"]) {
             session = tree;
@@ -112,6 +154,7 @@ pub(super) fn parse(
                     .unwrap_or(fallback),
             );
             record.metadata.native_provider = string(payload, &["/provider", "/model/provider"]);
+            record.project_path = project_path.clone();
             records.insert(record.request_id.clone(), record);
         } else if tool == GatewayUsageTool::KimiCli {
             let envelope = value.get("message").unwrap_or(value);
@@ -124,6 +167,7 @@ pub(super) fn parse(
                 &mut steps,
                 &mut records,
                 0,
+                &project_path,
             );
         }
     })?;
@@ -134,6 +178,7 @@ pub(super) fn parse(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect_python(
     value: &Value,
     session: &str,
@@ -143,6 +188,7 @@ fn collect_python(
     steps: &mut HashMap<String, u64>,
     records: &mut BTreeMap<String, SessionUsageRecord>,
     depth: usize,
+    project_path: &Option<String>,
 ) {
     if depth > 32 {
         return;
@@ -165,6 +211,7 @@ fn collect_python(
                 steps,
                 records,
                 depth + 1,
+                project_path,
             );
         }
         return;
@@ -205,5 +252,8 @@ fn collect_python(
         record.request_id = format!("SESSION:kimi_cli:response:{envelope}");
     }
     record.metadata.native_provider = string(payload, &["/provider"]);
+    // The Python Kimi store keeps the work dir beside the wire log; the legacy
+    // registry lookup happens once per file in `parse`, not per row.
+    record.project_path = project_path.clone();
     records.insert(record.request_id.clone(), record);
 }

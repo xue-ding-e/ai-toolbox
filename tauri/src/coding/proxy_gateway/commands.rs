@@ -14,7 +14,7 @@ use super::types::{
     DataSourceBreakdownInput, DataSourceBreakdownItem, GatewayAggregateBareModel,
     GatewayAggregateConfig, GatewayCliKey, GatewayCliTakeoverStatus,
     GatewayConnectivityTestRequest, GatewayConnectivityTestResponse, GatewayModelHealthItem,
-    GatewayModelStats, GatewayPaginatedRequestLogs, GatewayProviderStats, GatewayProxyMode,
+    GatewayModelStats, GatewayPaginatedRequestLogs, GatewayProjectStats, GatewayProviderStats, GatewayProxyMode,
     GatewayRequestLogDetail, GatewayRequestLogFilters, GatewaySessionUsageImportInput,
     GatewaySessionUsageImportResult, GatewaySubagentCatalog, GatewayUsageSummary,
     GatewayUsageSummaryByCli, GatewayUsageTool, GatewayUsageTrendPoint, ModelPricing,
@@ -1456,6 +1456,17 @@ pub fn proxy_gateway_model_stats(
 ) -> Result<Vec<GatewayModelStats>, String> {
     let include_session = session_usage_enabled(&db_state)?;
     usage_stats::model_stats(&db_state, start_date, end_date, cli_key, include_session)
+}
+
+#[tauri::command]
+pub fn proxy_gateway_project_stats(
+    db_state: tauri::State<'_, SqliteDbState>,
+    start_date: Option<i64>,
+    end_date: Option<i64>,
+    cli_key: Option<GatewayUsageTool>,
+) -> Result<Vec<GatewayProjectStats>, String> {
+    let include_session = session_usage_enabled(&db_state)?;
+    usage_stats::project_stats(&db_state, start_date, end_date, cli_key, include_session)
 }
 
 #[tauri::command]

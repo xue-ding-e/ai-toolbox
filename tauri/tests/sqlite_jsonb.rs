@@ -230,6 +230,148 @@ fn v28_migration_preserves_existing_request_logs_and_nullable_compaction_mode() 
     assert_eq!(compaction_mode, "native");
 }
 
+/// v29 rebuilds `usage_daily_rollups`: the project column joins the primary key,
+/// which SQLite cannot alter in place. Existing archived usage must survive the
+/// table swap and keep its measurement columns, and a repeated upgrade must be
+/// a no-op rather than losing the new column.
+#[test]
+fn v29_migration_rebuilds_rollups_with_the_project_column() {
+    let mut conn = test_conn();
+    // SQLite cannot drop a column that participates in a primary key, so undo
+    // v29 by rebuilding both tables the way v29 itself does.
+    conn.execute_batch(
+        "DROP INDEX IF EXISTS idx_request_logs_project;
+         DROP INDEX IF EXISTS idx_usage_rollups_project;
+         ALTER TABLE proxy_request_logs DROP COLUMN project_path;
+
+         CREATE TABLE usage_daily_rollups_v28 (
+             date TEXT NOT NULL,
+             app_type TEXT NOT NULL,
+             provider_id TEXT NOT NULL,
+             model TEXT NOT NULL,
+             request_count INTEGER NOT NULL DEFAULT 0,
+             success_count INTEGER NOT NULL DEFAULT 0,
+             input_tokens INTEGER NOT NULL DEFAULT 0,
+             output_tokens INTEGER NOT NULL DEFAULT 0,
+             cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+             cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+             total_cost_usd TEXT NOT NULL DEFAULT '0',
+             avg_latency_ms INTEGER NOT NULL DEFAULT 0,
+             latency_sample_count INTEGER,
+             extra_tokens INTEGER NOT NULL DEFAULT 0,
+             PRIMARY KEY (date, app_type, provider_id, model)
+         );
+         DROP TABLE usage_daily_rollups;
+         ALTER TABLE usage_daily_rollups_v28 RENAME TO usage_daily_rollups;
+
+         INSERT INTO proxy_request_logs
+             (request_id, provider_id, app_type, model, input_tokens, created_at)
+         VALUES ('legacy-project-log', 'session', 'claude', 'claude-sonnet-4-6', 90, 1780000000);
+         INSERT INTO usage_daily_rollups
+             (date, app_type, provider_id, model, request_count, success_count,
+              input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+              total_cost_usd, avg_latency_ms, latency_sample_count, extra_tokens)
+         VALUES ('2026-09-01', 'claude', 'session', 'claude-sonnet-4-6', 3, 3,
+                 90, 10, 5, 1, '0.42', 250, 3, 7);",
+    )
+    .expect("seed the pre-v29 schema");
+    migrations::set_user_version(&conn, 28).expect("set v28 schema version");
+
+    migrations::run_all(&mut conn).expect("upgrade v28");
+    migrations::run_all(&mut conn).expect("reopen upgraded schema");
+    assert_eq!(
+        migrations::get_user_version(&conn).unwrap(),
+        TARGET_SCHEMA_VERSION
+    );
+
+    let archived = conn
+        .query_row(
+            "SELECT project_path, request_count, success_count, input_tokens, output_tokens,
+                    cache_read_tokens, cache_creation_tokens, total_cost_usd, avg_latency_ms,
+                    latency_sample_count, extra_tokens
+             FROM usage_daily_rollups WHERE provider_id = 'session'",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, i64>(8)?,
+                    row.get::<_, i64>(9)?,
+                    row.get::<_, i64>(10)?,
+                ))
+            },
+        )
+        .expect("read the migrated rollup");
+    assert_eq!(
+        archived,
+        (
+            "".to_string(),
+            3,
+            3,
+            90,
+            10,
+            5,
+            1,
+            "0.42".to_string(),
+            250,
+            3,
+            7
+        ),
+        "archived usage must keep every counter and land in the unknown-project bucket"
+    );
+
+    // The project is part of the primary key now: two projects on the same
+    // day/model must be two rows instead of one collapsing onto the other.
+    conn.execute_batch(
+        "INSERT INTO usage_daily_rollups (date, app_type, provider_id, model, project_path, request_count)
+         VALUES ('2026-09-01', 'claude', 'session', 'claude-sonnet-4-6', 'D:/repo-a', 2),
+                ('2026-09-01', 'claude', 'session', 'claude-sonnet-4-6', 'D:/repo-b', 1);",
+    )
+    .expect("write per-project rollups");
+    let per_project: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM usage_daily_rollups
+             WHERE date = '2026-09-01' AND model = 'claude-sonnet-4-6'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(per_project, 3, "each project keeps its own rollup row");
+
+    // Detail rows gain the column as NULL; the importer coalesces that to `''`.
+    let legacy_project: Option<String> = conn
+        .query_row(
+            "SELECT project_path FROM proxy_request_logs WHERE request_id = 'legacy-project-log'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read legacy project");
+    assert_eq!(legacy_project, None);
+
+    migrations::set_user_version(&conn, 28).unwrap();
+    migrations::run_all(&mut conn).expect("repeat the v29 rebuild");
+    for project in ["D:/repo-a", "D:/repo-b", ""] {
+        let preserved: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM usage_daily_rollups
+                 WHERE date = '2026-09-01' AND project_path = ?1",
+                [project],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            preserved, 1,
+            "a repeated upgrade must keep the {project:?} row intact"
+        );
+    }
+}
+
 #[test]
 fn session_usage_migrations_preserve_rollups_and_ledger_on_repeat() {
     let mut conn = test_conn();
@@ -1065,3 +1207,82 @@ fn update_hook_records_changed_table_names() {
         .iter()
         .any(|change| change.table == "settings" && change.action == DbChangeAction::Delete));
 }
+
+#[test]
+fn v29_adds_the_credits_columns_in_the_same_step_as_the_project_dimension() {
+    let mut conn = test_conn();
+    // Rebuild the pre-v29 shape: neither `project_path` nor `credits` exists.
+    conn.execute_batch(
+        "DROP INDEX IF EXISTS idx_request_logs_project;
+         DROP INDEX IF EXISTS idx_usage_rollups_project;
+         ALTER TABLE proxy_request_logs DROP COLUMN project_path;
+         ALTER TABLE proxy_request_logs DROP COLUMN credits;
+
+         CREATE TABLE usage_daily_rollups_v28 (
+             date TEXT NOT NULL,
+             app_type TEXT NOT NULL,
+             provider_id TEXT NOT NULL,
+             model TEXT NOT NULL,
+             request_count INTEGER NOT NULL DEFAULT 0,
+             success_count INTEGER NOT NULL DEFAULT 0,
+             input_tokens INTEGER NOT NULL DEFAULT 0,
+             output_tokens INTEGER NOT NULL DEFAULT 0,
+             cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+             cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+             total_cost_usd TEXT NOT NULL DEFAULT '0',
+             avg_latency_ms INTEGER NOT NULL DEFAULT 0,
+             latency_sample_count INTEGER,
+             extra_tokens INTEGER NOT NULL DEFAULT 0,
+             PRIMARY KEY (date, app_type, provider_id, model)
+         );
+         DROP TABLE usage_daily_rollups;
+         ALTER TABLE usage_daily_rollups_v28 RENAME TO usage_daily_rollups;
+
+         INSERT INTO proxy_request_logs
+             (request_id, provider_id, app_type, model, input_tokens, created_at)
+         VALUES ('pre-v29-log', 'session', 'qodercli', 'qfmodel', 0, 1780000000);
+         INSERT INTO usage_daily_rollups
+             (date, app_type, provider_id, model, request_count, success_count,
+              input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+              total_cost_usd, avg_latency_ms, latency_sample_count, extra_tokens)
+         VALUES ('2026-10-17', 'qodercli', 'session', 'qfmodel', 7, 7,
+                 0, 0, 0, 0, '0.3', 120, 7, 4);",
+    )
+    .expect("seed the pre-v29 schema");
+    migrations::set_user_version(&conn, 28).expect("set v28 schema version");
+
+    migrations::run_all(&mut conn).expect("upgrade v28");
+    // A second open must be a no-op, not a duplicate-column error.
+    migrations::run_all(&mut conn).expect("reopen upgraded schema");
+    assert_eq!(
+        migrations::get_user_version(&conn).unwrap(),
+        TARGET_SCHEMA_VERSION
+    );
+
+    // The rebuilt rollup carries both new columns, and the rebuild preserved
+    // the counters it was seeded with.
+    let (project, credits, requests, extra): (String, f64, i64, i64) = conn
+        .query_row(
+            "SELECT project_path, credits, request_count, extra_tokens
+             FROM usage_daily_rollups WHERE provider_id = 'session'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("read rebuilt rollup");
+    assert_eq!(project, "", "old rows join the unknown-project bucket");
+    assert_eq!(credits, 0.0);
+    assert_eq!(requests, 7, "the upgrade must not rewrite counters");
+    assert_eq!(extra, 4);
+
+    // A detail row that predates the column reads as "no credits reported",
+    // which stays distinguishable from a real zero.
+    let log_credits: Option<f64> = conn
+        .query_row(
+            "SELECT credits FROM proxy_request_logs WHERE request_id = 'pre-v29-log'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read log credits");
+    assert_eq!(log_credits, None);
+}
+

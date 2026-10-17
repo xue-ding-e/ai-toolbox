@@ -67,6 +67,7 @@ pub(super) fn parse(path: &Path, fallback: i64) -> Result<ParsedSession, String>
         .to_string_lossy()
         .into_owned();
     let mut model: Option<String> = None;
+    let mut project_path: Option<String> = None;
     let mut records = BTreeMap::<String, SessionUsageRecord>::new();
     let mut seen_events = HashSet::<String>::new();
     let pending = read_jsonl(path, |index, value| {
@@ -74,6 +75,9 @@ pub(super) fn parse(path: &Path, fallback: i64) -> Result<ParsedSession, String>
             Some("session") => {
                 if let Some(id) = string(&value, &["/id"]) {
                     session = id;
+                }
+                if project_path.is_none() {
+                    project_path = string(&value, &["/cwd", "/working_directory"]);
                 }
                 return;
             }
@@ -101,6 +105,9 @@ pub(super) fn parse(path: &Path, fallback: i64) -> Result<ParsedSession, String>
             if let Some(model) = &model {
                 record.model = model.clone();
             }
+        }
+        if record.project_path.is_none() {
+            record.project_path = project_path.clone();
         }
         // The same message id can appear in both session roots; one billing.
         let key = string(&value, &["/id", "/message/id", "/message/responseId"])

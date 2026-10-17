@@ -114,7 +114,10 @@ fn step_timestamp(metadata: &[u8]) -> Option<u64> {
             if sub.number != 1 {
                 continue;
             }
-            if let Some(value) = sub.varint.filter(|value| *value >= MIN_GENERATION_TIMESTAMP) {
+            if let Some(value) = sub
+                .varint
+                .filter(|value| *value >= MIN_GENERATION_TIMESTAMP)
+            {
                 return Some(value);
             }
         }
@@ -152,8 +155,9 @@ fn decode_generation(data: &[u8], fallback_timestamp: Option<u64>) -> Option<Gen
             19 => {
                 if let Some(bytes) = field.bytes {
                     if let Ok(name) = String::from_utf8(bytes) {
-                        if name.chars().all(|character| character.is_ascii_graphic()
-                            || character == ' ')
+                        if name
+                            .chars()
+                            .all(|character| character.is_ascii_graphic() || character == ' ')
                         {
                             model = name;
                         }
@@ -227,33 +231,61 @@ fn decode_generation(data: &[u8], fallback_timestamp: Option<u64>) -> Option<Gen
 /// One database is one conversation. Unlike the file adapters, the row set can
 /// shrink (a conversation is deleted), so missing rows are released from the
 /// ledger instead of lingering as phantom usage.
+///
+/// A root is the profile directory holding both `brain/` (the transcript
+/// mirror) and `conversations/` (the SQLite usage), not the `brain/` subfolder:
+/// the reference collector resolves `conversations/` from the profile too, and
+/// reading usage straight out of `brain/` never found a database.
+///
+/// The CLI, the desktop app and the IDE each keep their own profile, and the
+/// same conversation UUID can exist in more than one of them (the IDE copies
+/// the CLI's). Only the newest copy per UUID is returned: importing every copy
+/// would let a stale one overwrite the live values, since they share request
+/// ids. The reference collector dedupes the same way.
+fn databases(roots: &[PathBuf]) -> Vec<(String, PathBuf)> {
+    let mut newest = HashMap::<String, (u64, PathBuf)>::new();
+    for root in roots {
+        let Ok(entries) = fs::read_dir(root.join("conversations")) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("db") {
+                continue;
+            }
+            let Some(session_id) = path.file_stem().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            let stamp = fs::metadata(&path)
+                .ok()
+                .map(|metadata| super::modified_nanos(&metadata))
+                .unwrap_or(0);
+            match newest.get(session_id) {
+                Some((existing, _)) if *existing >= stamp => {}
+                _ => {
+                    newest.insert(session_id.to_string(), (stamp, path));
+                }
+            }
+        }
+    }
+    let mut databases = newest
+        .into_iter()
+        .map(|(session_id, (_, path))| (session_id, path))
+        .collect::<Vec<_>>();
+    // A stable order keeps the ledger writes deterministic between scans.
+    databases.sort_by(|left, right| left.0.cmp(&right.0));
+    databases
+}
+
 pub(super) fn sync_databases(
     db: &super::SqliteDbState,
-    root: &Path,
+    roots: &[PathBuf],
     states: &mut HashMap<String, super::SourceState>,
     claims: &mut HashMap<String, String>,
     now: i64,
 ) -> Result<super::GatewaySessionUsageImportResult, String> {
-    let conversations = root.join("conversations");
-    if !conversations.is_dir() {
-        return Ok(Default::default());
-    }
     let mut result = super::GatewaySessionUsageImportResult::default();
-    for entry in fs::read_dir(&conversations)
-        .map_err(|error| error.to_string())?
-        .flatten()
-    {
-        let path = entry.path();
-        if path.extension().and_then(|value| value.to_str()) != Some("db") {
-            continue;
-        }
-        let Some(session_id) = path
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .map(str::to_string)
-        else {
-            continue;
-        };
+    for (session_id, path) in databases(roots) {
         let source_id = format!("antigravity:{session_id}");
         let metadata = fs::metadata(&path).map_err(|error| error.to_string())?;
         let stamp = super::modified_nanos(&metadata);
@@ -549,7 +581,13 @@ mod tests {
     /// One `gen_metadata.data` blob: a generation record plus a packed step
     /// reference, with the token buckets and start time nested per the
     /// reverse-engineered field numbers.
-    fn generation_blob(model: &str, input: u64, output: u64, cached: u64, thoughts: u64) -> Vec<u8> {
+    fn generation_blob(
+        model: &str,
+        input: u64,
+        output: u64,
+        cached: u64,
+        thoughts: u64,
+    ) -> Vec<u8> {
         let tokens = [
             field_varint(2, input),
             field_varint(3, output),
@@ -629,8 +667,8 @@ mod tests {
     fn conversation_db(root: &Path, session: &str) -> rusqlite::Connection {
         let conversations = root.join("conversations");
         fs::create_dir_all(&conversations).unwrap();
-        let connection = rusqlite::Connection::open(conversations.join(format!("{session}.db")))
-            .unwrap();
+        let connection =
+            rusqlite::Connection::open(conversations.join(format!("{session}.db"))).unwrap();
         connection
             .execute_batch("CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)")
             .unwrap();
@@ -651,8 +689,14 @@ mod tests {
         let db = crate::db::SqliteDbState::in_memory_for_test().unwrap();
         let mut states = HashMap::new();
         let mut claims = HashMap::new();
-        let result =
-            sync_databases(&db, root.path(), &mut states, &mut claims, 1_800_000_100).unwrap();
+        let result = sync_databases(
+            &db,
+            &[root.path().to_path_buf()],
+            &mut states,
+            &mut claims,
+            1_800_000_100,
+        )
+        .unwrap();
         assert_eq!(result.inserted_records, 1);
         let logs = crate::coding::proxy_gateway::usage_stats::request_logs(
             &db,
@@ -672,8 +716,14 @@ mod tests {
         assert_eq!(row.output_tokens, 150);
         assert_eq!(row.upstream_model_id, "gemini-2.5-pro");
         // Rescanning an unchanged database must not import it again.
-        let second =
-            sync_databases(&db, root.path(), &mut states, &mut claims, 1_800_000_160).unwrap();
+        let second = sync_databases(
+            &db,
+            &[root.path().to_path_buf()],
+            &mut states,
+            &mut claims,
+            1_800_000_160,
+        )
+        .unwrap();
         assert_eq!(second.inserted_records, 0);
     }
 
@@ -686,9 +736,96 @@ mod tests {
         let db = crate::db::SqliteDbState::in_memory_for_test().unwrap();
         let mut states = HashMap::new();
         let mut claims = HashMap::new();
-        let result =
-            sync_databases(&db, root.path(), &mut states, &mut claims, 1_800_000_100).unwrap();
+        let result = sync_databases(
+            &db,
+            &[root.path().to_path_buf()],
+            &mut states,
+            &mut claims,
+            1_800_000_100,
+        )
+        .unwrap();
         assert_eq!(result.inserted_records, 0);
         assert_eq!(result.failed_files, 0);
+    }
+
+    /// The CLI, the desktop app and the IDE each keep their own profile, and
+    /// the same conversation UUID can exist in several of them (locally the IDE
+    /// copies the CLI's). Only the newest copy may be imported: they share
+    /// request ids, so importing both would bill one call twice and let a stale
+    /// copy overwrite the live values.
+    #[test]
+    fn a_conversation_present_in_two_profiles_is_imported_once_from_the_newest_copy() {
+        let cli = tempfile::tempdir().unwrap();
+        let ide = tempfile::tempdir().unwrap();
+        let session = "11111111-2222-3333-4444-555555555555";
+        let stale = conversation_db(cli.path(), session);
+        stale
+            .execute(
+                "INSERT INTO gen_metadata (idx, data) VALUES (1, ?1)",
+                [generation_blob("gemini-2.5-pro", 100, 10, 0, 0)],
+            )
+            .unwrap();
+        // A newer copy with more generations must win.
+        let live = conversation_db(ide.path(), session);
+        live.execute(
+            "INSERT INTO gen_metadata (idx, data) VALUES (1, ?1), (2, ?2)",
+            [
+                generation_blob("gemini-2.5-pro", 100, 10, 0, 0),
+                generation_blob("gemini-2.5-pro", 200, 20, 0, 0),
+            ],
+        )
+        .unwrap();
+        // Make the ordering unambiguous regardless of file-system granularity.
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+        let file = fs::File::options()
+            .write(true)
+            .open(
+                ide.path()
+                    .join("conversations")
+                    .join(format!("{session}.db")),
+            )
+            .unwrap();
+        file.set_modified(later).unwrap();
+        drop(file);
+
+        let roots = vec![cli.path().to_path_buf(), ide.path().to_path_buf()];
+        let db = crate::db::SqliteDbState::in_memory_for_test().unwrap();
+        let mut states = HashMap::new();
+        let mut claims = HashMap::new();
+        let result = sync_databases(&db, &roots, &mut states, &mut claims, 1_800_000_100).unwrap();
+        assert_eq!(result.scanned_files, 1);
+        assert_eq!(
+            result.inserted_records, 2,
+            "both generations of the live copy"
+        );
+        let logs = crate::coding::proxy_gateway::usage_stats::request_logs(
+            &db,
+            &crate::coding::proxy_gateway::types::GatewayRequestLogFilters {
+                cli_key: Some(GatewayUsageTool::Antigravity),
+                ..Default::default()
+            },
+            0,
+            10,
+            true,
+        )
+        .unwrap();
+        assert_eq!(logs.data.len(), 2);
+        let tokens: u64 = logs.data.iter().map(|row| row.input_tokens).sum();
+        assert_eq!(
+            tokens, 300,
+            "the stale single-generation copy is not billed"
+        );
+    }
+
+    /// A root is the profile directory, so the transcript mirror inside
+    /// `brain/` is walked from there and `conversations/` resolves beside it.
+    #[test]
+    fn the_transcript_walk_accepts_a_profile_root_not_only_a_brain_dir() {
+        assert!(is_transcript(Path::new(
+            "brain/11111111-2222-3333-4444-555555555555/.system_generated/logs/transcript_full.jsonl"
+        )));
+        assert!(is_transcript(Path::new(
+            "/home/me/.gemini/antigravity-ide/brain/11111111-2222-3333-4444-555555555555/.system_generated/logs/transcript.jsonl"
+        )));
     }
 }

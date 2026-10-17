@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 use super::schema::{sql_string_literal, DbTable, JsonFieldPath, ALL_TABLES};
 
-pub const TARGET_SCHEMA_VERSION: i32 = 28;
+pub const TARGET_SCHEMA_VERSION: i32 = 29;
 const FUTURE_SCHEMA_ERROR_PREFIX: &str = "AI_TOOLBOX_SQLITE_SCHEMA_TOO_NEW";
 
 pub fn run_all(conn: &mut Connection) -> Result<(), String> {
@@ -91,6 +91,9 @@ pub fn run_all(conn: &mut Connection) -> Result<(), String> {
     }
     if current_version < 28 {
         run_migration_step(conn, 28, migrate_v28)?;
+    }
+    if current_version < 29 {
+        run_migration_step(conn, 29, migrate_v29)?;
     }
 
     Ok(())
@@ -571,6 +574,93 @@ fn migrate_v28(conn: &Connection) -> Result<(), String> {
     add_column_if_missing(conn, "proxy_request_logs", "compaction_mode", "TEXT")
 }
 
+/// Project dimension. Sessions imported from local CLIs record their working
+/// directory; proxy traffic has no project at all, so the column stays NULL
+/// there and every consumer coalesces it to `''` ("unknown project").
+///
+/// The rollup table is **rebuilt** rather than extended: its primary key has to
+/// grow the new column, and SQLite cannot alter a primary key in place. Without
+/// the rebuild, two projects used on the same day/model would collapse into one
+/// archived row and the project split would silently vanish once the detail
+/// rows are pruned.
+fn migrate_v29(conn: &Connection) -> Result<(), String> {
+    add_column_if_missing(conn, "proxy_request_logs", "project_path", "TEXT")?;
+    // Provider-billed credits, kept beside the token counters. Only Qoder
+    // reports them today: its built-in routing writes zero tokens to the
+    // transcript and records Credits instead, so tokens alone cannot express
+    // how much that tool was used. Additive with a NULL/0 default, so every
+    // other tool and every pre-upgrade row reads as "no credits reported".
+    // Nothing renders it yet; it is collected now so history is not lost.
+    add_column_if_missing(conn, "proxy_request_logs", "credits", "REAL")?;
+    // Added before the rebuild so the INSERT ... SELECT below can copy it from
+    // the old table; the rebuilt table declares it itself.
+    add_column_if_missing(conn, "usage_daily_rollups", "credits", "REAL NOT NULL DEFAULT 0")?;
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_request_logs_project
+            ON proxy_request_logs(project_path);",
+    )
+    .map_err(|error| format!("Failed to create proxy gateway project index: {error}"))?;
+
+    // A rollup table that already has the column was rebuilt by an earlier
+    // attempt (or by a database restored at v29). Rebuilding again would fold
+    // the per-project rows back into one unknown-project row, so skip it — but
+    // the credits column is added either way, since a database that ran the
+    // old two-step migration path may sit on the rebuilt table without it.
+    if table_has_column(conn, "usage_daily_rollups", "project_path")? {
+        return add_column_if_missing(
+            conn,
+            "usage_daily_rollups",
+            "credits",
+            "REAL NOT NULL DEFAULT 0",
+        );
+    }
+
+    conn.execute_batch(
+        "CREATE TABLE usage_daily_rollups_v29 (
+            date TEXT NOT NULL,
+            app_type TEXT NOT NULL,
+            provider_id TEXT NOT NULL,
+            model TEXT NOT NULL,
+            project_path TEXT NOT NULL DEFAULT '',
+            request_count INTEGER NOT NULL DEFAULT 0,
+            success_count INTEGER NOT NULL DEFAULT 0,
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+            total_cost_usd TEXT NOT NULL DEFAULT '0',
+            avg_latency_ms INTEGER NOT NULL DEFAULT 0,
+            latency_sample_count INTEGER,
+            extra_tokens INTEGER NOT NULL DEFAULT 0,
+            credits REAL NOT NULL DEFAULT 0,
+            PRIMARY KEY (date, app_type, provider_id, model, project_path)
+        );
+
+        INSERT INTO usage_daily_rollups_v29 (
+            date, app_type, provider_id, model, project_path, request_count, success_count,
+            input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+            total_cost_usd, avg_latency_ms, latency_sample_count, extra_tokens, credits
+        )
+        SELECT date, app_type, provider_id, model, '',
+               request_count, success_count,
+               input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+               total_cost_usd, avg_latency_ms, latency_sample_count, extra_tokens,
+               COALESCE(credits, 0)
+        FROM usage_daily_rollups;
+
+        DROP TABLE usage_daily_rollups;
+        ALTER TABLE usage_daily_rollups_v29 RENAME TO usage_daily_rollups;
+
+        CREATE INDEX IF NOT EXISTS idx_usage_rollups_app_date
+            ON usage_daily_rollups(app_type, date);
+        CREATE INDEX IF NOT EXISTS idx_usage_rollups_provider
+            ON usage_daily_rollups(provider_id, app_type);
+        CREATE INDEX IF NOT EXISTS idx_usage_rollups_project
+            ON usage_daily_rollups(project_path);",
+    )
+    .map_err(|error| format!("Failed to rebuild usage rollups for project dimension: {error}"))
+}
+
 fn create_jsonb_table(conn: &Connection, table: DbTable) -> Result<(), String> {
     let table_name = table.name();
     conn.execute_batch(&format!(
@@ -743,6 +833,16 @@ fn add_column_if_missing(
     column: &str,
     definition: &str,
 ) -> Result<(), String> {
+    if table_has_column(conn, table, column)? {
+        return Ok(());
+    }
+    conn.execute_batch(&format!(
+        "ALTER TABLE {table} ADD COLUMN {column} {definition};"
+    ))
+    .map_err(|error| format!("Failed to add SQLite column {table}.{column}: {error}"))
+}
+
+fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, String> {
     let mut stmt = conn
         .prepare(&format!("PRAGMA table_info({table})"))
         .map_err(|error| format!("Failed to inspect SQLite table {table}: {error}"))?;
@@ -754,13 +854,10 @@ fn add_column_if_missing(
             .map_err(|error| format!("Failed to read SQLite column for {table}: {error}"))?
             .eq_ignore_ascii_case(column)
         {
-            return Ok(());
+            return Ok(true);
         }
     }
-    conn.execute_batch(&format!(
-        "ALTER TABLE {table} ADD COLUMN {column} {definition};"
-    ))
-    .map_err(|error| format!("Failed to add SQLite column {table}.{column}: {error}"))
+    Ok(false)
 }
 
 fn create_model_pricing_table(conn: &Connection) -> Result<(), String> {

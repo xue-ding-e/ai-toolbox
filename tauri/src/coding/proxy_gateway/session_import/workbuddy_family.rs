@@ -221,6 +221,12 @@ pub(super) fn usage_record(
     })
 }
 
+/// The working directory WorkBuddy/CodeBuddy write on each item. Some builds
+/// put it on the nested message instead, so both spellings are accepted.
+fn project_of(item: &Value) -> Option<String> {
+    super::parsers::string(item, &["/cwd", "/message/cwd", "/working_directory"])
+}
+
 /// WorkBuddy keeps its session id in `sessionId`, its project in `cwd`.
 fn session_of(item: &Value, fallback: &str) -> String {
     item.get("sessionId")
@@ -246,6 +252,7 @@ pub(super) fn parse(tool: GatewayUsageTool, path: &Path, fallback: i64) -> Resul
         items.push((line, value));
     })?;
     let mut records = BTreeMap::<String, SessionUsageRecord>::new();
+    let mut session_project: Option<String> = None;
     for (line, item) in items {
         let session = session_of(&item, &session_fallback);
         let Some(usage) = usage_record(&item, &session, line, fallback) else {
@@ -267,6 +274,13 @@ pub(super) fn parse(tool: GatewayUsageTool, path: &Path, fallback: i64) -> Resul
         );
         record.metadata.granularity = SessionUsageGranularity::Request;
         record.metadata.call_count = Some(1);
+        // The item that carries the usage often omits `cwd`; the session
+        // header line and other items still carry the project, so a project
+        // already seen in this file fills the gap.
+        if let Some(project) = project_of(&item).or_else(|| session_project.clone()) {
+            session_project = Some(project.clone());
+            record.project_path = Some(project);
+        }
         record.reported_cost_usd = usage.reported_cost;
         if record.reported_cost_usd.is_some() {
             record.metadata.cost_source = Some("reported".into());

@@ -22,12 +22,16 @@ pub(super) fn parse(path: &Path, fallback: i64) -> Result<ParsedSession, String>
     let mut seed_boundary_seen = false;
     let mut last_settlement: Option<((u64, u64), String)> = None;
     let mut legacy_retries = HashMap::<(u64, u64), u64>::new();
+    let mut project_path: Option<String> = None;
     let pending = read_jsonl(path, |index, event| {
         let kind = event.get("type").and_then(Value::as_str).unwrap_or("");
         if kind == "session" {
             if let Some(id) = string(&event, &["/id"]) {
                 session = id;
             }
+            project_path = project_path
+                .take()
+                .or_else(|| string(&event, &["/cwd", "/working_directory"]));
             version = event
                 .get("version")
                 .and_then(Value::as_u64)
@@ -149,6 +153,7 @@ pub(super) fn parse(path: &Path, fallback: i64) -> Result<ParsedSession, String>
             data,
             &["/message/source/provider", "/source/provider", "/provider"],
         );
+        record.project_path = project_path.clone();
         record.metadata.incomplete = kind == "assistant/attempt";
         // A running development build may already have archived the earlier
         // turn/step identities. Preserve only fingerprint-proven aliases so

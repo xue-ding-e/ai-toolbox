@@ -1,6 +1,6 @@
 # 网关 Session 统计对齐 tokei 补齐实现计划
 
-> 状态：**阶段一至阶段四已实施**（2026-10-17，分支 `worktree-tokei-parity`）；阶段五（项目维度）经用户决策**取消**，不做 schema 迁移与项目视图。
+> 状态：**阶段一至阶段五已实施**（2026-10-17）；阶段五（项目维度）曾在 `worktree-tokei-parity` 中经用户决策取消，后于同日按新需求重新实施（schema v29 + 采集层 cwd + 统计页项目 tab）。
 > 参照物：cclank/tokei（`D:\GitHub\tokei`，macOS/Windows 用量监控应用，采集器为单文件 Python `usage.30s.py`，17,947 行）。
 
 ## 交付状态（2026-10-17）
@@ -10,7 +10,7 @@
 | 一 | P0 采集修复 ×5（ZCode、Hermes、Grok、Antigravity、Codex） | 已完成 | `9a275894` `09f5e6cd` `f03cde18` `7e3a1373` `11215c5d` |
 | 二/三 | 10 个 usage-only 新工具 | 已完成 | `96a8ef11` |
 | 四 | 时间区间自然边界 + 模型行展开单价 | 已完成 | `98567a97` |
-| 五 | 项目维度（schema v28 + cwd 采集 + 项目视图） | 已取消（用户决策，2026-10-17） | — |
+| 五 | 项目维度（schema v29 + cwd 采集 + 项目视图） | 已完成（2026-10-17 重新实施） | 本次提交 |
 
 门禁：`cargo test` 2863 + 229 + 4 + 29 + 11 通过；`pnpm test` 974 通过；`tsc --noEmit` 与 `pnpm i18n:check` 通过。
 
@@ -37,7 +37,7 @@
   - ① 修 5 处采集 bug + ② 低成本新工具（Prime Agent、WorkBuddy×2、MiMoCode）+ ③ 全新解析器工具（Qwen Code、Muse Code、Command Code、CodeBuddy、Devin CLI、MiniMax Code）**全部纳入**。
   - 新工具**仅做网关统计采集**（usage-only，照 `kimi_cli`/`zcode` 先例），不建 tab、不做 provider 管理、不走完整 CLI 接入 SOP。
   - **OMP（oh_my_pi）保持独立工具，不并入 pi**（与 tokei 的合并做法相反，维持 ai-toolbox 现状）。
-  - 展示层纳入：时间区间补自然边界（yesterday/本周/上周/本月/本年）、模型行展开单价；项目维度统计后经用户决策取消（2026-10-17）。
+  - 展示层纳入：时间区间补自然边界（yesterday/本周/上周/本月/本年）、模型行展开单价；项目维度统计同日重新实施（统计页「项目」tab）。
   - 不纳入：额度/配额 API 类（Cursor/Zed/Sub2API/z.ai/QwenWork/Kimi 额度等，非本地日志）、Grok Bot（本地快照无 token，仅会话活动）、Qoder 系 4 个变体（CLI/CN token 恒 0 只有时长与上下文比；Desktop/QoderWork 为 IDE 型 SQLite；注：tokei Windows 版经 `%APPDATA%` 路径同样支持它们，非平台限制）、多设备同步、年度回顾、推理 token 独立桶（schema 级变更，单独立项）。
   - 路径解析参考：tokei 的 `usage.30s.py` 用 `HOME`/`APPDATA`/`LOCALAPPDATA` 跨平台解析（51-53 行），移植时用 ai-toolbox 现有的 `dirs` crate 与 runtime_location 机制等价实现。
 
@@ -70,7 +70,7 @@
 - 数据源：`<grok_root>/logs/unified.jsonl`，事件 `msg == "shell.turn.inference_done"`，字段（`ctx`）：`prompt_tokens`、`cached_prompt_tokens`、`completion_tokens`、`reasoning_tokens`、`loop_index`、`attempts`、`model_elapsed_ms`；顶层 `ts`、`sid`。
 - 口径（tokei `_grok_usage_record` @5634-5636，已核实）：`in = prompt - cached`、`cr = cached`、`out = completion - reasoning`、reasoning 并入 output（四桶语义）；clamp：`cached = min(cached, prompt)`、`reasoning = min(reasoning, completion)`、负数归 0。
 - **旧版降级**：ctx 中 4 个 token 键全缺 → 不产生 usage 记录（tokei @5615-5617 同判），只留上下文快照——ai-toolbox 无此卡片维度，直接跳过即可。
-- 模型归因：`sid` → `sessions/*/*/summary.json` 的 `info.id` + `current_model_id`（tokei @5592-5593）；cwd 取会话 group 目录的 `.cwd` 文件内容，否则 unquote 目录名（@5578-5594）——本项目维度方案已取消，仅作记录。
+- 模型归因：`sid` → `sessions/*/*/summary.json` 的 `info.id` + `current_model_id`（tokei @5592-5593）；cwd 取会话 group 目录的 `.cwd` 文件内容，否则 unquote 目录名（@5578-5594）——ai-toolbox 用 `state.json`/`.project_root`/session header 等价实现，不额外解析 `.cwd` 文件。
 - 现有 `updates.jsonl` 解析保留（旧版会话兼容），两源 request_id 键不同天然不冲突。
 - root：`default_session_roots` 的 Grok 分支追加 `<root>/logs`；`session_files` 匹配 `unified.jsonl`。
 - 身份键：`SESSION:grok:<sid>:<ts>:<loop_index>:<attempts>`（对齐 tokei 的复合 id 语义，同键幂等）。
@@ -141,7 +141,7 @@
 
 1. **时间区间自然边界**：`gatewayFormatters.ts:494` `GATEWAY_USAGE_RANGE_PRESETS` 追加 `yesterday`/`week`/`last_week`/`month`/`year`；`resolveGatewayUsageRange`（:524-553）补分支——注意现有契约 `endDate` 恒为 now，`yesterday` 需返回**过去的 end**（本地今天零点），后端只做 BETWEEN 过滤可直接接受；`resolveGatewayRequestRange`（:555-571）自动继承；i18n `gateway.page.statistics.range.*` 两语言各加 5 键（zh-CN.json:91-98 / en-US.json:91-98）。后端**无预设概念无需改**；趋势桶阈值 `usage_stats.rs:894`（≤24h 小时桶）恰好让 yesterday 落在小时桶，week/month/year 走日桶，`formatTrendDateLabel` 两种桶已兼容。测试：`web/test/features/coding/gateway/utils/gatewayFormatters.test.ts:53-79` 补新预设断言。
 2. **模型行展开单价**：统计页 models 表行加 expandable，展开显示四桶单价（input/output/cache_read/cache_creation per million，读现有 model_pricing 查询命令）+ `has_pricing` 状态；未定价显示现有 `unpricedModelIds` 提示语义。新工具的模型要能定价须在 `tauri/resources/model_pricing.json` 补价（守卫 `every_published_preset_model_resolves_to_model_pricing`，豁免集仅图片模型）。
-3. ~~**项目维度**：采集层为可提供 cwd 的工具（Claude session header、Pi 系 session record、Grok `.cwd` 文件/目录名、WorkBuddy 系目录名、Qwen Code 等）解析项目路径，`proxy_request_logs` 增列（SQLite 迁移 v28）+ 统计页项目聚合视图。~~ **已取消**（用户决策，2026-10-17）：不做 schema 迁移、不加项目视图；现有采集语义保持不变。
+3. **项目维度（已实施）**：采集层解析各 CLI 记录的工作目录（Claude 每行 `cwd`、Codex `session_meta.payload.cwd`、Pi/OMP/Prime/DSH/ZCode/Cmdcode 会话头、OpenCode/ZCode `session.directory`、Grok `unified.jsonl` 的 `session created` ctx、WorkBuddy 系 `cwd`、Kimi `state.json`/`kimi.json`、Gemini `.project_root`），`proxy_request_logs.project_path`（v29）保存；`usage_daily_rollups` 重建主键加入 `project_path`，日志裁剪后仍保留项目拆分；统计页新增「项目」tab（按项目路径合并、跨 CLI 汇总、会话数/请求数/Token/成本/主模型/最近活跃）。代理转发流量没有工作目录，不进入项目维度。
 
 ## SQLite 型新工具的挂载方式
 
@@ -167,7 +167,7 @@ MiMoCode/Devin/MiniMax 三个 SQLite 工具照 Hermes/OpenCode 模式挂载：
 4. **阶段四：展示层**
    - 4a. 时间区间自然边界（纯前端 + i18n + 测试）
    - 4b. 模型行展开单价
-5. ~~**阶段五：项目维度**（schema 迁移 v28 + 采集层 cwd 解析 + 统计页项目视图）~~——**已取消**（用户决策，2026-10-17）。
+5. **阶段五：项目维度**（schema v29 + 采集层 cwd 解析 + 统计页项目视图）——2026-10-17 重新实施。
 
 每阶段收尾跑对应测试；跨阶段交付前跑全量门禁（`cargo test` + `pnpm test` + `tsc --noEmit`）。新工具一律 usage-only 注册面，不动 `GatewayCliKey`/接管/托盘/备份。
 

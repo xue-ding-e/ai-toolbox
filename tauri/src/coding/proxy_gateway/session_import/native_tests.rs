@@ -772,6 +772,40 @@ fn python_kimi_status_updates_and_nested_subagents_preserve_usage_without_guessi
     assert_eq!(logs.data[0].created_at.timestamp(), THEN);
 }
 
+/// Legacy Python Kimi stores sessions under `sessions/<md5(project)>/<session>/`
+/// and lists the real paths in `kimi.json`. The directory key is an MD5, so a
+/// lookup hashing with SHA-256 never matches and the project silently stays
+/// empty.
+#[test]
+fn python_kimi_resolves_the_project_through_the_md5_directory_name() {
+    let root = tempfile::tempdir().unwrap();
+    let project = "D:/work/kimi-repo";
+    let digest = format!("{:x}", md5::compute(project.as_bytes()));
+    let session = root
+        .path()
+        .join("sessions")
+        .join(&digest)
+        .join("legacy-session");
+    fs::create_dir_all(&session).unwrap();
+    fs::write(
+        root.path().join("kimi.json"),
+        serde_json::to_string(&json!({"work_dirs": [{"path": project}]})).unwrap(),
+    )
+    .unwrap();
+    write_jsonl(
+        &session.join("wire.jsonl"),
+        &[
+            json!({"timestamp": THEN as f64,"message":{"type":"StatusUpdate",
+            "payload":{"message_id":"legacy","token_usage":{"input_other":7,"output":3}}}}),
+        ],
+    );
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    run_sync(&db, GatewayUsageTool::KimiCli, root.path());
+    let projects = usage_stats::project_stats(&db, None, None, None, true).unwrap();
+    assert_eq!(projects.len(), 1);
+    assert_eq!(projects[0].project_path, project);
+}
+
 #[test]
 fn hermes_cumulative_wal_updates_charge_only_deltas_and_reconcile_actual_cost() {
     let root = tempfile::tempdir().unwrap();

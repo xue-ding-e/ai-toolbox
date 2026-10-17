@@ -120,13 +120,30 @@ pub(super) fn parse(path: &Path, fallback: i64) -> Result<ParsedSession, String>
 /// without any token key are skipped: old log lines only carry timing.
 fn parse_unified_log(path: &Path, _fallback: i64) -> Result<ParsedSession, String> {
     let mut records = BTreeMap::new();
+    // `session created` events carry the session's working directory; the
+    // per-turn `inference_done` events do not. Map it by session so a log
+    // holding several sessions attributes each turn to its own project — a
+    // session whose `session created` is not in the log keeps no project rather
+    // than borrowing another session's directory.
+    let mut projects = std::collections::HashMap::<String, String>::new();
     let pending = read_jsonl(path, |_, value| {
-        if value.get("msg").and_then(Value::as_str) != Some("shell.turn.inference_done") {
-            return;
+        match value.get("msg").and_then(Value::as_str) {
+            Some("session created") => {
+                if let (Some(session), Some(cwd)) =
+                    (string(&value, &["/sid"]), string(&value, &["/ctx/cwd"]))
+                {
+                    projects.insert(session, cwd);
+                }
+                return;
+            }
+            Some("shell.turn.inference_done") => {}
+            _ => return,
         }
         let Some(ctx) = value.get("ctx").filter(|ctx| ctx.is_object()) else {
             return;
         };
+        let turn_project =
+            string(&value, &["/sid"]).and_then(|session| projects.get(&session).cloned());
         let token_keys = [
             "prompt_tokens",
             "cached_prompt_tokens",
@@ -165,6 +182,7 @@ fn parse_unified_log(path: &Path, _fallback: i64) -> Result<ParsedSession, Strin
         );
         let mut record =
             native_record(GatewayUsageTool::Grok, &session, &identity, None, usage, created_at);
+        record.project_path = turn_project;
         record.metadata.granularity = SessionUsageGranularity::Request;
         record.metadata.call_count = Some(1);
         records.insert(record.request_id.clone(), record);

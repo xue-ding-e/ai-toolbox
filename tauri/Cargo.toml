@@ -65,6 +65,10 @@ rusty-leveldb = "4.0.1"
 toml = { version = "0.8.2", features = ["preserve_order"] }
 toml_edit = "0.22"
 sha2 = "0.10"
+# Legacy Python Kimi keys its work-dir registry entries by an MD5 of the project
+# path (the directory name under `sessions/`); the reverse lookup has to use the
+# same digest. Already in the tree as a russh dependency.
+md5 = "0.7"
 ring = "0.17"
 zeroize = "1"
 keyring = { version = "4.2", features = ["apple-native-keyring-store"] }

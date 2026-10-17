@@ -386,6 +386,22 @@ export interface GatewayProviderStats {
   cache_hit_rate: number | null;
 }
 
+/**
+ * One project the local CLIs worked in. Only imported session usage carries a
+ * working directory, so proxy traffic never appears here; an empty
+ * `project_path` is the "unknown project" bucket.
+ */
+export interface GatewayProjectStats {
+  project_path: string;
+  session_count: number;
+  request_count: number;
+  total_tokens: number;
+  total_cost_usd: string;
+  top_model: string | null;
+  cli_keys: GatewayUsageTool[];
+  last_active: string | null;
+}
+
 export interface GatewayModelStats {
   cli_key: GatewayUsageTool;
   model: string;
@@ -847,6 +863,18 @@ export const getProxyGatewayProviderStats = async (
   });
 };
 
+export const getProxyGatewayProjectStats = async (
+  startDate?: number,
+  endDate?: number,
+  cliKey?: GatewayUsageTool
+): Promise<GatewayProjectStats[]> => {
+  return invoke<GatewayProjectStats[]>('proxy_gateway_project_stats', {
+    startDate: startDate ?? null,
+    endDate: endDate ?? null,
+    cliKey: cliKey ?? null,
+  });
+};
+
 export const getProxyGatewayModelStats = async (
   startDate?: number,
   endDate?: number,
@@ -912,13 +940,18 @@ export type GatewayUsageTool =
   | 'workbuddy'
   | 'workbuddy_ai'
   | 'codebuddy'
-  | 'minimax';
+  | 'minimax'
+  | 'qoder_ide'
+  | 'qoder_ide_cn'
+  | 'qodercli'
+  | 'qodercli_cn';
 
 export const GATEWAY_USAGE_TOOLS: readonly GatewayUsageTool[] = [
   'claude', 'claude_desktop', 'codex', 'grok', 'kimi', 'gemini', 'antigravity', 'opencode',
   'pi', 'oh_my_pi', 'omo_native', 'dsh', 'hermes', 'openclaw', 'kimi_cli', 'zcode',
   'mimocode', 'prime_agent', 'devin', 'musecode', 'cmdcode', 'qwencode',
   'workbuddy', 'workbuddy_ai', 'codebuddy', 'minimax',
+  'qoder_ide', 'qoder_ide_cn', 'qodercli', 'qodercli_cn',
 ];
 
 export interface SessionUsageMetadata {

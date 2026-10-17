@@ -48,6 +48,7 @@ pub(super) fn parse(path: &Path, fallback: i64) -> Result<ParsedSession, String>
         .into_owned();
     let mut run_models = HashMap::<String, String>::new();
     let mut seen_records = HashSet::<String>::new();
+    let mut project_path: Option<String> = None;
     let mut records = BTreeMap::<String, SessionUsageRecord>::new();
     let pending = read_jsonl(path, |index, value| {
         if let Some(id) = string(&value, &["/stream/id"]) {
@@ -57,6 +58,17 @@ pub(super) fn parse(path: &Path, fallback: i64) -> Result<ParsedSession, String>
             return;
         };
         match value.get("payload_type").and_then(Value::as_str) {
+            // The session metadata record holds the workspace the CLI ran in,
+            // once per transcript.
+            Some("runtime.session.metadata") => {
+                if project_path.is_none() {
+                    project_path = payload
+                        .get("record")
+                        .and_then(|record| {
+                            string(record, &["/workspace_root", "/cwd", "/working_directory"])
+                        });
+                }
+            }
             Some("run.model.configured") => {
                 let Some(record) = payload.get("record").filter(|value| value.is_object()) else {
                     return;
@@ -133,6 +145,7 @@ pub(super) fn parse(path: &Path, fallback: i64) -> Result<ParsedSession, String>
                 );
                 record.metadata.granularity = SessionUsageGranularity::Request;
                 record.metadata.call_count = Some(1);
+                record.project_path = project_path.clone();
                 records.insert(record.request_id.clone(), record);
             }
             _ => {}

@@ -31,13 +31,25 @@ use super::parsers::{native_record, ParsedSession};
 use crate::coding::proxy_gateway::usage_parser::TokenUsage;
 use super::{GatewayUsageTool, SessionUsageRecord};
 
-/// Columns read from `model_usage`, in order.
-const USAGE_QUERY: &str = "SELECT id, session_id, provider_id, model_id, started_at, \
-     completed_at, input_tokens, output_tokens, cache_read_input_tokens, \
-     cache_creation_input_tokens, raw_usage_json \
-     FROM model_usage \
-     WHERE attempt_index = 0 AND status = 'completed' \
-     ORDER BY started_at ASC";
+/// Columns read from `model_usage`, in order. The project is a property of the
+/// session row, so it comes from a correlated subquery; the `session` table is
+/// optional (a trimmed or test database may not carry it), hence the fallback
+/// variant that selects a literal instead.
+fn usage_query(session_table_present: bool) -> String {
+    let project = if session_table_present {
+        "(SELECT s.directory FROM session s WHERE s.id = u.session_id)"
+    } else {
+        "NULL"
+    };
+    format!(
+        "SELECT u.id, u.session_id, u.provider_id, u.model_id, u.started_at, \
+         u.completed_at, u.input_tokens, u.output_tokens, u.cache_read_input_tokens, \
+         u.cache_creation_input_tokens, u.raw_usage_json, {project} \
+         FROM model_usage u \
+         WHERE u.attempt_index = 0 AND u.status = 'completed' \
+         ORDER BY u.started_at ASC"
+    )
+}
 
 /// Reads every completed request out of one ZCode database.
 ///
@@ -52,8 +64,15 @@ pub(super) fn parse(path: &Path, fallback: i64) -> Result<ParsedSession, String>
     )
     .map_err(|error| format!("Failed to open ZCode database {}: {error}", path.display()))?;
 
+    let session_table_present = connection
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session'",
+            [],
+            |_| Ok(()),
+        )
+        .is_ok();
     let mut statement = connection
-        .prepare(USAGE_QUERY)
+        .prepare(&usage_query(session_table_present))
         .map_err(|error| format!("Failed to prepare ZCode usage query: {error}"))?;
     let rows = statement
         .query_map([], |row| {
@@ -69,6 +88,7 @@ pub(super) fn parse(path: &Path, fallback: i64) -> Result<ParsedSession, String>
                 cache_read_tokens: row.get(8)?,
                 cache_creation_tokens: row.get(9)?,
                 raw_usage: row.get(10)?,
+                project_path: row.get::<_, Option<String>>(11)?,
             })
         })
         .map_err(|error| format!("Failed to query ZCode usage: {error}"))?;
@@ -101,6 +121,7 @@ struct UsageRow {
     cache_read_tokens: i64,
     cache_creation_tokens: i64,
     raw_usage: Option<String>,
+    project_path: Option<String>,
 }
 
 impl UsageRow {
@@ -142,6 +163,9 @@ impl UsageRow {
         );
         record.metadata.native_provider = Some(self.provider_id);
         record.metadata.reported_total_tokens = reported_total(&self.raw_usage);
+        record.project_path = self
+            .project_path
+            .filter(|path| !path.trim().is_empty());
         record
     }
 }

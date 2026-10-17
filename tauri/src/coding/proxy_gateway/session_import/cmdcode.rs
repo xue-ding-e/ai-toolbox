@@ -42,6 +42,7 @@ pub(super) fn parse(path: &Path, fallback: i64) -> Result<ParsedSession, String>
         .to_string_lossy()
         .into_owned();
     let mut model: Option<String> = None;
+    let mut project_path: Option<String> = None;
     let mut seen_events = HashSet::<String>::new();
     let mut records = BTreeMap::<String, SessionUsageRecord>::new();
     let pending = read_jsonl(path, |index, value| {
@@ -52,6 +53,9 @@ pub(super) fn parse(path: &Path, fallback: i64) -> Result<ParsedSession, String>
                 }
                 if let Some(name) = string(&value, &["/model"]) {
                     model = Some(name);
+                }
+                if project_path.is_none() {
+                    project_path = string(&value, &["/cwd", "/working_directory"]);
                 }
                 return;
             }
@@ -121,6 +125,7 @@ pub(super) fn parse(path: &Path, fallback: i64) -> Result<ParsedSession, String>
         );
         record.metadata.granularity = SessionUsageGranularity::Request;
         record.metadata.call_count = Some(1);
+        record.project_path = project_path.clone();
         record.reported_cost_usd = reported_cost;
         if record.reported_cost_usd.is_some() {
             record.metadata.cost_source = Some("reported".into());

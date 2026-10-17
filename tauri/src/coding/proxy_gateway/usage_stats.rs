@@ -1210,6 +1210,231 @@ pub fn model_stats(
     })
 }
 
+/// Project dimension: only imported session usage carries a working directory,
+/// so proxy traffic is never counted here — a proxy-only range returns an empty
+/// list rather than a single "unknown" row of traffic that has no project.
+pub fn project_stats(
+    db: &SqliteDbState,
+    start_date: Option<i64>,
+    end_date: Option<i64>,
+    cli_key: Option<GatewayUsageTool>,
+    include_session: bool,
+) -> Result<Vec<super::types::GatewayProjectStats>, String> {
+    if !include_session {
+        return Ok(Vec::new());
+    }
+    db.with_conn(|conn| {
+        let mut accumulators = HashMap::<String, ProjectAccumulator>::new();
+
+        // Live detail rows carry everything: the session set (for the tokei
+        // "sessions" count), the models and the CLI keys.
+        let mut params = Vec::<Box<dyn ToSql>>::new();
+        let mut conditions = vec![
+            "COALESCE(l.data_source, 'proxy') = 'session'".to_string(),
+            usage_applicable_detail_condition("l", true),
+        ];
+        if let Some(start) = start_date {
+            conditions.push(format!("l.created_at >= ?{}", params.len() + 1));
+            params.push(Box::new(start));
+        }
+        if let Some(end) = end_date {
+            conditions.push(format!("l.created_at <= ?{}", params.len() + 1));
+            params.push(Box::new(end));
+        }
+        if let Some(cli_key) = cli_key {
+            conditions.push(format!("l.app_type = ?{}", params.len() + 1));
+            params.push(Box::new(cli_key.as_str().to_string()));
+        }
+        let where_clause = format!("WHERE {}", conditions.join(" AND "));
+        let refs = to_param_refs(&params);
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT COALESCE(NULLIF(TRIM(l.project_path), ''), '') AS project_path,
+                        COALESCE(l.session_id, ''),
+                        l.app_type,
+                        COALESCE(NULLIF(TRIM(l.model), ''), 'unknown'),
+                        COALESCE(SUM(l.usage_request_count), 0),
+                        COALESCE(SUM(l.input_tokens + l.output_tokens + l.cache_read_tokens + l.cache_creation_tokens + l.extra_tokens), 0),
+                        COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0),
+                        MAX(date(l.created_at, 'unixepoch', 'localtime'))
+                 FROM proxy_request_logs l
+                 {where_clause}
+                 GROUP BY project_path, COALESCE(l.session_id, ''), l.app_type,
+                          COALESCE(NULLIF(TRIM(l.model), ''), 'unknown')"
+            ))
+            .map_err(|error| format!("Failed to prepare project stats query: {error}"))?;
+        let rows = stmt
+            .query_map(refs.as_slice(), |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?.max(0) as u64,
+                    row.get::<_, i64>(5)?.max(0) as u64,
+                    row_decimal(row, 6)?,
+                    row.get::<_, Option<String>>(7)?,
+                ))
+            })
+            .map_err(|error| format!("Failed to query project stats: {error}"))?;
+        for row in rows {
+            let (project, session, app_type, model, requests, tokens, cost, last_active) =
+                row.map_err(|error| format!("Failed to read project stats row: {error}"))?;
+            let item = accumulators.entry(project).or_default();
+            if !session.is_empty() {
+                item.sessions.insert(session);
+            }
+            item.request_count = item.request_count.saturating_add(requests);
+            item.total_tokens = item.total_tokens.saturating_add(tokens);
+            item.total_cost += cost;
+            item.models
+                .entry(model)
+                .and_modify(|value| *value = value.saturating_add(tokens))
+                .or_insert(tokens);
+            if let Some(cli_key) = cli_key_from_app_type(&app_type) {
+                item.cli_keys.insert(cli_key);
+            }
+            item.observe_last_active(last_active);
+        }
+
+        merge_project_rollups(conn, &mut accumulators, start_date, end_date, cli_key)?;
+
+        let mut items = accumulators
+            .into_iter()
+            .map(|(project_path, item)| super::types::GatewayProjectStats {
+                project_path,
+                session_count: item.sessions.len() as u64,
+                request_count: item.request_count,
+                total_tokens: item.total_tokens,
+                total_cost_usd: format_decimal_cost(item.total_cost),
+                // Most tokens wins; among equal totals (every Qoder call
+                // reports zero tokens) the alphabetically first name keeps the
+                // row stable instead of following hash order.
+                top_model: item
+                    .models
+                    .into_iter()
+                    .max_by(|left, right| {
+                        left.1
+                            .cmp(&right.1)
+                            .then_with(|| right.0.cmp(&left.0))
+                    })
+                    .map(|(model, _)| model)
+                    .filter(|model| model != "unknown"),
+                cli_keys: {
+                    let mut keys = item.cli_keys.into_iter().collect::<Vec<_>>();
+                    keys.sort_by_key(|key| key.as_str());
+                    keys
+                },
+                last_active: item.last_active,
+            })
+            .collect::<Vec<_>>();
+        items.sort_by(|left, right| {
+            right
+                .last_active
+                .cmp(&left.last_active)
+                .then(right.total_tokens.cmp(&left.total_tokens))
+        });
+        Ok(items)
+    })
+}
+
+#[derive(Default)]
+struct ProjectAccumulator {
+    sessions: std::collections::HashSet<String>,
+    request_count: u64,
+    total_tokens: u64,
+    total_cost: Decimal,
+    models: HashMap<String, u64>,
+    cli_keys: std::collections::HashSet<GatewayUsageTool>,
+    last_active: Option<String>,
+}
+
+impl ProjectAccumulator {
+    fn observe_last_active(&mut self, candidate: Option<String>) {
+        if candidate > self.last_active {
+            self.last_active = candidate;
+        }
+    }
+}
+
+/// Archived usage lives only in `usage_daily_rollups`. It has the totals and the
+/// model/CLI split but no session ids, so the archived bucket contributes
+/// tokens/cost/last-active and can still win the top-model race.
+fn merge_project_rollups(
+    conn: &Connection,
+    accumulators: &mut HashMap<String, ProjectAccumulator>,
+    start_date: Option<i64>,
+    end_date: Option<i64>,
+    cli_key: Option<GatewayUsageTool>,
+) -> Result<(), String> {
+    let mut params = Vec::<Box<dyn ToSql>>::new();
+    let mut conditions = vec!["r.provider_id = 'session'".to_string()];
+    if let Some(start) = start_date {
+        conditions.push(format!(
+            "r.date >= date(?{}, 'unixepoch', 'localtime')",
+            params.len() + 1
+        ));
+        params.push(Box::new(start));
+    }
+    if let Some(end) = end_date {
+        conditions.push(format!(
+            "r.date <= date(?{}, 'unixepoch', 'localtime')",
+            params.len() + 1
+        ));
+        params.push(Box::new(end));
+    }
+    if let Some(cli_key) = cli_key {
+        conditions.push(format!("r.app_type = ?{}", params.len() + 1));
+        params.push(Box::new(cli_key.as_str().to_string()));
+    }
+    let where_clause = format!("WHERE {}", conditions.join(" AND "));
+    let refs = to_param_refs(&params);
+    let mut stmt = conn
+        .prepare(&format!(
+            "SELECT COALESCE(NULLIF(TRIM(r.project_path), ''), '') AS project_path,
+                    r.app_type,
+                    COALESCE(NULLIF(TRIM(r.model), ''), 'unknown') AS rollup_model,
+                    COALESCE(SUM(r.request_count), 0),
+                    COALESCE(SUM(r.input_tokens + r.output_tokens + r.cache_read_tokens + r.cache_creation_tokens + r.extra_tokens), 0),
+                    COALESCE(SUM(CAST(r.total_cost_usd AS REAL)), 0),
+                    MAX(r.date)
+             FROM usage_daily_rollups r
+             {where_clause}
+             GROUP BY project_path, r.app_type, rollup_model"
+        ))
+        .map_err(|error| format!("Failed to prepare project rollup query: {error}"))?;
+    let rows = stmt
+        .query_map(refs.as_slice(), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?.max(0) as u64,
+                row.get::<_, i64>(4)?.max(0) as u64,
+                row_decimal(row, 5)?,
+                row.get::<_, Option<String>>(6)?,
+            ))
+        })
+        .map_err(|error| format!("Failed to query project rollups: {error}"))?;
+    for row in rows {
+        let (project, app_type, model, requests, tokens, cost, last_active) =
+            row.map_err(|error| format!("Failed to read project rollup row: {error}"))?;
+        let item = accumulators.entry(project).or_default();
+        item.request_count = item.request_count.saturating_add(requests);
+        item.total_tokens = item.total_tokens.saturating_add(tokens);
+        item.total_cost += cost;
+        item.models
+            .entry(model)
+            .and_modify(|value| *value = value.saturating_add(tokens))
+            .or_insert(tokens);
+        if let Some(cli_key) = cli_key_from_app_type(&app_type) {
+            item.cli_keys.insert(cli_key);
+        }
+        item.observe_last_active(last_active);
+    }
+    Ok(())
+}
+
 pub fn data_source_breakdown(
     db: &SqliteDbState,
     input: super::types::DataSourceBreakdownInput,
@@ -1575,11 +1800,11 @@ pub(super) fn rollup_and_prune(conn: &Connection, retain_days: i64) -> Result<()
     transaction.execute(
         &format!(
             "INSERT OR REPLACE INTO usage_daily_rollups
-            (date, app_type, provider_id, model, request_count, success_count,
+            (date, app_type, provider_id, model, project_path, request_count, success_count,
              input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
-             total_cost_usd, avg_latency_ms, latency_sample_count, extra_tokens)
+             total_cost_usd, avg_latency_ms, latency_sample_count, extra_tokens, credits)
          SELECT
-            agg.d, agg.app_type, agg.provider_id, agg.rollup_model,
+            agg.d, agg.app_type, agg.provider_id, agg.rollup_model, agg.project_path,
             COALESCE(old.request_count, 0) + agg.request_count,
             COALESCE(old.success_count, 0) + agg.success_count,
             COALESCE(old.input_tokens, 0) + agg.input_tokens,
@@ -1593,12 +1818,14 @@ pub(super) fn rollup_and_prune(conn: &Connection, retain_days: i64) -> Result<()
                      / (COALESCE(old.latency_sample_count, old.request_count, 0) + agg.latency_sample_count)
                 ELSE 0 END,
             COALESCE(old.latency_sample_count, old.request_count, 0) + agg.latency_sample_count,
-            COALESCE(old.extra_tokens, 0) + agg.extra_tokens
+            COALESCE(old.extra_tokens, 0) + agg.extra_tokens,
+            COALESCE(old.credits, 0) + agg.credits
          FROM (
             SELECT date(l.created_at, 'unixepoch', 'localtime') AS d,
                    l.app_type,
                    l.provider_id,
                    {rollup_model_expr} AS rollup_model,
+                   COALESCE(l.project_path, '') AS project_path,
                    SUM(l.usage_request_count) AS request_count,
                    SUM(CASE WHEN (l.stream_outcome = 'completed' OR (l.stream_outcome IS NULL AND l.status_code >= 200 AND l.status_code < 400)) THEN l.usage_request_count ELSE 0 END) AS success_count,
                    COALESCE(SUM(l.input_tokens), 0) AS input_tokens,
@@ -1606,19 +1833,21 @@ pub(super) fn rollup_and_prune(conn: &Connection, retain_days: i64) -> Result<()
                    COALESCE(SUM(l.cache_read_tokens), 0) AS cache_read_tokens,
                    COALESCE(SUM(l.cache_creation_tokens), 0) AS cache_creation_tokens,
                    COALESCE(SUM(l.extra_tokens), 0) AS extra_tokens,
+                   COALESCE(SUM(l.credits), 0) AS credits,
                    COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) AS total_cost,
                    COALESCE(SUM(CASE WHEN COALESCE(l.data_source, 'proxy') = 'proxy' AND l.request_kind = 'request' THEN l.latency_ms ELSE 0 END), 0) * 1.0 AS latency_sum,
                    SUM(CASE WHEN COALESCE(l.data_source, 'proxy') = 'proxy' AND l.request_kind = 'request' THEN 1 ELSE 0 END) AS latency_sample_count
             FROM proxy_request_logs l
             WHERE l.created_at < ?1
               AND {usage_condition}
-            GROUP BY d, l.app_type, l.provider_id, rollup_model
+            GROUP BY d, l.app_type, l.provider_id, rollup_model, project_path
          ) agg
          LEFT JOIN usage_daily_rollups old
             ON old.date = agg.d
             AND old.app_type = agg.app_type
             AND old.provider_id = agg.provider_id
-            AND old.model = agg.rollup_model"
+            AND old.model = agg.rollup_model
+            AND old.project_path = agg.project_path"
         ),
         [cutoff],
     )

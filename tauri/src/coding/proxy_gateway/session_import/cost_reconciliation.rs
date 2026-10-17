@@ -154,11 +154,24 @@ pub(super) fn reconcile_session_costs(
     let cache_id = format!("cost-reconciliation:{}", cli_key.as_str());
     let mut files = Vec::new();
     for (_, root) in sources.iter().filter(|(tool, _)| *tool == cli_key) {
-        files.extend(
-            session_files(cli_key, root)
-                .into_iter()
-                .map(|path| (path, false)),
-        );
+        // ZCode reads its database through the generic transcript path, and
+        // that path applies to pricing too, so it keeps the ordinary entry.
+        // Every other database-rooted tool registers its file once below, as
+        // `database = true`; adding it here as well parsed binary as JSON.
+        if !matches!(
+            cli_key,
+            GatewayUsageTool::QoderIde
+                | GatewayUsageTool::QoderIdeCn
+                | GatewayUsageTool::Devin
+                | GatewayUsageTool::Minimax
+                | GatewayUsageTool::Mimocode
+        ) {
+            files.extend(
+                session_files(cli_key, root)
+                    .into_iter()
+                    .map(|path| (path, false)),
+            );
+        }
         match cli_key {
             GatewayUsageTool::OpenCode => {
                 let path = root.join("opencode.db");
@@ -177,7 +190,10 @@ pub(super) fn reconcile_session_costs(
                     .into_iter()
                     .map(|path| (path, true)),
             ),
-            GatewayUsageTool::Devin | GatewayUsageTool::Minimax => {
+            GatewayUsageTool::Devin
+            | GatewayUsageTool::Minimax
+            | GatewayUsageTool::QoderIde
+            | GatewayUsageTool::QoderIdeCn => {
                 // The root itself is the database; `session_files` never walks
                 // it, so pricing must re-read that one file.
                 if root.is_file() {
@@ -283,6 +299,9 @@ pub(super) fn reconcile_session_costs(
                 }
                 GatewayUsageTool::Devin => super::devin::cost_records(&file.path)?,
                 GatewayUsageTool::Minimax => super::minimax::cost_records(&file.path)?,
+                GatewayUsageTool::QoderIde | GatewayUsageTool::QoderIdeCn => {
+                    super::qoder_ide::cost_records(cli_key, &file.path)?
+                }
                 GatewayUsageTool::OpenClaw => super::open_claw::cost_records(&file.path)?,
                 GatewayUsageTool::Antigravity => super::antigravity::cost_records(&file.path)?,
                 _ => return Err("Unsupported native cost database".into()),
@@ -358,7 +377,8 @@ pub(super) fn reconcile_session_costs(
     let mut repaired = HashMap::<String, (RecordedCost, CostRepair)>::new();
     db.with_conn_mut(|conn| {
         let transaction = conn.transaction().map_err(|error| error.to_string())?;
-        let mut archives = BTreeMap::<(String, String, String), Vec<Candidate>>::new();
+        let mut archives =
+            BTreeMap::<(String, String, String, String), Vec<Candidate>>::new();
         for record in native.into_values() {
             let fingerprint = record.fingerprint();
             let legacy_fingerprint = record.legacy_fingerprint();
@@ -404,14 +424,18 @@ pub(super) fn reconcile_session_costs(
             let Some(cost) = cost else { continue; };
             let date = transaction.query_row("SELECT date(?1, 'unixepoch', 'localtime')", [record.created_at], |row| row.get::<_, String>(0)).map_err(|error| error.to_string())?;
             let replacement = replacement_cost(&transaction, &record, &cost);
-            archives.entry((record.cli_key.as_str().to_string(), date, record.model.clone())).or_default().push(Candidate { record, previous_cost: cost, replacement });
+            // The rollup is keyed by (date, app_type, provider_id, model,
+            // project), so the archive repair must target the same project the
+            // records belong to or it would rewrite another project's row.
+            let project = record.project_path.clone().unwrap_or_default();
+            archives.entry((record.cli_key.as_str().to_string(), date, record.model.clone(), project)).or_default().push(Candidate { record, previous_cost: cost, replacement });
         }
-        for ((tool, date, model), candidates) in archives {
+        for ((tool, date, model, project), candidates) in archives {
             if !candidates.iter().any(|candidate| candidate.replacement.is_some()) { continue; }
             let existing = transaction.query_row(
                 "SELECT request_count,input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens,extra_tokens,total_cost_usd
-                 FROM usage_daily_rollups WHERE date=?1 AND app_type=?3 AND provider_id='session' AND model=?2",
-                params![date,model,tool], |row| Ok(([row.get::<_, i64>(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?], row.get::<_, String>(6)?)),
+                 FROM usage_daily_rollups WHERE date=?1 AND app_type=?3 AND provider_id='session' AND model=?2 AND project_path=?4",
+                params![date,model,tool,project], |row| Ok(([row.get::<_, i64>(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?], row.get::<_, String>(6)?)),
             ).optional().map_err(|error| error.to_string())?;
             let Some((counters, old_total)) = existing else { continue; };
             let mut expected = [0i64;6];
@@ -427,8 +451,8 @@ pub(super) fn reconcile_session_costs(
             }
             // Rollups use SQLite REAL sums; compare at the stored USD scale.
             if counters != expected || amount(&old_total)?.round_dp(6) != expected_cost.round_dp(6) { continue; }
-            transaction.execute("UPDATE usage_daily_rollups SET total_cost_usd=?3 WHERE date=?1 AND app_type=?4 AND provider_id='session' AND model=?2",
-                params![date,model,usage_stats::format_decimal_cost(repaired_cost),tool]).map_err(|error| error.to_string())?;
+            transaction.execute("UPDATE usage_daily_rollups SET total_cost_usd=?3 WHERE date=?1 AND app_type=?4 AND provider_id='session' AND model=?2 AND project_path=?5",
+                params![date,model,usage_stats::format_decimal_cost(repaired_cost),tool,project]).map_err(|error| error.to_string())?;
             for candidate in candidates {
                 if let Some(replacement) = candidate.replacement {
                     repaired.insert(candidate.record.request_id, (replacement.clone(), CostRepair {

@@ -87,6 +87,24 @@ pub enum GatewayUsageTool {
     Codebuddy,
     /// MiniMax Code's runtime state database and logs. Usage-only.
     Minimax,
+    /// Qoder Desktop (international IDE) chat history database. Usage-only.
+    QoderIde,
+    /// Qoder CN Desktop (mainland IDE) chat history database. Usage-only and
+    /// kept separate from `qoder_ide` so the two accounts never merge.
+    QoderIdeCn,
+    /// Qoder CLI's Agent transcript tree (`~/.qoder/projects`). Usage-only.
+    ///
+    /// The explicit rename is required: `rename_all = "snake_case"` would spell
+    /// this `qoder_cli`, while `as_str()` (the value stored in `app_type` and
+    /// sent as the frontend filter) is `qodercli`. A mismatch leaves every
+    /// statistics label untranslated and makes the frontend's cli filter miss
+    /// the rows.
+    #[serde(rename = "qodercli")]
+    QoderCli,
+    /// Qoder CN (mainland edition) transcript tree (`~/.qoder-cn/projects`),
+    /// kept separate from `qodercli` so the two editions never merge.
+    #[serde(rename = "qodercli_cn")]
+    QoderCliCn,
 }
 
 impl GatewayUsageTool {
@@ -118,6 +136,10 @@ impl GatewayUsageTool {
             Self::WorkbuddyAi,
             Self::Codebuddy,
             Self::Minimax,
+            Self::QoderIde,
+            Self::QoderIdeCn,
+            Self::QoderCli,
+            Self::QoderCliCn,
         ]
     }
 
@@ -149,6 +171,10 @@ impl GatewayUsageTool {
             Self::WorkbuddyAi => "workbuddy_ai",
             Self::Codebuddy => "codebuddy",
             Self::Minimax => "minimax",
+            Self::QoderIde => "qoder_ide",
+            Self::QoderIdeCn => "qoder_ide_cn",
+            Self::QoderCli => "qodercli",
+            Self::QoderCliCn => "qodercli_cn",
         }
     }
 
@@ -1206,6 +1232,31 @@ pub struct GatewayModelStats {
     pub pricing: Option<ModelPricing>,
 }
 
+/// One project a local CLI worked in, aggregated across every CLI that touched
+/// it (tokei's project footprint stays merged by path, not split per tool).
+///
+/// Only imported session usage can have a project: proxy traffic never records
+/// a working directory, so it lands in the `""` bucket, which the UI labels as
+/// "unknown project" instead of pretending it belongs somewhere.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct GatewayProjectStats {
+    /// Absolute working directory; `""` for usage with no recorded project.
+    pub project_path: String,
+    /// Distinct local sessions that touched the project.
+    pub session_count: u64,
+    pub request_count: u64,
+    pub total_tokens: u64,
+    pub total_cost_usd: String,
+    /// The model that used the most tokens in this project, for the row's
+    /// second line. `None` when every row lacks a model name.
+    pub top_model: Option<String>,
+    /// CLI keys that reported usage in this project, sorted for a stable order.
+    pub cli_keys: Vec<GatewayUsageTool>,
+    /// Local date (`YYYY-MM-DD`) of the most recent recorded usage.
+    pub last_active: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct GatewayRequestLogSummary {
@@ -1528,6 +1579,12 @@ pub enum GatewaySessionImportCli {
     WorkbuddyAi,
     Codebuddy,
     Minimax,
+    QoderIde,
+    QoderIdeCn,
+    #[serde(rename = "qodercli")]
+    QoderCli,
+    #[serde(rename = "qodercli_cn")]
+    QoderCliCn,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

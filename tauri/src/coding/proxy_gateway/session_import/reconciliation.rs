@@ -10,6 +10,10 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 pub(super) struct Contribution {
     date: String,
     model: String,
+    /// Rollups are keyed by project too; older ledgers have no value here and
+    /// fall back to the unknown-project bucket they were imported under.
+    #[serde(default)]
+    project: String,
     tokens: [u64; 4],
     extra: u64,
     calls: u64,
@@ -29,10 +33,11 @@ pub(super) fn read_contribution(
 ) -> Result<Option<Contribution>, String> {
     conn.query_row(
         "SELECT date(created_at, 'unixepoch', 'localtime'), model, input_tokens, output_tokens,
-                cache_read_tokens, cache_creation_tokens, extra_tokens, usage_request_count, total_cost_usd
+                cache_read_tokens, cache_creation_tokens, extra_tokens, usage_request_count, total_cost_usd,
+                COALESCE(project_path, '')
          FROM proxy_request_logs WHERE request_id = ?1 AND data_source = 'session' AND app_type = 'claude_desktop'",
         [request_id], |row| Ok(Contribution {
-            date: row.get(0)?, model: row.get(1)?,
+            date: row.get(0)?, model: row.get(1)?, project: row.get(9)?,
             tokens: [row.get::<_, i64>(2)?.max(0) as u64, row.get::<_, i64>(3)?.max(0) as u64,
                 row.get::<_, i64>(4)?.max(0) as u64, row.get::<_, i64>(5)?.max(0) as u64],
             extra: row.get::<_, i64>(6)?.max(0) as u64, calls: row.get::<_, i64>(7)?.max(0) as u64,
@@ -81,8 +86,8 @@ pub(super) fn mark_archived(conn: &Connection, cutoff: i64) -> Result<(), String
 fn subtract(conn: &Connection, saved: &Contribution, require_exact: bool) -> Result<bool, String> {
     let existing = conn.query_row(
         "SELECT request_count, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, extra_tokens, total_cost_usd
-         FROM usage_daily_rollups WHERE date = ?1 AND app_type = 'claude_desktop' AND provider_id = 'session' AND model = ?2",
-        params![saved.date, saved.model], |row| Ok((row.get::<_, i64>(0)?,
+         FROM usage_daily_rollups WHERE date = ?1 AND app_type = 'claude_desktop' AND provider_id = 'session' AND model = ?2 AND project_path = ?3",
+        params![saved.date, saved.model, saved.project], |row| Ok((row.get::<_, i64>(0)?,
             [row.get::<_, i64>(1)?, row.get::<_, i64>(2)?, row.get::<_, i64>(3)?, row.get::<_, i64>(4)?], row.get::<_, i64>(5)?, row.get::<_, String>(6)?)),
     ).optional().map_err(|error| error.to_string())?;
     let Some((calls, tokens, extra, cost)) = existing else {
@@ -110,7 +115,7 @@ fn subtract(conn: &Connection, saved: &Contribution, require_exact: bool) -> Res
         return Ok(false);
     }
     if exact {
-        conn.execute("DELETE FROM usage_daily_rollups WHERE date = ?1 AND app_type = 'claude_desktop' AND provider_id = 'session' AND model = ?2", params![saved.date, saved.model])
+        conn.execute("DELETE FROM usage_daily_rollups WHERE date = ?1 AND app_type = 'claude_desktop' AND provider_id = 'session' AND model = ?2 AND project_path = ?3", params![saved.date, saved.model, saved.project])
             .map_err(|error| error.to_string())?;
     } else {
         conn.execute(
@@ -118,9 +123,10 @@ fn subtract(conn: &Connection, saved: &Contribution, require_exact: bool) -> Res
                 input_tokens = input_tokens - ?4, output_tokens = output_tokens - ?5,
                 cache_read_tokens = cache_read_tokens - ?6, cache_creation_tokens = cache_creation_tokens - ?7,
                 extra_tokens = extra_tokens - ?8, total_cost_usd = ?9
-             WHERE date = ?1 AND app_type = 'claude_desktop' AND provider_id = 'session' AND model = ?2",
+             WHERE date = ?1 AND app_type = 'claude_desktop' AND provider_id = 'session' AND model = ?2 AND project_path = ?10",
             params![saved.date, saved.model, saved.calls as i64, saved.tokens[0] as i64, saved.tokens[1] as i64,
-                saved.tokens[2] as i64, saved.tokens[3] as i64, saved.extra as i64, (cost - removed_cost).max(Decimal::ZERO).to_string()],
+                saved.tokens[2] as i64, saved.tokens[3] as i64, saved.extra as i64, (cost - removed_cost).max(Decimal::ZERO).to_string(),
+                saved.project],
         ).map_err(|error| error.to_string())?;
     }
     Ok(true)
@@ -169,8 +175,11 @@ pub(super) fn retire_desktop_records(
                 // bucket is repairable only when the entire bucket reconciles.
                 let date: String = transaction.query_row("SELECT date(?1, 'unixepoch', 'localtime')", [record.created_at], |row| row.get(0)).map_err(|error| error.to_string())?;
                 let saved = Contribution { date: date.clone(), model: "unknown".into(),
+                    project: record.project_path.clone().unwrap_or_default(),
                     tokens: [record.usage.input_tokens.unwrap_or(0), record.usage.output_tokens.unwrap_or(0), record.usage.cache_read_tokens.unwrap_or(0), record.usage.cache_creation_tokens.unwrap_or(0)],
                     calls: 1, cost: "0".into(), archived: true, ..Default::default() };
+                // Old ledgers recorded no project, so their bucket can only be
+                // reconciled against the unknown-project rollup row.
                 legacy_groups.entry(date).or_default().push((record.request_id, saved));
             }
         }

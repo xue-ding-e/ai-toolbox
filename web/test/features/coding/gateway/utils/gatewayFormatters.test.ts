@@ -12,6 +12,7 @@ import {
   formatModelQualifiers,
   formatTps,
   formatUsd,
+  gatewayProjectName,
   compactionModeKey,
   gatewayRequestDisplayKind,
   gatewayWebSocketStatusKey,
@@ -436,4 +437,15 @@ test('unpriced model ids dedupe across CLIs, sort, and skip placeholders and pri
   // `has_pricing: true` means the price table resolves the id, not that the
   // displayed amount is non-zero, so priced rows never enter the list.
   assert.deepEqual(unpricedModelIds([{ model: 'claude-opus-4-5', has_pricing: true }]), []);
+});
+
+test('project names come from the last path segment and tolerate both separators', () => {
+  assert.equal(gatewayProjectName(String.raw`D:\GitHub\ai-toolbox`), 'ai-toolbox');
+  assert.equal(gatewayProjectName('/home/me/repos/ai-toolbox'), 'ai-toolbox');
+  assert.equal(gatewayProjectName(String.raw`D:/mixed\style/repo`), 'repo');
+  assert.equal(gatewayProjectName('  /home/me/repo/  '), 'repo');
+  assert.equal(gatewayProjectName('/'), null);
+  assert.equal(gatewayProjectName('   '), null);
+  // A bare drive prefix has no project segment left after trimming.
+  assert.equal(gatewayProjectName('C:' + '\\'), 'C:');
 });

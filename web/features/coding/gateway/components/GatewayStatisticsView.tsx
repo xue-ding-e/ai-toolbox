@@ -7,6 +7,7 @@ import {
   CalendarDays,
   Clock,
   DollarSign,
+  FolderTree,
   Gauge,
   RefreshCw,
   Server,
@@ -27,12 +28,14 @@ import {
 import { ManagementSegmented } from '../../shared/management';
 import {
   getProxyGatewayModelStats,
+  getProxyGatewayProjectStats,
   getProxyGatewayProviderStats,
   getProxyGatewayUsageSummary,
   getProxyGatewayUsageTrends,
   type GatewayUsageTool,
   GATEWAY_USAGE_TOOLS,
   type GatewayModelStats,
+  type GatewayProjectStats,
   type GatewayProviderStats,
   type GatewayUsageSummary,
   type GatewayUsageTrendPoint,
@@ -44,6 +47,7 @@ import {
   formatDuration,
   formatGatewayError,
   formatInteger,
+  gatewayProjectName,
   formatUsd,
   getGatewayRequestsPerMinute,
   GATEWAY_USAGE_RANGE_PRESETS,
@@ -61,7 +65,7 @@ import styles from './GatewayStatisticsView.module.less';
 const { RangePicker } = DatePicker;
 
 type GatewayCliFilter = 'all' | GatewayUsageTool;
-type StatsTabKey = 'providers' | 'models';
+type StatsTabKey = 'providers' | 'models' | 'projects';
 type TrendSeriesKey = 'input' | 'output' | 'cache' | 'other' | 'cost';
 
 interface GatewayStatisticsViewProps {
@@ -74,6 +78,7 @@ interface StatisticsState {
   trends: GatewayUsageTrendPoint[];
   providerStats: GatewayProviderStats[];
   modelStats: GatewayModelStats[];
+  projectStats: GatewayProjectStats[];
 }
 
 const emptyState: StatisticsState = {
@@ -81,6 +86,7 @@ const emptyState: StatisticsState = {
   trends: [],
   providerStats: [],
   modelStats: [],
+  projectStats: [],
 };
 
 const cliOptions: GatewayCliFilter[] = ['all', ...GATEWAY_USAGE_TOOLS];
@@ -211,7 +217,7 @@ const GatewayStatisticsView: React.FC<GatewayStatisticsViewProps> = ({ refreshKe
     setError(null);
     try {
       const resolvedRange = resolveGatewayUsageRange(range);
-      const [summary, trends, providerStats, modelStats] = await Promise.all([
+      const [summary, trends, providerStats, modelStats, projectStats] = await Promise.all([
         getProxyGatewayUsageSummary(
           resolvedRange.startDate,
           resolvedRange.endDate,
@@ -232,9 +238,14 @@ const GatewayStatisticsView: React.FC<GatewayStatisticsViewProps> = ({ refreshKe
           resolvedRange.endDate,
           effectiveCliKey,
         ),
+        getProxyGatewayProjectStats(
+          resolvedRange.startDate,
+          resolvedRange.endDate,
+          effectiveCliKey,
+        ),
       ]);
       if (requestId === statisticsRequestIdRef.current) {
-        setState({ summary, trends, providerStats, modelStats });
+        setState({ summary, trends, providerStats, modelStats, projectStats });
       }
     } catch (loadError) {
       if (requestId === statisticsRequestIdRef.current) {
@@ -444,6 +455,70 @@ const GatewayStatisticsView: React.FC<GatewayStatisticsViewProps> = ({ refreshKe
       width: 110,
       align: 'right',
       render: (value: number | null) => value == null ? '-' : formatDuration(value),
+    },
+    {
+      title: t('gateway.page.statistics.columns.cost'),
+      dataIndex: 'total_cost_usd',
+      width: 120,
+      align: 'right',
+      render: (value: string) => formatUsd(value, 6),
+    },
+  ];
+
+  const projectColumns: ColumnsType<GatewayProjectStats> = [
+    {
+      title: t('gateway.page.statistics.columns.project'),
+      dataIndex: 'project_path',
+      render: (value: string, record) => {
+        const name = gatewayProjectName(value);
+        return (
+          <div className={styles.tableMainCell}>
+            <strong title={name ? value : undefined}>
+              {name ?? t('gateway.page.statistics.unknownProject')}
+            </strong>
+            <small title={record.cli_keys.map((key) => t(`settings.gateway.cli.${key}`)).join(' · ')}>
+              {record.cli_keys.length
+                ? record.cli_keys.map((key) => t(`settings.gateway.cli.${key}`)).join(' · ')
+                : t('gateway.page.statistics.unknownProjectHint')}
+            </small>
+            {name ? <small>{value}</small> : null}
+          </div>
+        );
+      },
+    },
+    {
+      title: t('gateway.page.statistics.columns.sessions'),
+      dataIndex: 'session_count',
+      width: 110,
+      align: 'right',
+      render: (value: number) => formatInteger(value),
+    },
+    {
+      title: t('gateway.page.statistics.columns.requests'),
+      dataIndex: 'request_count',
+      width: 110,
+      align: 'right',
+      render: (value: number) => formatInteger(value),
+    },
+    {
+      title: t('gateway.page.statistics.columns.tokens'),
+      dataIndex: 'total_tokens',
+      width: 130,
+      align: 'right',
+      render: (value: number) => formatCompactInteger(value),
+    },
+    {
+      title: t('gateway.page.statistics.columns.topModel'),
+      dataIndex: 'top_model',
+      width: 170,
+      render: (value: string | null) => value ?? '-',
+    },
+    {
+      title: t('gateway.page.statistics.columns.lastActive'),
+      dataIndex: 'last_active',
+      width: 120,
+      align: 'right',
+      render: (value: string | null) => value ?? '-',
     },
     {
       title: t('gateway.page.statistics.columns.cost'),
@@ -717,8 +792,10 @@ const GatewayStatisticsView: React.FC<GatewayStatisticsViewProps> = ({ refreshKe
           <span>
             {activeStatsTab === 'providers' ? (
               <Server className={styles.panelIcon} size={14} aria-hidden="true" />
-            ) : (
+            ) : activeStatsTab === 'models' ? (
               <Gauge className={styles.panelIcon} size={14} aria-hidden="true" />
+            ) : (
+              <FolderTree className={styles.panelIcon} size={14} aria-hidden="true" />
             )}
             {t('gateway.page.statistics.breakdown')}
           </span>
@@ -727,6 +804,7 @@ const GatewayStatisticsView: React.FC<GatewayStatisticsViewProps> = ({ refreshKe
             options={[
               { value: 'providers', label: t('gateway.page.statistics.providerStats') },
               { value: 'models', label: t('gateway.page.statistics.modelStats') },
+              { value: 'projects', label: t('gateway.page.statistics.projectStats') },
             ]}
             onChange={setActiveStatsTab}
             ariaLabel={t('gateway.page.statistics.breakdown')}
@@ -743,7 +821,7 @@ const GatewayStatisticsView: React.FC<GatewayStatisticsViewProps> = ({ refreshKe
             pagination={false}
             scroll={{ x: 880 }}
           />
-        ) : (
+        ) : activeStatsTab === 'models' ? (
           <Table
             rowKey={(record) => `${record.cli_key}:${record.model}`}
             size="small"
@@ -788,6 +866,29 @@ const GatewayStatisticsView: React.FC<GatewayStatisticsViewProps> = ({ refreshKe
                     <span>{t('gateway.page.statistics.pricingUnavailable')}</span>
                   )}
                 </div>
+              ),
+            }}
+          />
+        ) : (
+          <Table
+            rowKey={(record) => record.project_path}
+            size="small"
+            tableLayout="fixed"
+            columns={projectColumns}
+            dataSource={state.projectStats}
+            loading={loading}
+            pagination={false}
+            scroll={{ x: 960 }}
+            locale={{
+              emptyText: (
+                <Empty
+                  image={Empty.PRESENTED_IMAGE_SIMPLE}
+                  description={
+                    loading
+                      ? t('common.loading')
+                      : t('gateway.page.statistics.projectEmpty')
+                  }
+                />
               ),
             }}
           />

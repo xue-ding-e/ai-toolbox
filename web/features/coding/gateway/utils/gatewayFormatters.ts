@@ -142,6 +142,7 @@ const USAGE_ONLY_TOOLS: readonly GatewayUsageTool[] = [
   'pi', 'oh_my_pi', 'omo_native', 'dsh', 'hermes', 'openclaw', 'kimi_cli', 'zcode',
   'mimocode', 'prime_agent', 'devin', 'musecode', 'cmdcode', 'qwencode',
   'workbuddy', 'workbuddy_ai', 'codebuddy', 'minimax',
+  'qoder_ide', 'qoder_ide_cn', 'qodercli', 'qodercli_cn',
 ];
 
 export const getGatewayRequestsPerMinute = (
@@ -501,6 +502,21 @@ export const stringifyDetailValue = (value: unknown) => {
     return value;
   }
   return JSON.stringify(value, null, 2);
+};
+
+/**
+ * A project row is named by its last path segment (`D:\repo\ai-toolbox` ->
+ * `ai-toolbox`), the same way the reference collector names projects. Both
+ * separators are accepted because Windows transcripts use `\` and WSL ones `/`.
+ * `null` means "no project recorded" and lets the caller label it.
+ */
+export const gatewayProjectName = (projectPath: string): string | null => {
+  const trimmed = projectPath.trim().replace(/[\\/]+$/, '');
+  if (!trimmed) {
+    return null;
+  }
+  const segments = trimmed.split(/[\\/]/);
+  return segments[segments.length - 1] || trimmed;
 };
 
 export const GATEWAY_USAGE_RANGE_PRESETS = [

@@ -30,6 +30,9 @@ fn parse_inner(
         .into_owned();
     let mut parent = None;
     let mut started_at = None;
+    // Pi/OMP/Prime-style transcripts record the working directory on the
+    // session header line.
+    let mut project_path: Option<String> = None;
     let mut records = BTreeMap::<String, SessionUsageRecord>::new();
     let pending = read_jsonl(path, |index, value| {
         if value.get("type").and_then(Value::as_str) == Some("session") {
@@ -37,6 +40,9 @@ fn parse_inner(
                 session = id;
             }
             parent = string(&value, &["/parentSession"]);
+            project_path = project_path
+                .take()
+                .or_else(|| string(&value, &["/cwd", "/working_directory"]));
             if started_at.is_none() {
                 started_at = timestamp(&value);
             }
@@ -47,7 +53,10 @@ fn parse_inner(
         } else {
             parse_entry(tool, &session, index, &value, fallback)
         };
-        if let Some(record) = record {
+        if let Some(mut record) = record {
+            if record.project_path.is_none() {
+                record.project_path = project_path.clone();
+            }
             records.insert(record.request_id.clone(), record);
         }
     })?;

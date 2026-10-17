@@ -60,7 +60,11 @@ pub(super) fn revision(cli_key: GatewayUsageTool) -> u32 {
         | GatewayUsageTool::Workbuddy
         | GatewayUsageTool::WorkbuddyAi
         | GatewayUsageTool::Codebuddy
-        | GatewayUsageTool::Minimax => 2,
+        | GatewayUsageTool::Minimax
+        | GatewayUsageTool::QoderIde
+        | GatewayUsageTool::QoderIdeCn
+        | GatewayUsageTool::QoderCli
+        | GatewayUsageTool::QoderCliCn => 2,
         _ => 2,
     }
 }
@@ -162,6 +166,9 @@ pub(super) fn parse_file(
         GatewayUsageTool::Codebuddy => {
             return super::codebuddy::parse(path, fallback_timestamp)
         }
+        GatewayUsageTool::QoderCli | GatewayUsageTool::QoderCliCn => {
+            return super::qoder_cli::parse(cli_key, path, fallback_timestamp)
+        }
         _ => {}
     }
     parse_generic_file(cli_key, path, fallback_timestamp)
@@ -178,6 +185,7 @@ pub(super) fn parse_generic_file(
     let file = File::open(path).map_err(|error| error.to_string())?;
     let mut records = BTreeMap::new();
     let mut session_id = source_identity(cli_key, path);
+    let file_project = file_project(cli_key, path);
     if path.extension().and_then(|value| value.to_str()) == Some("jsonl") {
         for (index, line) in BufReader::new(file).lines().enumerate() {
             let line = line.map_err(|error| error.to_string())?;
@@ -202,6 +210,7 @@ pub(super) fn parse_generic_file(
                 index,
                 fallback_timestamp,
                 &mut records,
+                file_project.as_deref(),
             );
         }
     } else {
@@ -215,6 +224,7 @@ pub(super) fn parse_generic_file(
             0,
             fallback_timestamp,
             &mut records,
+            file_project.as_deref(),
         );
     }
     Ok(ParsedSession {
@@ -231,6 +241,7 @@ fn collect_values(
     index: usize,
     fallback_timestamp: i64,
     records: &mut BTreeMap<String, SessionUsageRecord>,
+    file_project: Option<&str>,
 ) {
     if let Some(id) = string(
         value,
@@ -258,6 +269,7 @@ fn collect_values(
                 item_index,
                 fallback_timestamp,
                 records,
+                file_project,
             );
         }
         return;
@@ -268,7 +280,8 @@ fn collect_values(
     {
         return;
     }
-    let Some(mut record) = parse_value(cli_key, value, session_id, index, fallback_timestamp)
+    let Some(mut record) =
+        parse_value_with_project(cli_key, value, session_id, index, fallback_timestamp, file_project)
     else {
         return;
     };
@@ -282,6 +295,9 @@ fn collect_values(
     if let Some(previous) = records.get(&record.request_id) {
         // Claude/Gemini may write several snapshots of one response. They are
         // one invocation, and partial snapshots must not erase known counters.
+        if record.project_path.is_none() {
+            record.project_path = previous.project_path.clone();
+        }
         record.usage.input_tokens = record.usage.input_tokens.max(previous.usage.input_tokens);
         record.usage.output_tokens = record.usage.output_tokens.max(previous.usage.output_tokens);
         record.usage.cache_read_tokens = record
@@ -305,6 +321,39 @@ pub(super) fn parse_value(
     session_id: &str,
     index: usize,
     fallback_timestamp: i64,
+) -> Option<SessionUsageRecord> {
+    parse_value_with_project(cli_key, value, session_id, index, fallback_timestamp, None)
+}
+
+/// The project a transcript belongs to when the rows themselves do not say.
+///
+/// Gemini keys its session directories by a hash of the project root and keeps
+/// the original path in `<project>/.project_root` (the CLI's own registry is
+/// `projects.json` at the root); everything else records the cwd on the row or
+/// session header.
+fn file_project(cli_key: GatewayUsageTool, path: &Path) -> Option<String> {
+    if cli_key != GatewayUsageTool::Gemini {
+        return None;
+    }
+    // `<tmp>/<project-key>/chats/session-*.json(l)`: the project directory is
+    // the one holding `chats`.
+    let project_dir = path.parent()?.parent()?;
+    std::fs::read_to_string(project_dir.join(".project_root"))
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+/// `project_path` carries the cwd the caller already found on a session header
+/// (Claude/Gemini rows repeat it, but the catch-all parser is also reused by the
+/// catch-all transcript readers); an explicit field on the row wins over it.
+pub(super) fn parse_value_with_project(
+    cli_key: GatewayUsageTool,
+    value: &Value,
+    session_id: &str,
+    index: usize,
+    fallback_timestamp: i64,
+    project_path: Option<&str>,
 ) -> Option<SessionUsageRecord> {
     let usage = if cli_key == GatewayUsageTool::Gemini && value.get("tokens").is_some() {
         if value.get("type").and_then(Value::as_str) != Some("gemini") {
@@ -417,6 +466,10 @@ pub(super) fn parse_value(
             .and_then(Value::as_f64)
             .filter(|cost| cost.is_finite() && *cost > 0.0)
             .map(|cost| cost.to_string()),
+        project_path: string(value, &["/cwd", "/working_directory", "/work_dir"])
+            .or_else(|| project_path.map(str::to_string))
+            .filter(|path| !path.trim().is_empty()),
+        credits: None,
     })
 }
 
@@ -481,6 +534,8 @@ fn parse_codex_lines(
     let mut previous_signature = None;
     let mut event_index = 0u64;
     let mut metadata_seen = false;
+    // Codex records the working directory once, in the leading `session_meta`.
+    let mut project_path: Option<String> = None;
     // Dual-write bookkeeping; see `apply_codex_token_usage_record`.
     let mut response_ids = std::collections::HashSet::<String>::new();
     let mut pending_responses = Vec::<Counters>::new();
@@ -508,6 +563,7 @@ fn parse_codex_lines(
                     thread_id = id;
                 }
                 parsed.started_at = timestamp(&value);
+                project_path = string(payload, &["/cwd"]);
                 parsed.parent_thread_id = string(
                     payload,
                     &[
@@ -620,6 +676,8 @@ fn parse_codex_lines(
                         created_at,
                         session_id: thread_id.clone(),
                         reported_cost_usd: None,
+                        project_path: project_path.clone(),
+                        credits: None,
                     });
                 }
                 parsed.snapshots.push(CodexSnapshot {
@@ -694,6 +752,8 @@ fn parse_codex_lines(
                     created_at,
                     session_id: thread_id.clone(),
                     reported_cost_usd: None,
+                    project_path: project_path.clone(),
+                    credits: None,
                 });
             }
             _ => {}
@@ -907,6 +967,8 @@ pub(super) fn native_record(
         created_at,
         session_id: session.into(),
         reported_cost_usd: None,
+        project_path: None,
+        credits: None,
     }
 }
 

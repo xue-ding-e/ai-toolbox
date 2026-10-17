@@ -116,7 +116,11 @@
           "cost": "成本",
           "successRate": "成功率",
           "latency": "平均耗时",
-          "cacheHitRate": "缓存命中率"
+          "cacheHitRate": "缓存命中率",
+          "project": "项目",
+          "sessions": "会话数",
+          "topModel": "主模型",
+          "lastActive": "最近活跃"
         },
         "empty": "暂无统计数据",
         "loadFailed": "加载网关统计失败：{{error}}",
@@ -149,7 +153,11 @@
         "pricingOutput": "输出 {{value}}",
         "pricingCacheRead": "缓存读取 {{value}}",
         "pricingCacheCreation": "缓存创建 {{value}}",
-        "pricingUnavailable": "该模型未匹配到价格，金额只计算已报告或已定价的用量。"
+        "pricingUnavailable": "该模型未匹配到价格，金额只计算已报告或已定价的用量。",
+        "projectStats": "项目统计",
+        "unknownProject": "未知项目",
+        "unknownProjectHint": "未记录工作目录",
+        "projectEmpty": "所选范围内没有记录项目路径的会话用量"
       },
       "pricing": {
         "open": "定价配置",
@@ -882,7 +890,11 @@
         "workbuddy": "WorkBuddy",
         "workbuddy_ai": "WorkBuddy 国际版",
         "codebuddy": "CodeBuddy",
-        "minimax": "MiniMax Code"
+        "minimax": "MiniMax Code",
+        "qoder_ide": "Qoder Desktop",
+        "qoder_ide_cn": "Qoder CN Desktop",
+        "qodercli": "Qoder CLI",
+        "qodercli_cn": "Qoder CN"
       },
       "cliStatus": {
         "direct": "未接管",
