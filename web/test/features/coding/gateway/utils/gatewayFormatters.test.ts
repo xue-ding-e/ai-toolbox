@@ -52,7 +52,7 @@ test('WebSocket handshake and warmup do not pretend to be ordinary model usage',
 
 test('request presets use the statistics ranges and refresh their relative end time', () => {
   const now = new Date(2026, 8, 12, 22, 24, 0).getTime();
-  for (const preset of ['today', '1d', '7d', '14d', '30d'] as const) {
+  for (const preset of ['today', 'thisWeek', 'thisMonth', 'thisYear', '1d'] as const) {
     const expected = resolveGatewayUsageRange({ preset }, now);
     assert.deepEqual(resolveGatewayRequestRange({ preset }, now), {
       start_date: expected.startDate,
@@ -60,7 +60,74 @@ test('request presets use the statistics ranges and refresh their relative end t
     });
     assert.equal(resolveGatewayRequestRange({ preset }, now + 60_000).end_date, expected.endDate + 60);
   }
+  // Calendar past ranges are fixed: refreshing must not slide the window.
+  for (const preset of ['yesterday', 'lastWeek'] as const) {
+    const expected = resolveGatewayUsageRange({ preset }, now);
+    assert.deepEqual(resolveGatewayRequestRange({ preset }, now + 60_000), {
+      start_date: expected.startDate,
+      end_date: expected.endDate,
+    });
+  }
   assert.equal(resolveGatewayRequestRange({ preset: 'today' }, now).start_date, new Date(2026, 8, 12).getTime() / 1000);
+});
+
+test('calendar presets use local day, Monday-start week, month and year boundaries', () => {
+  // 2026-09-12 is a Saturday, 22:24 local time.
+  const now = new Date(2026, 8, 12, 22, 24, 0).getTime();
+  const midnight = new Date(2026, 8, 12).getTime() / 1000;
+  const day = 86_400;
+
+  assert.deepEqual(resolveGatewayUsageRange({ preset: 'yesterday' }, now), {
+    startDate: midnight - day,
+    endDate: midnight - 1,
+  });
+  // Monday 2026-09-07 00:00 up to now.
+  assert.deepEqual(resolveGatewayUsageRange({ preset: 'thisWeek' }, now), {
+    startDate: new Date(2026, 8, 7).getTime() / 1000,
+    endDate: Math.floor(now / 1000),
+  });
+  // The previous Monday through the last second before this week starts.
+  assert.deepEqual(resolveGatewayUsageRange({ preset: 'lastWeek' }, now), {
+    startDate: new Date(2026, 7, 31).getTime() / 1000,
+    endDate: Math.floor(new Date(2026, 8, 7).getTime() / 1000) - 1,
+  });
+  assert.deepEqual(resolveGatewayUsageRange({ preset: 'thisMonth' }, now), {
+    startDate: new Date(2026, 8, 1).getTime() / 1000,
+    endDate: Math.floor(now / 1000),
+  });
+  assert.deepEqual(resolveGatewayUsageRange({ preset: 'thisYear' }, now), {
+    startDate: new Date(2026, 0, 1).getTime() / 1000,
+    endDate: Math.floor(now / 1000),
+  });
+  // `1d` stays a rolling 24 hours, distinct from the calendar "today".
+  assert.deepEqual(resolveGatewayUsageRange({ preset: '1d' }, now), {
+    startDate: Math.floor(now / 1000) - day,
+    endDate: Math.floor(now / 1000),
+  });
+});
+
+test('week presets stay correct across a year boundary and on a Monday', () => {
+  // Thursday 2026-01-01 08:00: this week starts Monday 2025-12-29.
+  const newYear = new Date(2026, 0, 1, 8, 0, 0).getTime();
+  assert.equal(
+    resolveGatewayUsageRange({ preset: 'thisWeek' }, newYear).startDate,
+    new Date(2025, 11, 29).getTime() / 1000,
+  );
+  assert.equal(
+    resolveGatewayUsageRange({ preset: 'lastWeek' }, newYear).startDate,
+    new Date(2025, 11, 22).getTime() / 1000,
+  );
+
+  // On a Monday, "last week" is the Monday seven days before.
+  const monday = new Date(2026, 8, 14, 9, 0, 0).getTime();
+  assert.deepEqual(resolveGatewayUsageRange({ preset: 'thisWeek' }, monday), {
+    startDate: Math.floor(new Date(2026, 8, 14).getTime() / 1000),
+    endDate: Math.floor(monday / 1000),
+  });
+  assert.equal(
+    resolveGatewayUsageRange({ preset: 'lastWeek' }, monday).startDate,
+    new Date(2026, 8, 7).getTime() / 1000,
+  );
 });
 
 test('request all-time and cleared custom ranges preserve the unbounded search', () => {

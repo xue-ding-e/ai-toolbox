@@ -54,6 +54,8 @@ import {
 } from '../utils/gatewayFormatters';
 import ModelPricingModal from './ModelPricingModal';
 import GatewayUsageOverview from './GatewayUsageOverview';
+import GatewayActivityHeatmap from './GatewayActivityHeatmap';
+import { resolveGatewayHeatmapRange } from '../utils/gatewayHeatmap';
 import styles from './GatewayStatisticsView.module.less';
 
 const { RangePicker } = DatePicker;
@@ -191,9 +193,11 @@ const GatewayStatisticsView: React.FC<GatewayStatisticsViewProps> = ({ refreshKe
   const [showPricingModal, setShowPricingModal] = React.useState(false);
   const [hiddenSeries, setHiddenSeries] = React.useState<Set<TrendSeriesKey>>(() => new Set());
   const [state, setState] = React.useState<StatisticsState>(emptyState);
+  const [heatmapTrends, setHeatmapTrends] = React.useState<GatewayUsageTrendPoint[]>([]);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const statisticsRequestIdRef = React.useRef(0);
+  const heatmapRequestIdRef = React.useRef(0);
 
   const effectiveCliKey = toCliKey(cliFilter);
   const unpricedModels = React.useMemo(
@@ -243,10 +247,35 @@ const GatewayStatisticsView: React.FC<GatewayStatisticsViewProps> = ({ refreshKe
     }
   }, [effectiveCliKey, range, t]);
 
+  // The heatmap window is fixed at 365 days and independent of the range
+  // filter, so it only follows the CLI filter and the refresh triggers.
+  const loadHeatmap = React.useCallback(async () => {
+    const requestId = ++heatmapRequestIdRef.current;
+    const heatmapRange = resolveGatewayHeatmapRange();
+    try {
+      const trends = await getProxyGatewayUsageTrends(
+        heatmapRange.startDate,
+        heatmapRange.endDate,
+        effectiveCliKey,
+      );
+      if (requestId === heatmapRequestIdRef.current) {
+        setHeatmapTrends(trends);
+      }
+    } catch {
+      // A failed refresh keeps the previous calendar instead of blanking the
+      // panel, and stays out of the statistics error banner: the heatmap is a
+      // secondary view whose own range is not part of the main filter.
+    }
+  }, [effectiveCliKey]);
+
   React.useEffect(() => {
     // A new filter must not display the previous filter's totals while loading.
     setState(emptyState);
   }, [effectiveCliKey, range]);
+
+  React.useEffect(() => {
+    setHeatmapTrends([]);
+  }, [effectiveCliKey]);
 
   React.useEffect(() => {
     void loadStatistics();
@@ -256,14 +285,22 @@ const GatewayStatisticsView: React.FC<GatewayStatisticsViewProps> = ({ refreshKe
   }, [loadStatistics, refreshKey]);
 
   React.useEffect(() => {
+    void loadHeatmap();
+    return () => {
+      heatmapRequestIdRef.current += 1;
+    };
+  }, [loadHeatmap, refreshKey]);
+
+  React.useEffect(() => {
     if (refreshIntervalMs <= 0) {
       return undefined;
     }
     const timer = window.setInterval(() => {
       void loadStatistics();
+      void loadHeatmap();
     }, refreshIntervalMs);
     return () => window.clearInterval(timer);
-  }, [loadStatistics, refreshIntervalMs]);
+  }, [loadStatistics, loadHeatmap, refreshIntervalMs]);
 
   const requestRate = getGatewayRequestsPerMinute(gatewayStatus, effectiveCliKey);
   const chartRows = chartData(state.trends);
@@ -719,6 +756,8 @@ const GatewayStatisticsView: React.FC<GatewayStatisticsViewProps> = ({ refreshKe
           />
         )}
       </section>
+
+      <GatewayActivityHeatmap trends={heatmapTrends} loading={loading} />
 
       <ModelPricingModal
         open={showPricingModal}

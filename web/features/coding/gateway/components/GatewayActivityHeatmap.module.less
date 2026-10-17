@@ -1,0 +1,213 @@
+/* Activity heatmap panel: same shell as the chart/data panels so the
+   statistics page keeps one card language (DESIGN.md "Gateway 页面"). */
+.heatmapPanel {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--color-border-card);
+  border-radius: 16px;
+  background: var(--color-bg-container);
+  box-shadow: var(--shadow-card-sm);
+}
+
+.panelHeader {
+  display: flex;
+  min-width: 0;
+  min-height: 56px;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 20px;
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text-primary);
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.panelSubtitle {
+  min-width: 0;
+  color: var(--color-text-tertiary);
+  font-size: 10px;
+  font-weight: 400;
+  line-height: 1.5;
+}
+
+.heatmapBody {
+  min-width: 0;
+  padding: 16px 20px 6px;
+}
+
+/* Scrolls sideways only when the panel is too narrow for 7px cells; the SVG
+   keeps its measured width otherwise. */
+.heatmapScroller {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 2px;
+}
+
+.heatmapChart {
+  display: block;
+}
+
+.heatmapPlaceholder {
+  min-height: 120px;
+  color: var(--color-text-tertiary);
+  font-size: 12px;
+  line-height: 120px;
+  text-align: center;
+}
+
+.axisText {
+  fill: var(--color-text-tertiary);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Level colors derive from the brand primary mixed into the container surface,
+   so light/dark both stay on one scale without hardcoded literals. */
+.level0 {
+  fill: var(--color-bg-hover);
+  stroke: var(--color-border);
+  stroke-width: 1;
+}
+
+.level1 {
+  fill: color-mix(in srgb, var(--ant-color-primary) 24%, var(--color-bg-container));
+  stroke: transparent;
+}
+
+.level2 {
+  fill: color-mix(in srgb, var(--ant-color-primary) 46%, var(--color-bg-container));
+  stroke: transparent;
+}
+
+.level3 {
+  fill: color-mix(in srgb, var(--ant-color-primary) 70%, var(--color-bg-container));
+  stroke: transparent;
+}
+
+.level4 {
+  fill: var(--ant-color-primary);
+  stroke: transparent;
+}
+
+/* Dark surfaces swallow the low bands; raise the primary mix so all four
+   non-zero levels stay distinguishable from the empty cells. */
+:global([data-theme='dark']) {
+  .level1 {
+    fill: color-mix(in srgb, var(--ant-color-primary) 38%, var(--color-bg-container));
+  }
+
+  .level2 {
+    fill: color-mix(in srgb, var(--ant-color-primary) 58%, var(--color-bg-container));
+  }
+
+  .level3 {
+    fill: color-mix(in srgb, var(--ant-color-primary) 80%, var(--color-bg-container));
+  }
+
+  .swatch1 {
+    background: color-mix(in srgb, var(--ant-color-primary) 38%, var(--color-bg-container));
+  }
+
+  .swatch2 {
+    background: color-mix(in srgb, var(--ant-color-primary) 58%, var(--color-bg-container));
+  }
+
+  .swatch3 {
+    background: color-mix(in srgb, var(--ant-color-primary) 80%, var(--color-bg-container));
+  }
+}
+
+.heatmapChart rect {
+  transition: stroke 0.12s ease;
+}
+
+.heatmapChart rect:hover {
+  stroke: var(--color-text-tertiary);
+}
+
+.heatmapFooter {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+  padding: 10px 20px 14px;
+  color: var(--color-text-tertiary);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.legendLabel {
+  font-weight: 500;
+}
+
+.legendItems {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+}
+
+.legendItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.legendSwatch {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  border: 1px solid var(--color-border);
+  border-radius: 2px;
+}
+
+.swatch0 {
+  background: var(--color-bg-hover);
+}
+
+.swatch1 {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--ant-color-primary) 24%, var(--color-bg-container));
+}
+
+.swatch2 {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--ant-color-primary) 46%, var(--color-bg-container));
+}
+
+.swatch3 {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--ant-color-primary) 70%, var(--color-bg-container));
+}
+
+.swatch4 {
+  border-color: transparent;
+  background: var(--ant-color-primary);
+}
+
+.footerNote {
+  margin-left: auto;
+}
+
+@media (max-width: 720px) {
+  .panelHeader {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 2px;
+    padding: 10px 14px;
+  }
+
+  .heatmapBody {
+    padding: 12px 14px 4px;
+  }
+
+  .heatmapFooter {
+    padding: 8px 14px 12px;
+  }
+
+  .footerNote {
+    margin-left: 0;
+  }
+}

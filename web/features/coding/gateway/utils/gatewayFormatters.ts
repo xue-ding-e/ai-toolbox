@@ -491,7 +491,16 @@ export const stringifyDetailValue = (value: unknown) => {
   return JSON.stringify(value, null, 2);
 };
 
-export const GATEWAY_USAGE_RANGE_PRESETS = ['today', '1d', '7d', '14d', '30d', 'custom'] as const;
+export const GATEWAY_USAGE_RANGE_PRESETS = [
+  'today',
+  'yesterday',
+  'thisWeek',
+  'lastWeek',
+  'thisMonth',
+  'thisYear',
+  '1d',
+  'custom',
+] as const;
 
 export type GatewayUsageRangePreset = typeof GATEWAY_USAGE_RANGE_PRESETS[number];
 
@@ -514,11 +523,27 @@ export interface ResolvedGatewayUsageRange {
 }
 
 const DAY_SECONDS = 24 * 60 * 60;
-const DAY_MS = DAY_SECONDS * 1000;
 
 const startOfLocalDay = (timeMs: number) => {
   const date = new Date(timeMs);
   return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+};
+
+/** Monday 00:00 local time of the week containing `timeMs`. */
+const startOfLocalWeek = (timeMs: number) => {
+  const date = new Date(startOfLocalDay(timeMs));
+  const daysSinceMonday = (date.getDay() + 6) % 7;
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate() - daysSinceMonday).getTime();
+};
+
+const startOfLocalMonth = (timeMs: number) => {
+  const date = new Date(timeMs);
+  return new Date(date.getFullYear(), date.getMonth(), 1).getTime();
+};
+
+const startOfLocalYear = (timeMs: number) => {
+  const date = new Date(timeMs);
+  return new Date(date.getFullYear(), 0, 1).getTime();
 };
 
 export const resolveGatewayUsageRange = (
@@ -539,15 +564,39 @@ export const resolveGatewayUsageRange = (
       endDate,
     };
   }
-  if (selection.preset === '1d') {
+  if (selection.preset === 'yesterday') {
     return {
-      startDate: endDate - DAY_SECONDS,
+      startDate: Math.floor(startOfLocalDay(nowMs) / 1000) - DAY_SECONDS,
+      endDate: Math.floor(startOfLocalDay(nowMs) / 1000) - 1,
+    };
+  }
+  if (selection.preset === 'thisWeek') {
+    return {
+      startDate: Math.floor(startOfLocalWeek(nowMs) / 1000),
       endDate,
     };
   }
-  const dayCount = selection.preset === '7d' ? 7 : selection.preset === '14d' ? 14 : 30;
+  if (selection.preset === 'lastWeek') {
+    const thisWeekStart = startOfLocalWeek(nowMs);
+    return {
+      startDate: Math.floor(startOfLocalWeek(thisWeekStart - 1) / 1000),
+      endDate: Math.floor(thisWeekStart / 1000) - 1,
+    };
+  }
+  if (selection.preset === 'thisMonth') {
+    return {
+      startDate: Math.floor(startOfLocalMonth(nowMs) / 1000),
+      endDate,
+    };
+  }
+  if (selection.preset === 'thisYear') {
+    return {
+      startDate: Math.floor(startOfLocalYear(nowMs) / 1000),
+      endDate,
+    };
+  }
   return {
-    startDate: Math.floor(startOfLocalDay(nowMs - (dayCount - 1) * DAY_MS) / 1000),
+    startDate: endDate - DAY_SECONDS,
     endDate,
   };
 };

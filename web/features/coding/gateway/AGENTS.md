@@ -84,7 +84,8 @@ sequenceDiagram
 - 请求详情里的长 body / headers / response 文本块默认折叠并提供复制，折叠条件要同时考虑行数和字符长度；压缩 JSON 这类大型单行文本也不能直接把 `<pre>` 全展开。
 - `gateway-failover` 属于代理流量中的后台状态事件，只能用于刷新状态、统计或请求记录；不要触发全局 notification/message 弹窗，避免每次上游故障转移都打断客户端使用。
 - `usage-log-recorded` 属于后台 usage 落库事件，只能静默刷新统计和请求列表；高频请求下必须做节流/防抖合并，不能每条请求都打断 UI 或触发全局 notification/message。
-- 统计页和请求页的相对时间范围（Today、1d、7d 等）必须在每次刷新请求发起时重新计算；不要用 `useMemo` 或搜索时生成的绝对时间把 `endDate` 冻结。请求页的**文本输入**（供应商、模型）继续区分筛选草稿与已提交筛选：刷新/翻页只消费已提交范围，自定义绝对时间保持固定，清空和“全部时间”保留无日期限制的语义。**下拉类筛选（CLI、日期预设、来源、状态）必须选中即生效**——它们是一次性明确动作，压在搜索按钮后面会让「选了没反应」看起来像坏了；顶栏两个开关（排除模型列表、只看失败）本来就是即时的，两侧口径必须一致。
+- 统计页和请求页共用同一组时间预设（`GATEWAY_USAGE_RANGE_PRESETS`：今天 / 昨日 / 本周 / 上周 / 本月 / 本年 / 1d / 自定义）。日历类预设以**本地时区**计算边界，`本周` 与 `上周` 都以**周一**为一周起点；`1d` 是滚动 24 小时，和「今天」的本地自然日语义不同，不能合并。昨日/上周是固定区间，刷新时不能滑动；今天/本周/本月/本年/1d 有相对 `endDate`，必须在每次刷新请求发起时重新计算，不要用 `useMemo` 或搜索时生成的绝对时间把 `endDate` 冻结。请求页的**文本输入**（供应商、模型）继续区分筛选草稿与已提交筛选：刷新/翻页只消费已提交范围，自定义绝对时间保持固定，清空和“全部时间”保留无日期限制的语义。**下拉类筛选（CLI、日期预设、来源、状态）必须选中即生效**——它们是一次性明确动作，压在搜索按钮后面会让「选了没反应」看起来像坏了；顶栏两个开关（排除模型列表、只看失败）本来就是即时的，两侧口径必须一致。
+- 统计页的活跃热力图（`GatewayActivityHeatmap` + `utils/gatewayHeatmap.ts`）是**固定 365 天、含今天**的独立窗口，与上方时间范围筛选解耦，只跟随 CLI 筛选；不要把它接到 `range` 上，也不要因为选了「今天」就只画一天。分档按本窗口的**日 Token 峰值**自动计算（四档 + 零档，步长向下取整到 `1/1.25/…/10 × 10ⁿ` 这类可读值），图例文字和格子着色必须共用同一份阈值；「有没有请求」看请求数（全部失败的日子请求数 > 0 但 Token 为 0，仍算活跃），着色只看 Token。布局按周一为每周第一列、列数取整为周，格子边长由容器实测宽度反推并夹取在 7–26px，窄窗口横向滚动而不是把格子压到看不清。热力图复用 `proxy_gateway_usage_trends`（365 天范围，日聚合 + rollup 合并），不新增后端命令。
 - 设置 Tab 自动保存有 debounce；顶部启动按钮必须优先使用设置面板当前 draft 立即保存后启动，不能重新读取旧的后端 settings 后启动。
 - 统计图表直接使用 Recharts；不要为了网关统计引入额外图表封装层。图表必须有 tooltip/legend，并使用主题变量保证浅色/深色模式可读。
 - 定价管理弹窗遵循全局 Modal 规范：不重度覆盖 Ant Design Modal chrome，上半部分用 `sectionCard` 风格承载默认配置，下半部分用 Ant Design Table 原生样式展示模型定价。
@@ -112,7 +113,7 @@ sequenceDiagram
 - 依赖 `@/services/proxyGatewayApi` 暴露的 Tauri 命令包装。
 - 依赖 `MainLayout` 的顶部动作区、`routeConfig` 的 KeepAlive 路由和 `settingsStore.visibleTabs`。
 - 设置视图当前复用 `GatewaySettingsPanel`，其数据仍通过同一组后端命令读取和保存。
-- `GatewayPage.tsx` 只保留页面 shell、标题和内部 Tab 路由；统计数据加载/展示放 `components/GatewayStatisticsView.tsx`，请求列表/详情放 `components/GatewayRequestsView.tsx`，纯格式化函数放 `utils/gatewayFormatters.ts`。新增统计或请求 UI 时优先扩展对应组件，不要把业务逻辑重新写进页面 shell。
+- `GatewayPage.tsx` 只保留页面 shell、标题和内部 Tab 路由；统计数据加载/展示放 `components/GatewayStatisticsView.tsx`（含 `GatewayUsageOverview`、`GatewayActivityHeatmap`），请求列表/详情放 `components/GatewayRequestsView.tsx`，纯格式化函数放 `utils/gatewayFormatters.ts`，热力图日历/分档/布局纯函数放 `utils/gatewayHeatmap.ts`。新增统计或请求 UI 时优先扩展对应组件，不要把业务逻辑重新写进页面 shell。
 - 样式按组件边界拆分。页面 shell、统计视图、请求视图与用量概览各自维护 CSS Module；用量概览集中在 `GatewayUsageOverview`，不把总览布局重新堆进页面 shell。
 
 ## 数据脱敏边界
@@ -132,6 +133,8 @@ sequenceDiagram
 - 至少验证：统计、请求、设置三个 Tab 内容区不再出现重复的标题/副标题/刷新工具栏。
 - 至少验证：设置 Tab 修改字段会自动保存。
 - 至少验证：统计页从真实 SQLite 摘要/日聚合命令读取数据，空数据时显示空态，不伪造请求量。
+- 至少验证：统计页时间下拉包含「今天 / 昨日 / 本周 / 上周 / 本月 / 本年 / 1d / 自定义」，请求页在同一组预设前多一个「全部时间」；切换后两端都立即生效，昨日/上周不随刷新滑动。
+- 至少验证：活跃热力图固定展示近 365 天，切换上方时间范围不改变热力图跨度；切换 CLI 或点刷新时热力图同步刷新，图例区间与格子着色一致；亮暗主题下四档色块可区分，窄窗口横向滚动不压扁格子。
 - 至少验证：请求页列表只拉数据库摘要，点击记录后弹出 80% 窗口级大弹窗再按 trace id 拉文件详情，并能展示未保存 body/headers 的空态。
 - 至少验证：设置 Tab 自动保存仍走原有后端保存命令，运行中保存会同步更新运行态共享 settings。
 - 至少验证：未启用聚合时勾选站点/改分隔符后关闭抽屉或切到其它 Tab 再回来，选择与分隔符仍在；应用重启后仍在。

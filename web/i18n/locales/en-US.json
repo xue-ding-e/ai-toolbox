@@ -90,10 +90,12 @@
         },
         "range": {
           "today": "Today",
+          "yesterday": "Yesterday",
+          "thisWeek": "This week",
+          "lastWeek": "Last week",
+          "thisMonth": "This month",
+          "thisYear": "This year",
           "1d": "1d",
-          "7d": "7d",
-          "14d": "14d",
-          "30d": "30d",
           "custom": "Custom"
         },
         "refresh": {
@@ -127,7 +129,21 @@
         "unpricedModelsHint": "{{count}} model(s) in this range have no matching model price, so the amount only counts reported or priced usage. Missing pricing does not mean free.",
         "unpricedModelsAction": "Add model prices",
         "unpricedModelTag": "No price",
-        "unpricedModelsMore": "and {{count}} more"
+        "unpricedModelsMore": "and {{count}} more",
+        "heatmap": {
+          "title": "Activity heatmap",
+          "subtitle": "Last 365 days, colored by daily token usage (levels scale to this window's peak)",
+          "legendLabel": "Tokens",
+          "footerNote": "Each cell is a local calendar day; days without requests are empty",
+          "cellTooltip": "{{date}} · {{tokens}} tokens · {{requests}} requests",
+          "cellEmptyTooltip": "{{date}} · No requests",
+          "empty": "No heatmap data yet",
+          "weekdays": {
+            "0": "Mon",
+            "2": "Wed",
+            "4": "Fri"
+          }
+        }
       },
       "pricing": {
         "open": "Pricing config",
