@@ -81,6 +81,7 @@ sequenceDiagram
 - 手动同步展示新增/更新/跳过计数；部分失败使用独立的 warning notice 并保留成功数据，不能被紧随其后的列表刷新清掉，也不能当成全部失败或全部成功。后台同步事件仍只静默刷新。
 - 会话用量的两个维护动作（`importSessions` 增量同步、`rebuildSessions` 重建）收在刷新按钮右侧的省略号 `Dropdown` 里，不再单独占两个文字按钮：它们低频且需要解释后果，菜单项标题下必须带一行说明（`importSessionsHint` / `rebuildSessionsHint`），重建项标 `danger` 并保留确认弹窗。执行中整条入口禁用（`Dropdown` 与触发按钮同时 `disabled`），由触发按钮自己显示 spinner，点击处理器再兜一次同样的守卫；不要在两个菜单项里各做一套进行中状态——入口禁用时菜单根本打不开，那份状态用户看不到。
 - **重建不能只转圈**：重建通过 `startProxyGatewaySessionRebuild` 后台启动，前端每秒轮询 `getProxyGatewaySessionRebuildProgress`，在提示条下方渲染 `role="status"` 的阶段进度（阶段文案 `gateway.page.requests.rebuildPhase.<phase>` + 已处理文件数 + 新增/更新数 + 进度条）。完成后用同一份快照渲染 `rebuildDone`/`importPartialFailure` 并刷新列表，失败渲染 `rebuildFailed`；轮询异常同样结束重建态。不要退回「await 整个重建 + 一个 spinner」的写法：真实历史要跑十几分钟，用户既看不到进度也离不开页面。
+- **进度状态必须来自后端，不能只存组件 state**：`GatewayPage` 切 tab 会卸载 `GatewayRequestsView`，本地 `rebuilding`/`rebuildProgress` 随之丢失。轮询 effect 必须在每次挂载时无条件拉一次后端快照并据此恢复重建态，不能以本地 `rebuilding` 作为是否轮询的前置条件（那正是「切 tab 回来进度条消失」的原因）。后端对**运行中**任务返回可重复读取的快照，对**已结束**任务只返回一次（读取即消费），这样重新进入页面能补报一次结果，又不会每次访问都弹「重建完成」。
 - 请求详情 Body tab 如果后端同时返回 `request_body` 与不同的 `upstream_request_body`，要分别显示“收到的请求体（原始）”和“实际发出的请求体（整流/转换后）”；相同或没有上游快照时只显示一段。
 - 请求详情 Response tab 如果后端同时返回 `upstream_response_body` 与不同的 `response_body`，要分别显示“上游原始响应（转换前）”和“返回给客户端的响应（转换后）”；相同或没有上游快照时只显示一段。
 - 请求详情里的长 body / headers / response 文本块默认折叠并提供复制，折叠条件要同时考虑行数和字符长度；压缩 JSON 这类大型单行文本也不能直接把 `<pre>` 全展开。

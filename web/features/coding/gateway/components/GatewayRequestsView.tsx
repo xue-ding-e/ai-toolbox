@@ -530,38 +530,50 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
     setImportRefreshRevision((revision) => revision + 1);
   }, [t]);
 
+  // The rebuild lives in the backend, not in this component. Switching tabs
+  // unmounts the whole view, so local state cannot be the source of truth:
+  // every mount asks the backend whether a task is running and adopts it.
+  // Without that, the progress bar disappeared with the unmounted component
+  // and a rebuild that finished while the user was away was never reported.
   React.useEffect(() => {
-    if (!rebuilding) {
-      return undefined;
-    }
     let cancelled = false;
-    const poll = window.setInterval(() => {
+    // The finished snapshot stays readable so this mount can report the
+    // outcome, but the timer must not report it again every second.
+    let reported = false;
+    const poll = () => {
       void getProxyGatewaySessionRebuildProgress().then((progress) => {
         if (cancelled || !progress) {
           return;
         }
-        setRebuildProgress(progress);
         if (progress.phase === 'done' || progress.phase === 'failed') {
-          window.clearInterval(poll);
+          if (reported) {
+            return;
+          }
+          reported = true;
+          setRebuildProgress(null);
           finishRebuild(progress);
+          return;
         }
+        setRebuildProgress(progress);
+        setRebuilding(true);
       }).catch((pollError) => {
         if (cancelled) {
           return;
         }
-        window.clearInterval(poll);
         setRebuilding(false);
         setRebuildProgress(null);
         setError(t('gateway.page.requests.rebuildFailed', {
           error: formatGatewayError(pollError),
         }));
       });
-    }, REBUILD_POLL_INTERVAL_MS);
+    };
+    poll();
+    const timer = window.setInterval(poll, REBUILD_POLL_INTERVAL_MS);
     return () => {
       cancelled = true;
-      window.clearInterval(poll);
+      window.clearInterval(timer);
     };
-  }, [finishRebuild, rebuilding, t]);
+  }, [finishRebuild, t]);
 
   const handleRebuildSessionUsage = () => {
     Modal.confirm({

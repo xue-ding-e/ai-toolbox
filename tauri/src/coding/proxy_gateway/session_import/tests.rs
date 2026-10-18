@@ -1486,6 +1486,43 @@ fn rebuild_slot_rejects_overlapping_starts_until_the_first_finishes() {
     claim_rebuild_slot(&mut task).expect("a failed rebuild releases the slot too");
 }
 
+/// Switching tabs unmounts the requests view, so the progress it polls must
+/// live in the backend. A running task stays readable for every poll; a
+/// finished one is handed out once and then cleared, otherwise every later
+/// visit would re-report "rebuild finished".
+#[test]
+fn a_running_rebuild_snapshot_persists_while_a_finished_one_is_reported_once() {
+    {
+        let guard = rebuild_task();
+        let mut task = guard
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        claim_rebuild_slot(&mut task).unwrap();
+        task.progress.as_mut().unwrap().phase = SessionRebuildPhase::ImportingFiles;
+    }
+
+    assert_eq!(
+        take_rebuild_progress().map(|progress| progress.phase),
+        Some(SessionRebuildPhase::ImportingFiles),
+        "a running task must stay visible across remounts"
+    );
+    assert_eq!(
+        take_rebuild_progress().map(|progress| progress.phase),
+        Some(SessionRebuildPhase::ImportingFiles),
+        "polling again while running must not consume it"
+    );
+
+    update_rebuild_progress(|progress| progress.phase = SessionRebuildPhase::Done);
+    assert_eq!(
+        take_rebuild_progress().map(|progress| progress.phase),
+        Some(SessionRebuildPhase::Done),
+    );
+    assert!(
+        take_rebuild_progress().is_none(),
+        "the finished report is consumed exactly once"
+    );
+}
+
 #[test]
 fn gateway_and_session_usage_converge_in_either_arrival_order() {
     for gateway_first in [false, true] {

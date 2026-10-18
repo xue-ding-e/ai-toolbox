@@ -1522,10 +1522,14 @@ pub fn proxy_gateway_start_session_usage_rebuild(
 }
 
 /// The rebuild phase and counters to poll while the background task runs.
+///
+/// A finished snapshot is returned once and then cleared, so switching away
+/// from the page mid-rebuild and coming back still reports the outcome
+/// without re-reporting it on every later visit.
 #[tauri::command]
 pub fn proxy_gateway_session_usage_rebuild_progress(
 ) -> Option<session_import::SessionRebuildProgress> {
-    session_import::rebuild_progress_snapshot()
+    session_import::take_rebuild_progress()
 }
 
 /// Reads the local-session-usage display toggle from gateway settings.

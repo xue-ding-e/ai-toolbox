@@ -310,14 +310,23 @@ fn claim_rebuild_slot(task: &mut RebuildTask) -> Result<(), String> {
     Ok(())
 }
 
-/// Snapshot of the current (or last) rebuild. `None` means this process has
-/// not run one yet.
-pub fn rebuild_progress_snapshot() -> Option<SessionRebuildProgress> {
+/// Snapshot of the current rebuild, or of a finished one that the UI has not
+/// reported yet.
+///
+/// Reading the finished snapshot consumes it: the view unmounts on a tab
+/// switch, and a snapshot that stayed readable would re-report "rebuild
+/// finished" on every later visit. A running task is never consumed.
+pub fn take_rebuild_progress() -> Option<SessionRebuildProgress> {
     let guard = rebuild_task();
-    let task = guard
+    let mut task = guard
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    task.progress.clone()
+    let progress = task.progress.as_ref()?;
+    if progress.is_finished() {
+        task.progress.take()
+    } else {
+        task.progress.clone()
+    }
 }
 
 /// Starts a rebuild in the background and returns immediately.

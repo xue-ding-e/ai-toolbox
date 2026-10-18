@@ -933,6 +933,11 @@ export interface GatewaySessionRebuildProgress {
  * Starts a rebuild in the background and returns at once. Poll
  * `getProxyGatewaySessionRebuildProgress` while it runs; the final counts land
  * in the same snapshot.
+ *
+ * The progress lives in the backend, so a view that unmounts (tab switch)
+ * still sees the running task when it mounts again. A finished snapshot is
+ * returned exactly once, which is what lets a remount report the outcome
+ * without repeating it on every later visit.
  */
 export const startProxyGatewaySessionRebuild = async (
   input: GatewaySessionUsageImportInput
