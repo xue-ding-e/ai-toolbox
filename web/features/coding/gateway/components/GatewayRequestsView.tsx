@@ -10,7 +10,6 @@ import {
   ChevronDown,
   ChevronUp,
   Copy,
-  Database,
   Download,
   Ellipsis,
   FileText,
@@ -466,29 +465,32 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
     setPage(1);
   };
 
-  const handleImportSessionUsage = async () => {
+  /**
+   * Toolbar refresh: pull the local CLI sessions in, then reload this page.
+   *
+   * This is the everyday "show me what just happened" action: it keeps the
+   * current page and stays quiet on success — the refreshed rows are the
+   * feedback. Only files that failed to sync get a notice, because nothing
+   * else would surface them.
+   */
+  const handleRefreshWithSessionSync = async () => {
     setImporting(true);
     setError(null);
     setNotice(null);
     try {
       const result = await importProxyGatewaySessionUsage({ cli_key: 'all' });
-      setNotice(t(result.failed_files > 0
-        ? 'gateway.page.requests.importPartialFailure'
-        : 'gateway.page.requests.importDone', {
-        inserted: formatInteger(result.inserted_records),
-        updated: formatInteger(result.updated_records),
-        skipped: formatInteger(result.skipped_records),
-        files: formatInteger(result.scanned_files),
-        failed: formatInteger(result.failed_files),
-        count: result.failed_files,
-      }));
-      setNoticeKind(result.failed_files > 0 ? 'warning' : 'success');
-      // Reload from the current filters after the page reset, even if the user
-      // changed the page or filters while the import was still running.
-      setPage(1);
-      setImportRefreshRevision((revision) => revision + 1);
-    } catch (importError) {
-      setError(t('gateway.page.requests.importFailed', { error: formatGatewayError(importError) }));
+      if (result.failed_files > 0) {
+        setNotice(t('gateway.page.requests.refreshSyncPartialFailure', {
+          failed: formatInteger(result.failed_files),
+        }));
+        setNoticeKind('warning');
+      }
+      await loadRequests();
+    } catch (refreshError) {
+      setError(t('gateway.page.requests.loadFailed', { error: formatGatewayError(refreshError) }));
+      // A failed sync must not hide the rows already on screen; still try to
+      // reload them so the button always does what its icon promises.
+      await loadRequests();
     } finally {
       setImporting(false);
     }
@@ -598,22 +600,13 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
   };
 
   /**
-   * Maintenance actions are rare and need their consequences spelled out, so
-   * they live behind one overflow menu instead of two labelled toolbar buttons.
-   * Each item carries the one-line description the menu shows under the title.
+   * The rebuild is the only action that needs its consequences spelled out, so
+   * it lives behind an overflow menu instead of a labelled toolbar button.
+   * Incremental syncing is the refresh button's job; duplicating it here made
+   * two entries that looked different but did the same thing.
    */
   const sessionUsageMenuItems = React.useMemo<MenuProps['items']>(
     () => [
-      {
-        key: 'sync',
-        icon: <Database size={14} aria-hidden="true" />,
-        label: (
-          <span className={styles.menuItemText}>
-            <span>{t('gateway.page.requests.importSessions')}</span>
-            <small>{t('gateway.page.requests.importSessionsHint')}</small>
-          </span>
-        ),
-      },
       {
         key: 'rebuild',
         icon: <RefreshCw size={14} aria-hidden="true" />,
@@ -631,10 +624,6 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
 
   const handleSessionUsageMenuClick: MenuProps['onClick'] = ({ key }) => {
     if (importing || rebuilding) {
-      return;
-    }
-    if (key === 'sync') {
-      void handleImportSessionUsage();
       return;
     }
     if (key === 'rebuild') {
@@ -1287,12 +1276,16 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
           <button
             type="button"
             className={styles.iconButton}
-            disabled={loading}
-            onClick={() => void loadRequests()}
-            aria-label={t('common.refresh')}
-            title={t('common.refresh')}
+            disabled={loading || importing || rebuilding}
+            onClick={() => void handleRefreshWithSessionSync()}
+            aria-label={t('gateway.page.requests.refreshWithSync')}
+            title={t('gateway.page.requests.refreshWithSyncHint')}
           >
-            <RefreshCw size={14} className={loading ? styles.spin : undefined} aria-hidden="true" />
+            <RefreshCw
+              size={14}
+              className={loading || importing ? styles.spin : undefined}
+              aria-hidden="true"
+            />
           </button>
           <Dropdown
             trigger={['click']}
