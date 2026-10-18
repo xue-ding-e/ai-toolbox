@@ -1,4 +1,6 @@
 import type { GatewayUsageTrendPoint } from '@/services';
+import type { GatewayUsageMetric } from './gatewayTrends';
+import { gatewayTrendMetricValue } from './gatewayTrends';
 
 export const GATEWAY_HEATMAP_DAY_COUNT = 365;
 
@@ -6,6 +8,7 @@ export interface GatewayHeatmapDay {
   date: string;
   requests: number;
   tokens: number;
+  cost: number;
 }
 
 interface LocalDateKeyInput {
@@ -61,9 +64,21 @@ export const buildGatewayHeatmapDays = (
       date: key,
       requests: trend?.request_count ?? 0,
       tokens: trend?.total_tokens ?? 0,
+      cost: trend ? gatewayTrendMetricValue(trend, 'cost') : 0,
     });
   }
   return days;
+};
+
+/** Reads the day value the selected heatmap metric colors by. */
+export const gatewayHeatmapDayValue = (day: GatewayHeatmapDay, metric: GatewayUsageMetric) => {
+  if (metric === 'requests') {
+    return day.requests;
+  }
+  if (metric === 'cost') {
+    return day.cost;
+  }
+  return day.tokens;
 };
 
 /**
@@ -90,16 +105,33 @@ const heatStepFloor = (value: number) => {
 
 /**
  * Five closed-interval thresholds: `[0, step, 2step, 3step, Infinity]`.
- * The peak is the largest daily token total in the current window, so the
- * levels adapt to how much this app is actually used.
+ * The peak is the largest daily value of the selected metric in the current
+ * window, so the levels adapt to how much this app is actually used. Tokens and
+ * requests are integers (step floor 1); cost is fractional, so it passes a much
+ * smaller floor and small daily spend still splits into four visible bands.
  */
-export const gatewayHeatLevels = (peak: number): [number, number, number, number, number] => {
+const gatewayHeatLevels = (
+  peak: number,
+  minimumStep = 1,
+): [number, number, number, number, number] => {
+  const fallbackStep = minimumStep > 0 ? minimumStep : 1;
   if (!(peak > 0)) {
-    return [0, 1, 2, 3, Infinity];
+    return [0, fallbackStep, fallbackStep * 2, fallbackStep * 3, Infinity];
   }
-  const step = Math.max(1, heatStepFloor(peak / 4));
+  const step = Math.max(minimumStep, heatStepFloor(peak / 4));
   return [0, step, step * 2, step * 3, Infinity];
 };
+
+/**
+ * Tokens and requests are integers, so their step never drops below 1. Cost is
+ * fractional and must scale with the window's own peak (a $0.004 day still
+ * splits into four readable bands); an empty cost window falls back to one cent.
+ */
+export const gatewayHeatMetricLevels = (
+  peak: number,
+  metric: GatewayUsageMetric,
+): [number, number, number, number, number] =>
+  gatewayHeatLevels(peak, metric === 'cost' ? (peak > 0 ? 0 : 0.01) : 1);
 
 export const gatewayHeatLevelOf = (
   tokens: number,
@@ -128,6 +160,8 @@ export const HEATMAP_WEEKDAY_ROWS = [0, 2, 4] as const;
 export interface GatewayHeatmapLayout {
   width: number;
   height: number;
+  /** The one threshold set the cells and the legend both render from. */
+  thresholds: [number, number, number, number, number];
   months: Array<{ key: string; month: number; x: number }>;
   weekdays: Array<{ key: string; row: number; x: number; y: number }>;
   cells: Array<GatewayHeatmapDay & { level: number; x: number; y: number; size: number }>;
@@ -142,9 +176,17 @@ export interface GatewayHeatmapLayout {
 export const buildGatewayHeatmapLayout = (
   days: GatewayHeatmapDay[],
   boxWidth: number,
+  metric: GatewayUsageMetric = 'tokens',
 ): GatewayHeatmapLayout => {
   if (days.length === 0) {
-    return { width: Math.max(0, Math.round(boxWidth)), height: 0, months: [], weekdays: [], cells: [] };
+    return {
+      width: Math.max(0, Math.round(boxWidth)),
+      height: 0,
+      thresholds: gatewayHeatMetricLevels(0, metric),
+      months: [],
+      weekdays: [],
+      cells: [],
+    };
   }
 
   const leadingBlanks = (parseLocalDateKey(days[0].date).getDay() + 6) % 7;
@@ -166,7 +208,10 @@ export const buildGatewayHeatmapLayout = (
   const width = Math.max(gridWidth, Math.round(boxWidth));
   const height = topHeight + 7 * step - gap + 2;
 
-  const thresholds = gatewayHeatLevels(days.reduce((peak, day) => Math.max(peak, day.tokens), 0));
+  const thresholds = gatewayHeatMetricLevels(
+    days.reduce((peak, day) => Math.max(peak, gatewayHeatmapDayValue(day, metric)), 0),
+    metric,
+  );
   const cells: GatewayHeatmapLayout['cells'] = [];
   for (let column = 0; column < columnCount; column += 1) {
     for (let row = 0; row < 7; row += 1) {
@@ -176,7 +221,7 @@ export const buildGatewayHeatmapLayout = (
       }
       cells.push({
         ...day,
-        level: gatewayHeatLevelOf(day.tokens, thresholds),
+        level: gatewayHeatLevelOf(gatewayHeatmapDayValue(day, metric), thresholds),
         x: offsetX + weekdayLabelWidth + column * step,
         y: topHeight + row * step,
         size,
@@ -216,5 +261,5 @@ export const buildGatewayHeatmapLayout = (
     y: topHeight + row * step + size / 2,
   }));
 
-  return { width, height, months, weekdays, cells };
+  return { width, height, thresholds, months, weekdays, cells };
 };

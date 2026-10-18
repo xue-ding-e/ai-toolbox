@@ -78,6 +78,7 @@
       },
       "statistics": {
         "trends": "Usage trends",
+        "trendsWithRange": "Usage trends · {{range}}",
         "breakdown": "Breakdown",
         "providerStats": "Providers",
         "modelStats": "Models",
@@ -102,11 +103,7 @@
           "off": "Off"
         },
         "chart": {
-          "input": "Input",
-          "output": "Output",
-          "cache": "Cache",
-          "cost": "Cost",
-          "other": "Other usage"
+          "output": "Output"
         },
         "columns": {
           "provider": "Provider",
@@ -137,11 +134,11 @@
         "unpricedModelsMore": "and {{count}} more",
         "heatmap": {
           "title": "Activity heatmap",
-          "subtitle": "Last 365 days, colored by daily token usage (levels scale to this window's peak)",
-          "legendLabel": "Tokens",
+          "subtitle": "Last 365 days, colored by the selected metric (levels scale to this window's peak)",
           "footerNote": "Each cell is a local calendar day; days without requests are empty",
-          "cellTooltip": "{{date}} · {{tokens}} tokens · {{requests}} requests",
+          "cellTooltip": "{{date}} · {{tokens}} tokens · {{requests}} requests · {{cost}}",
           "cellEmptyTooltip": "{{date}} · No requests",
+          "cellEmpty": "No requests",
           "empty": "No heatmap data yet",
           "weekdays": {
             "0": "Mon",
@@ -158,7 +155,15 @@
         "projectStats": "Projects",
         "unknownProject": "Unknown project",
         "unknownProjectHint": "No working directory recorded",
-        "projectEmpty": "No session usage with a recorded project in this range"
+        "projectEmpty": "No session usage with a recorded project in this range",
+        "metrics": {
+          "label": "Metric",
+          "trendLabel": "Trend metric",
+          "tokens": "Tokens",
+          "cost": "Cost",
+          "requests": "Requests",
+          "tokenValue": "{{exact}} (≈ {{compact}})"
+        }
       },
       "pricing": {
         "open": "Pricing config",
@@ -216,6 +221,8 @@
         "detailEmpty": "Select a request to view details",
         "loadFailed": "Failed to load request details: {{error}}",
         "importSessions": "Sync session usage",
+        "importSessionsHint": "Incrementally reads each CLI's local sessions and imports only new or changed records",
+        "sessionUsageActions": "Session usage maintenance",
         "importDone": "Sync complete: {{inserted}} added, {{updated}} updated, {{skipped}} skipped; {{files}} scanned, {{failed}} failed",
         "importFailed": "Failed to import session usage: {{error}}",
         "notStored": "This detail was not stored. Enable the matching log item in gateway settings.",
@@ -352,6 +359,7 @@
         "durationTotalCell": "Total {{value}}",
         "tokensShort": "In {{input}} / out {{output}} / cache {{cache}}",
         "rebuildSessions": "Rebuild session usage",
+        "rebuildSessionsHint": "Backs up, clears and re-imports all session usage; sessions the CLI deleted will disappear",
         "rebuildConfirmTitle": "Rebuild session usage?",
         "rebuildConfirmContent": "Backs up the database first, then clears and re-imports session usage from the CLI transcripts. Sessions the CLI has since deleted will disappear; counts an older parser got wrong are corrected.",
         "rebuildConfirmOk": "Rebuild",

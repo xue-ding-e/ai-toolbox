@@ -1,5 +1,6 @@
 import React from 'react';
-import { Checkbox, DatePicker, Empty, Input, Modal, Pagination, Select, Table } from 'antd';
+import { Checkbox, DatePicker, Dropdown, Empty, Input, Modal, Pagination, Select, Table } from 'antd';
+import type { MenuProps } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { save } from '@tauri-apps/plugin-dialog';
 import {
@@ -11,6 +12,7 @@ import {
   Copy,
   Database,
   Download,
+  Ellipsis,
   FileText,
   Loader2,
   Network,
@@ -525,6 +527,51 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
         }
       },
     });
+  };
+
+  /**
+   * Maintenance actions are rare and need their consequences spelled out, so
+   * they live behind one overflow menu instead of two labelled toolbar buttons.
+   * Each item carries the one-line description the menu shows under the title.
+   */
+  const sessionUsageMenuItems = React.useMemo<MenuProps['items']>(
+    () => [
+      {
+        key: 'sync',
+        icon: <Database size={14} aria-hidden="true" />,
+        label: (
+          <span className={styles.menuItemText}>
+            <span>{t('gateway.page.requests.importSessions')}</span>
+            <small>{t('gateway.page.requests.importSessionsHint')}</small>
+          </span>
+        ),
+      },
+      {
+        key: 'rebuild',
+        icon: <RefreshCw size={14} aria-hidden="true" />,
+        label: (
+          <span className={styles.menuItemText}>
+            <span>{t('gateway.page.requests.rebuildSessions')}</span>
+            <small>{t('gateway.page.requests.rebuildSessionsHint')}</small>
+          </span>
+        ),
+        danger: true,
+      },
+    ],
+    [t],
+  );
+
+  const handleSessionUsageMenuClick: MenuProps['onClick'] = ({ key }) => {
+    if (importing || rebuilding) {
+      return;
+    }
+    if (key === 'sync') {
+      void handleImportSessionUsage();
+      return;
+    }
+    if (key === 'rebuild') {
+      void handleRebuildSessionUsage();
+    }
   };
 
   const handleExportDetail = async () => {
@@ -1123,24 +1170,6 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
           </button>
           <button
             type="button"
-            className={styles.importButton}
-            disabled={importing}
-            onClick={() => void handleImportSessionUsage()}
-          >
-            {importing ? <Loader2 size={13} className={styles.spin} aria-hidden="true" /> : <Database size={13} aria-hidden="true" />}
-            <span>{t('gateway.page.requests.importSessions')}</span>
-          </button>
-          <button
-            type="button"
-            className={styles.importButton}
-            disabled={rebuilding || importing}
-            onClick={() => void handleRebuildSessionUsage()}
-          >
-            {rebuilding ? <Loader2 size={13} className={styles.spin} aria-hidden="true" /> : <RefreshCw size={13} aria-hidden="true" />}
-            <span>{t('gateway.page.requests.rebuildSessions')}</span>
-          </button>
-          <button
-            type="button"
             className={styles.iconButton}
             disabled={loading}
             onClick={() => void loadRequests()}
@@ -1149,6 +1178,29 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
           >
             <RefreshCw size={14} className={loading ? styles.spin : undefined} aria-hidden="true" />
           </button>
+          <Dropdown
+            trigger={['click']}
+            placement="bottomRight"
+            disabled={importing || rebuilding}
+            menu={{
+              items: sessionUsageMenuItems,
+              onClick: handleSessionUsageMenuClick,
+            }}
+          >
+            <button
+              type="button"
+              className={styles.iconButton}
+              disabled={importing || rebuilding}
+              aria-label={t('gateway.page.requests.sessionUsageActions')}
+              title={t('gateway.page.requests.sessionUsageActions')}
+            >
+              {importing || rebuilding ? (
+                <Loader2 size={14} className={styles.spin} aria-hidden="true" />
+              ) : (
+                <Ellipsis size={14} aria-hidden="true" />
+              )}
+            </button>
+          </Dropdown>
         </div>
       </div>
 

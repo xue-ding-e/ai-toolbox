@@ -1,38 +1,47 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import type { GatewayUsageTrendPoint } from '@/services';
+import { ManagementSegmented } from '../../shared/management';
 import {
   buildGatewayHeatmapDays,
   buildGatewayHeatmapLayout,
-  gatewayHeatLevels,
   gatewayHeatLevelText,
   type GatewayHeatmapLayout,
 } from '../utils/gatewayHeatmap';
+import {
+  formatGatewayCost,
+  gatewayMetricLabel,
+  GATEWAY_USAGE_METRICS,
+  type GatewayUsageMetric,
+} from '../utils/gatewayTrends';
 import { formatCompactInteger, formatInteger } from '../utils/gatewayFormatters';
 import styles from './GatewayActivityHeatmap.module.less';
 
 interface GatewayActivityHeatmapProps {
   trends: GatewayUsageTrendPoint[];
   loading: boolean;
+  metric: GatewayUsageMetric;
+  onMetricChange: (metric: GatewayUsageMetric) => void;
 }
 
 const HEATMAP_LEVELS = [0, 1, 2, 3, 4] as const;
 const heatLevelClass = (level: number) => styles[`level${level}` as keyof typeof styles];
 const heatSwatchClass = (level: number) => styles[`swatch${level}` as keyof typeof styles];
 
-const GatewayActivityHeatmap: React.FC<GatewayActivityHeatmapProps> = ({ trends, loading }) => {
+const GatewayActivityHeatmap: React.FC<GatewayActivityHeatmapProps> = ({
+  trends,
+  loading,
+  metric,
+  onMetricChange,
+}) => {
   const { t, i18n } = useTranslation();
   const containerRef = React.useRef<HTMLDivElement | null>(null);
   const [containerWidth, setContainerWidth] = React.useState(0);
 
   const days = React.useMemo(() => buildGatewayHeatmapDays(trends), [trends]);
-  const thresholds = React.useMemo(
-    () => gatewayHeatLevels(days.reduce((peak, day) => Math.max(peak, day.tokens), 0)),
-    [days],
-  );
   const layout: GatewayHeatmapLayout = React.useMemo(
-    () => buildGatewayHeatmapLayout(days, containerWidth),
-    [containerWidth, days],
+    () => buildGatewayHeatmapLayout(days, containerWidth, metric),
+    [containerWidth, days, metric],
   );
 
   React.useEffect(() => {
@@ -55,10 +64,48 @@ const GatewayActivityHeatmap: React.FC<GatewayActivityHeatmapProps> = ({ trends,
   }, []);
 
   const formatTokens = (value: number) => formatCompactInteger(value, i18n.language) ?? '-';
+  // One cost format for both the legend bounds and the cell tooltip.
+  const formatCost = (value: number) => formatGatewayCost(value);
+  const formatLegendValue = (value: number) => {
+    if (metric === 'requests') {
+      return formatInteger(value);
+    }
+    if (metric === 'cost') {
+      return formatCost(value);
+    }
+    return formatTokens(value);
+  };
   const dayLabel = (date: string) =>
     new Date(`${date}T00:00:00`).toLocaleDateString(i18n.language);
   const monthLabel = (month: number) =>
     new Date(2000, month, 1).toLocaleDateString(i18n.language, { month: 'short' });
+
+  /**
+   * Hover card for one day. A native SVG `<title>` renders as one run-on line
+   * with a weak `·` between the figures; the card gives each metric its own
+   * labelled row, matching the trend chart's tooltip. It is `position: fixed`
+   * from the pointer coordinates so the horizontally scrolling body cannot clip
+   * it, and it flips left near the window edge.
+   */
+  const [hoveredCell, setHoveredCell] = React.useState<{
+    cell: GatewayHeatmapLayout['cells'][number];
+    left: number;
+    top: number;
+  } | null>(null);
+  const TOOLTIP_WIDTH = 200;
+  const TOOLTIP_HEIGHT = 96;
+  const showCellTooltip = (cell: GatewayHeatmapLayout['cells'][number], clientX: number, clientY: number) => {
+    const offset = 14;
+    // Flip toward the pointer's side of the viewport so the card never runs
+    // off the screen (the calendar reaches both edges of the panel).
+    const left = clientX + offset + TOOLTIP_WIDTH > window.innerWidth
+      ? clientX - offset - TOOLTIP_WIDTH
+      : clientX + offset;
+    const top = clientY + offset + TOOLTIP_HEIGHT > window.innerHeight
+      ? clientY - offset - TOOLTIP_HEIGHT
+      : clientY + offset;
+    setHoveredCell({ cell, left, top });
+  };
 
   // The calendar is always dense (365 days), so a window without usage simply
   // renders every cell at level 0. Only the first load shows a placeholder;
@@ -69,8 +116,19 @@ const GatewayActivityHeatmap: React.FC<GatewayActivityHeatmapProps> = ({ trends,
   return (
     <section className={styles.heatmapPanel}>
       <div className={styles.panelHeader}>
-        <span>{t('gateway.page.statistics.heatmap.title')}</span>
-        <span className={styles.panelSubtitle}>{t('gateway.page.statistics.heatmap.subtitle')}</span>
+        <div className={styles.panelTitle}>
+          <span>{t('gateway.page.statistics.heatmap.title')}</span>
+          <span className={styles.panelSubtitle}>{t('gateway.page.statistics.heatmap.subtitle')}</span>
+        </div>
+        <ManagementSegmented<GatewayUsageMetric>
+          value={metric}
+          options={GATEWAY_USAGE_METRICS.map((value) => ({
+            value,
+            label: gatewayMetricLabel(t, value),
+          }))}
+          onChange={onMetricChange}
+          ariaLabel={t('gateway.page.statistics.metrics.label')}
+        />
       </div>
 
       <div className={styles.heatmapBody} ref={containerRef}>
@@ -110,20 +168,44 @@ const GatewayActivityHeatmap: React.FC<GatewayActivityHeatmapProps> = ({ trends,
                   width={cell.size}
                   height={cell.size}
                   rx={2}
-                  tabIndex={-1}
-                >
-                  <title>
-                    {cell.requests > 0
+                  onMouseEnter={(event) => showCellTooltip(cell, event.clientX, event.clientY)}
+                  onMouseLeave={() => setHoveredCell(null)}
+                  aria-label={
+                    cell.requests > 0
                       ? t('gateway.page.statistics.heatmap.cellTooltip', {
                           date: dayLabel(cell.date),
-                          tokens: formatInteger(cell.tokens),
+                          tokens: formatTokens(cell.tokens),
                           requests: formatInteger(cell.requests),
+                          cost: formatCost(cell.cost),
                         })
-                      : t('gateway.page.statistics.heatmap.cellEmptyTooltip', { date: dayLabel(cell.date) })}
-                  </title>
-                </rect>
+                      : t('gateway.page.statistics.heatmap.cellEmptyTooltip', { date: dayLabel(cell.date) })
+                  }
+                />
               ))}
             </svg>
+            {hoveredCell ? (
+              <div
+                className={styles.cellTooltip}
+                style={{ left: hoveredCell.left, top: hoveredCell.top }}
+                role="tooltip"
+              >
+                <p className={styles.cellTooltipHeading}>{dayLabel(hoveredCell.cell.date)}</p>
+                {hoveredCell.cell.requests > 0 ? (
+                  <dl className={styles.cellTooltipRows}>
+                    <dt>{t('gateway.page.statistics.metrics.tokens')}</dt>
+                    <dd>{formatTokens(hoveredCell.cell.tokens)}</dd>
+                    <dt>{t('gateway.page.statistics.metrics.requests')}</dt>
+                    <dd>{formatInteger(hoveredCell.cell.requests)}</dd>
+                    <dt>{t('gateway.page.statistics.metrics.cost')}</dt>
+                    <dd>{formatCost(hoveredCell.cell.cost)}</dd>
+                  </dl>
+                ) : (
+                  <span className={styles.cellTooltipEmpty}>
+                    {t('gateway.page.statistics.heatmap.cellEmpty')}
+                  </span>
+                )}
+              </div>
+            ) : null}
           </div>
         ) : (
           <div className={styles.heatmapPlaceholder}>
@@ -133,12 +215,12 @@ const GatewayActivityHeatmap: React.FC<GatewayActivityHeatmapProps> = ({ trends,
       </div>
 
       <div className={styles.heatmapFooter}>
-        <span className={styles.legendLabel}>{t('gateway.page.statistics.heatmap.legendLabel')}</span>
+        <span className={styles.legendLabel}>{gatewayMetricLabel(t, metric)}</span>
         <div className={styles.legendItems}>
           {HEATMAP_LEVELS.map((level) => (
             <span className={styles.legendItem} key={level}>
               <span className={`${styles.legendSwatch} ${heatSwatchClass(level)}`} />
-              {gatewayHeatLevelText(level, thresholds, formatTokens)}
+              {gatewayHeatLevelText(level, layout.thresholds, formatLegendValue)}
             </span>
           ))}
         </div>

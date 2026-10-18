@@ -14,12 +14,21 @@
   min-width: 0;
   min-height: 56px;
   align-items: center;
+  justify-content: space-between;
   gap: 10px;
   padding: 8px 20px;
   border-bottom: 1px solid var(--color-border);
   color: var(--color-text-primary);
   font-size: 14px;
   font-weight: 650;
+}
+
+/* Title and subtitle stay one text group; the metric switch is pushed right. */
+.panelTitle {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
 }
 
 .panelSubtitle {
@@ -45,6 +54,52 @@
 
 .heatmapChart {
   display: block;
+}
+
+/* Hover card for one day. Fixed from the pointer so the horizontal scroller
+   cannot clip it; it sits above the sticky panels like antd's own tooltips. */
+.cellTooltip {
+  position: fixed;
+  z-index: 1200;
+  width: 200px;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg-elevated);
+  box-shadow: var(--shadow-card-sm);
+  color: var(--color-text-primary);
+  font-size: 12px;
+  line-height: 1.5;
+  pointer-events: none;
+}
+
+.cellTooltipHeading {
+  margin: 0 0 4px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* Two columns: metric label left, value right-aligned for easy comparison. */
+.cellTooltipRows {
+  display: grid;
+  margin: 0;
+  grid-template-columns: auto 1fr;
+  column-gap: 14px;
+  row-gap: 2px;
+
+  dt {
+    color: var(--color-text-secondary);
+  }
+
+  dd {
+    margin: 0;
+    text-align: end;
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+.cellTooltipEmpty {
+  color: var(--color-text-secondary);
 }
 
 .heatmapPlaceholder {
@@ -195,8 +250,14 @@
   .panelHeader {
     align-items: flex-start;
     flex-direction: column;
-    gap: 2px;
+    gap: 8px;
     padding: 10px 14px;
+  }
+
+  .panelTitle {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 2px;
   }
 
   .heatmapBody {

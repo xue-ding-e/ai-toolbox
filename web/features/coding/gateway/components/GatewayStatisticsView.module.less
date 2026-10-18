@@ -257,10 +257,6 @@
   }
 }
 
-.chartPanel {
-  min-height: 410px;
-}
-
 .panelHeader {
   display: flex;
   min-height: 56px;
@@ -289,27 +285,18 @@
 }
 
 .chartBody {
-  height: 352px;
+  /* Taller than cc-switch's compact 132px card because this panel spans the
+     full statistics width; still well below the old dual-axis 352px chart. */
+  height: 220px;
   min-width: 0;
-  padding: 16px 20px 10px;
-
-  :global(.recharts-legend-item) {
-    cursor: pointer;
-  }
+  padding: 12px 20px 10px;
 }
 
-.legendLabel {
-  color: var(--color-text-secondary);
-  font-size: 12px;
-  transition:
-    color 0.16s ease,
-    text-decoration-color 0.16s ease;
-}
-
-.legendLabelHidden {
-  color: var(--color-text-tertiary);
-  text-decoration: line-through;
-  text-decoration-color: var(--color-text-tertiary);
+/* Tooltip value: keep it in the normal text colour instead of inheriting the
+   series colour, which made the number hard to read on the elevated surface. */
+.tooltipValue {
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
 }
 
 .tableMainCell {
@@ -391,7 +378,7 @@
   }
 
   .chartBody {
-    height: 300px;
+    height: 200px;
     padding: 12px 10px 8px;
   }
 

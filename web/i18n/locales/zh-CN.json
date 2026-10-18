@@ -78,6 +78,7 @@
       },
       "statistics": {
         "trends": "使用趋势",
+        "trendsWithRange": "使用趋势 · {{range}}",
         "breakdown": "维度统计",
         "providerStats": "供应商",
         "modelStats": "模型",
@@ -102,11 +103,7 @@
           "off": "关闭"
         },
         "chart": {
-          "input": "输入",
-          "output": "输出",
-          "cache": "缓存",
-          "cost": "成本",
-          "other": "其他用量"
+          "output": "输出"
         },
         "columns": {
           "provider": "供应商",
@@ -137,11 +134,11 @@
         "unpricedModelsMore": "等另 {{count}} 个",
         "heatmap": {
           "title": "活跃热力图",
-          "subtitle": "近 365 天，按天 Token 用量着色（档位按本窗口峰值自动定）",
-          "legendLabel": "Token",
+          "subtitle": "近 365 天，按选中指标着色（档位按本窗口峰值自动定）",
           "footerNote": "方格为本地自然日，无请求显示为空槽",
-          "cellTooltip": "{{date}} · {{tokens}} Token · {{requests}} 次请求",
+          "cellTooltip": "{{date}} · {{tokens}} Token · {{requests}} 次请求 · {{cost}}",
           "cellEmptyTooltip": "{{date}} · 无请求",
+          "cellEmpty": "无请求",
           "empty": "暂无热力图数据",
           "weekdays": {
             "0": "一",
@@ -158,7 +155,15 @@
         "projectStats": "项目统计",
         "unknownProject": "未知项目",
         "unknownProjectHint": "未记录工作目录",
-        "projectEmpty": "所选范围内没有记录项目路径的会话用量"
+        "projectEmpty": "所选范围内没有记录项目路径的会话用量",
+        "metrics": {
+          "label": "指标",
+          "trendLabel": "趋势指标",
+          "tokens": "Token",
+          "cost": "费用",
+          "requests": "请求",
+          "tokenValue": "{{exact}}（≈ {{compact}}）"
+        }
       },
       "pricing": {
         "open": "定价配置",
@@ -216,6 +221,8 @@
         "detailEmpty": "选择请求后查看明细",
         "loadFailed": "加载请求明细失败：{{error}}",
         "importSessions": "同步会话用量",
+        "importSessionsHint": "增量读取各 CLI 的本地会话，只导入新增或变化的记录",
+        "sessionUsageActions": "会话用量维护",
         "importDone": "同步完成：新增 {{inserted}}，更新 {{updated}}，跳过 {{skipped}}；扫描 {{files}} 项，失败 {{failed}} 项",
         "importFailed": "导入 Session 用量失败：{{error}}",
         "notStored": "未保存该明细。可在网关设置中开启对应记录项。",
@@ -352,6 +359,7 @@
         "durationTotalCell": "总耗时 {{value}}",
         "tokensShort": "输入 {{input}} / 输出 {{output}} / 缓存 {{cache}}",
         "rebuildSessions": "重建 Session 用量",
+        "rebuildSessionsHint": "备份后清空并重新导入全部 Session 用量；CLI 已删除的会话会消失",
         "rebuildConfirmTitle": "重建 Session 用量？",
         "rebuildConfirmContent": "将先备份数据库，再清空并从各 CLI 的会话记录重新导入 Session 用量。CLI 已删除的会话将不再出现；解析器升级导致的旧计数错误也会被修正。",
         "rebuildConfirmOk": "重建",

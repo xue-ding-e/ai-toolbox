@@ -4,7 +4,6 @@ import dayjs from 'dayjs';
 import type { ColumnsType } from 'antd/es/table';
 import {
   AlertCircle,
-  BarChart3,
   CalendarDays,
   Clock,
   DollarSign,
@@ -15,17 +14,6 @@ import {
   Terminal,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import {
-  Area,
-  AreaChart,
-  CartesianGrid,
-  Label,
-  Legend,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from 'recharts';
 import { ManagementSegmented } from '../../shared/management';
 import {
   getGatewayUsageRange,
@@ -62,11 +50,14 @@ import {
   unpricedModelIds,
   type GatewayUsageRangePreset,
   type GatewayUsageRangeSelection,
+  type ResolvedGatewayUsageRange,
 } from '../utils/gatewayFormatters';
 import ModelPricingModal from './ModelPricingModal';
 import GatewayUsageOverview from './GatewayUsageOverview';
 import GatewayActivityHeatmap from './GatewayActivityHeatmap';
+import GatewayUsageTrendChart from './GatewayUsageTrendChart';
 import { resolveGatewayHeatmapRange } from '../utils/gatewayHeatmap';
+import type { GatewayUsageMetric } from '../utils/gatewayTrends';
 import styles from './GatewayStatisticsView.module.less';
 
 const { RangePicker } = DatePicker;
@@ -94,7 +85,6 @@ const restoreRangeSelection = (stored: GatewayUsageRangeValue): GatewayUsageRang
 
 type GatewayCliFilter = 'all' | GatewayUsageTool;
 type StatsTabKey = 'providers' | 'models' | 'projects';
-type TrendSeriesKey = 'input' | 'output' | 'cache' | 'other' | 'cost';
 
 interface GatewayStatisticsViewProps {
   refreshKey?: number;
@@ -104,6 +94,10 @@ interface GatewayStatisticsViewProps {
 interface StatisticsState {
   summary: GatewayUsageSummary | null;
   trends: GatewayUsageTrendPoint[];
+  // The range the displayed trends were queried with. The chart pads empty
+  // buckets up to these bounds, so it must be the range that produced the
+  // data, not one re-resolved from the preset at render time.
+  trendRange: ResolvedGatewayUsageRange | null;
   providerStats: GatewayProviderStats[];
   modelStats: GatewayModelStats[];
   projectStats: GatewayProjectStats[];
@@ -112,6 +106,7 @@ interface StatisticsState {
 const emptyState: StatisticsState = {
   summary: null,
   trends: [],
+  trendRange: null,
   providerStats: [],
   modelStats: [],
   projectStats: [],
@@ -120,10 +115,6 @@ const emptyState: StatisticsState = {
 const cliOptions: GatewayCliFilter[] = ['all', ...GATEWAY_USAGE_TOOLS];
 /** Model ids are named inline in a 10px hint line; past a few the count suffices. */
 const UNPRICED_MODEL_NAME_LIMIT = 3;
-const trendSeriesKeys: readonly TrendSeriesKey[] = ['input', 'output', 'cache', 'other', 'cost'];
-const trendCurveType = 'monotoneX' as const;
-const dateOnlyBucketPattern = /^(\d{4})-(\d{2})-(\d{2})$/;
-const dateTimeBucketPattern = /^(\d{4})-(\d{2})-(\d{2})[T\s](\d{2}):(\d{2})/;
 
 const toCliKey = (value: GatewayCliFilter): GatewayUsageTool | undefined =>
   value === 'all' ? undefined : value;
@@ -137,46 +128,6 @@ const statusColor = (rate: number) => {
   }
   return 'var(--color-status-error)';
 };
-
-const padTwoDigits = (value: number) => String(value).padStart(2, '0');
-
-const formatTrendDateLabel = (value: string) => {
-  const dateTimeMatch = value.match(dateTimeBucketPattern);
-  if (dateTimeMatch) {
-    const [, , month, day, hour, minute] = dateTimeMatch;
-    return `${month}/${day} ${hour}:${minute}`;
-  }
-
-  const dateOnlyMatch = value.match(dateOnlyBucketPattern);
-  if (dateOnlyMatch) {
-    const [, , month, day] = dateOnlyMatch;
-    return `${month}/${day}`;
-  }
-
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-
-  const monthDay = `${padTwoDigits(date.getMonth() + 1)}/${padTwoDigits(date.getDate())}`;
-  const hasTime = value.includes('T') || /\d{1,2}:\d{2}/.test(value);
-  if (!hasTime) {
-    return monthDay;
-  }
-  return `${monthDay} ${padTwoDigits(date.getHours())}:${padTwoDigits(date.getMinutes())}`;
-};
-
-const chartData = (trends: GatewayUsageTrendPoint[]) =>
-  trends.map((item) => {
-    return {
-      label: formatTrendDateLabel(item.date),
-      input: item.input_tokens,
-      output: item.output_tokens,
-      other: Math.max(0, item.total_tokens - item.input_tokens - item.output_tokens - item.cache_read_tokens - item.cache_creation_tokens),
-      cache: item.cache_read_tokens + item.cache_creation_tokens,
-      cost: Number.parseFloat(item.total_cost_usd) || 0,
-    };
-  });
 
 const providerDisplayName = (
   t: ReturnType<typeof useTranslation>['t'],
@@ -207,17 +158,6 @@ const providerDisplayMeta = (
   return `${cliLabel} · ${providerId}`;
 };
 
-const isTrendSeriesKey = (value: unknown): value is TrendSeriesKey =>
-  typeof value === 'string' && trendSeriesKeys.includes(value as TrendSeriesKey);
-
-const trendLegendDataKey = (payload: unknown): TrendSeriesKey | null => {
-  if (!payload || typeof payload !== 'object') {
-    return null;
-  }
-  const dataKey = (payload as { dataKey?: unknown }).dataKey;
-  return isTrendSeriesKey(dataKey) ? dataKey : null;
-};
-
 const GatewayStatisticsView: React.FC<GatewayStatisticsViewProps> = ({ refreshKey = 0, gatewayStatus }) => {
   const { t } = useTranslation();
   const [cliFilter, setCliFilter] = React.useState<GatewayCliFilter>('all');
@@ -230,7 +170,10 @@ const GatewayStatisticsView: React.FC<GatewayStatisticsViewProps> = ({ refreshKe
   const [activeStatsTab, setActiveStatsTab] = React.useState<StatsTabKey>('providers');
   const [refreshIntervalMs, setRefreshIntervalMs] = React.useState(30_000);
   const [showPricingModal, setShowPricingModal] = React.useState(false);
-  const [hiddenSeries, setHiddenSeries] = React.useState<Set<TrendSeriesKey>>(() => new Set());
+  // The trend and the heatmap use different time windows, so each panel keeps
+  // its own metric instead of sharing one selection.
+  const [trendMetric, setTrendMetric] = React.useState<GatewayUsageMetric>('tokens');
+  const [heatmapMetric, setHeatmapMetric] = React.useState<GatewayUsageMetric>('tokens');
   const [state, setState] = React.useState<StatisticsState>(emptyState);
   const [heatmapTrends, setHeatmapTrends] = React.useState<GatewayUsageTrendPoint[]>([]);
   const [loading, setLoading] = React.useState(false);
@@ -278,7 +221,14 @@ const GatewayStatisticsView: React.FC<GatewayStatisticsViewProps> = ({ refreshKe
         ),
       ]);
       if (requestId === statisticsRequestIdRef.current) {
-        setState({ summary, trends, providerStats, modelStats, projectStats });
+        setState({
+          summary,
+          trends,
+          trendRange: resolvedRange,
+          providerStats,
+          modelStats,
+          projectStats,
+        });
       }
     } catch (loadError) {
       if (requestId === statisticsRequestIdRef.current) {
@@ -390,35 +340,6 @@ const GatewayStatisticsView: React.FC<GatewayStatisticsViewProps> = ({ refreshKe
   }, [loadStatistics, loadHeatmap, refreshIntervalMs]);
 
   const requestRate = getGatewayRequestsPerMinute(gatewayStatus, effectiveCliKey);
-  const chartRows = chartData(state.trends);
-
-  const handleTrendLegendClick = React.useCallback((payload: unknown) => {
-    const dataKey = trendLegendDataKey(payload);
-    if (!dataKey) {
-      return;
-    }
-    setHiddenSeries((current) => {
-      const next = new Set(current);
-      if (next.has(dataKey)) {
-        next.delete(dataKey);
-      } else {
-        next.add(dataKey);
-      }
-      return next;
-    });
-  }, []);
-
-  const renderTrendLegendLabel = React.useCallback(
-    (value: unknown, payload: unknown) => {
-      const dataKey = trendLegendDataKey(payload);
-      const hidden = dataKey ? hiddenSeries.has(dataKey) : false;
-      const className = hidden
-        ? `${styles.legendLabel} ${styles.legendLabelHidden}`
-        : styles.legendLabel;
-      return <span className={className}>{String(value)}</span>;
-    },
-    [hiddenSeries],
-  );
 
   const providerColumns: ColumnsType<GatewayProviderStats> = [
     {
@@ -737,133 +658,19 @@ const GatewayStatisticsView: React.FC<GatewayStatisticsViewProps> = ({ refreshKe
         ) : null}
       </div>
 
-      <section className={styles.chartPanel}>
-        <div className={styles.panelHeader}>
-          <span>
-            <BarChart3 className={styles.panelIcon} size={14} aria-hidden="true" />
-            {t('gateway.page.statistics.trends')}
-          </span>
-        </div>
-        <div className={styles.chartBody}>
-          {chartRows.length ? (
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={chartRows} margin={{ top: 12, right: 24, left: 8, bottom: 4 }}>
-                <CartesianGrid stroke="var(--color-border)" strokeDasharray="4 4" vertical={false} />
-                <XAxis
-                  dataKey="label"
-                  axisLine={{ stroke: 'var(--color-border)' }}
-                  tickLine={false}
-                  tick={{ fill: 'var(--color-text-tertiary)', fontSize: 11 }}
-                />
-                <YAxis
-                  yAxisId="tokens"
-                  axisLine={{ stroke: 'var(--color-border)' }}
-                  tickLine={false}
-                  tick={{ fill: 'var(--color-text-tertiary)', fontSize: 11 }}
-                  tickFormatter={(value) => formatCompactInteger(Number(value))}
-                >
-                  <Label
-                    value={t('gateway.page.statistics.columns.tokens')}
-                    angle={-90}
-                    position="insideLeft"
-                    fill="var(--color-text-tertiary)"
-                    style={{ fontSize: 10 }}
-                  />
-                </YAxis>
-                <YAxis
-                  yAxisId="cost"
-                  orientation="right"
-                  axisLine={{ stroke: 'var(--color-border)' }}
-                  tickLine={false}
-                  tick={{ fill: 'var(--color-text-tertiary)', fontSize: 11 }}
-                  tickFormatter={(value) => `$${value}`}
-                >
-                  <Label
-                    value={t('gateway.page.statistics.columns.cost')}
-                    angle={90}
-                    position="insideRight"
-                    fill="var(--color-text-tertiary)"
-                    style={{ fontSize: 10 }}
-                  />
-                </YAxis>
-                <Tooltip
-                  contentStyle={{
-                    background: 'var(--color-bg-elevated)',
-                    border: '1px solid var(--color-border)',
-                    color: 'var(--color-text-primary)',
-                  }}
-                  cursor={{ stroke: 'var(--color-border-secondary)', strokeDasharray: '4 4' }}
-                />
-                <Legend
-                  formatter={renderTrendLegendLabel}
-                  onClick={handleTrendLegendClick}
-                  iconType="plainline"
-                  wrapperStyle={{ paddingTop: 8 }}
-                />
-                <Area
-                  yAxisId="tokens"
-                  type={trendCurveType}
-                  dataKey="input"
-                  name={t('gateway.page.statistics.chart.input')}
-                  hide={hiddenSeries.has('input')}
-                  stroke="var(--color-border-secondary)"
-                  fill="var(--color-border-secondary)"
-                  fillOpacity={0.16}
-                  strokeWidth={2}
-                />
-                <Area
-                  yAxisId="tokens"
-                  type={trendCurveType}
-                  dataKey="output"
-                  name={t('gateway.page.statistics.chart.output')}
-                  hide={hiddenSeries.has('output')}
-                  stroke="var(--color-status-success)"
-                  fill="var(--color-status-success)"
-                  fillOpacity={0.12}
-                  strokeWidth={2}
-                />
-                <Area
-                  yAxisId="tokens"
-                  type={trendCurveType}
-                  dataKey="cache"
-                  name={t('gateway.page.statistics.chart.cache')}
-                  hide={hiddenSeries.has('cache')}
-                  stroke="var(--color-status-warning)"
-                  fill="var(--color-status-warning)"
-                  fillOpacity={0.1}
-                  strokeWidth={2}
-                />
-                {chartRows.some((row) => row.other > 0) && (
-                  <Area
-                    yAxisId="tokens"
-                    type={trendCurveType}
-                    dataKey="other"
-                    name={t('gateway.page.statistics.chart.other')}
-                    hide={hiddenSeries.has('other')}
-                    stroke="var(--ant-color-primary)"
-                    fill="var(--ant-color-primary)"
-                    fillOpacity={0.1}
-                    strokeWidth={2}
-                  />
-                )}
-                <Area
-                  yAxisId="cost"
-                  type={trendCurveType}
-                  dataKey="cost"
-                  name={t('gateway.page.statistics.chart.cost')}
-                  hide={hiddenSeries.has('cost')}
-                  stroke="var(--color-status-error)"
-                  fill="var(--color-status-error)"
-                  fillOpacity={0.08}
-                  strokeWidth={2}
-                />
-              </AreaChart>
-            </ResponsiveContainer>
-          ) : (
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={loading ? t('common.loading') : t('gateway.page.statistics.empty')} />
-          )}
-        </div>
-      </section>
+      <GatewayUsageTrendChart
+        trends={state.trends}
+        startDate={state.trendRange?.startDate ?? 0}
+        endDate={state.trendRange?.endDate ?? 0}
+        loading={loading}
+        metric={trendMetric}
+        onMetricChange={setTrendMetric}
+        rangeLabel={
+          range.preset === 'custom'
+            ? t('gateway.page.statistics.range.custom')
+            : t(`gateway.page.statistics.range.${range.preset}`)
+        }
+      />
 
       <section className={styles.dataPanel}>
         <div className={styles.panelHeader}>
@@ -973,7 +780,12 @@ const GatewayStatisticsView: React.FC<GatewayStatisticsViewProps> = ({ refreshKe
         )}
       </section>
 
-      <GatewayActivityHeatmap trends={heatmapTrends} loading={loading} />
+      <GatewayActivityHeatmap
+        trends={heatmapTrends}
+        loading={loading}
+        metric={heatmapMetric}
+        onMetricChange={setHeatmapMetric}
+      />
 
       <ModelPricingModal
         open={showPricingModal}

@@ -120,28 +120,22 @@
   gap: 4px;
 }
 
-.importButton {
-  display: inline-flex;
-  min-height: 28px;
-  align-items: center;
-  gap: 5px;
-  padding: 0 8px;
-  border: 1px solid var(--color-border);
-  border-radius: 6px;
-  background: var(--color-bg-elevated);
-  color: var(--color-text-primary);
-  cursor: pointer;
-  font: inherit;
-  font-size: 12px;
-  font-weight: 560;
+.menuItemText {
+  display: flex;
+  min-width: 200px;
+  max-width: 280px;
+  flex-direction: column;
+  gap: 2px;
 
-  &:hover:not(:disabled) {
-    background: var(--color-bg-hover);
+  span {
+    font-weight: 560;
   }
 
-  &:disabled {
-    cursor: not-allowed;
-    opacity: 0.48;
+  small {
+    color: var(--color-text-secondary);
+    font-size: 11px;
+    line-height: 1.35;
+    white-space: normal;
   }
 }
 
