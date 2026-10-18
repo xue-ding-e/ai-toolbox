@@ -1508,6 +1508,26 @@ pub async fn proxy_gateway_rebuild_session_usage(
     Ok(result)
 }
 
+/// Starts the rebuild in the background and returns at once.
+///
+/// The awaited command above stays for callers that want the final figures;
+/// the UI uses this pair so a rebuild that legitimately takes minutes is not
+/// shown as an unresponsive spinner.
+#[tauri::command]
+pub fn proxy_gateway_start_session_usage_rebuild(
+    db_state: tauri::State<'_, SqliteDbState>,
+    input: GatewaySessionUsageImportInput,
+) -> Result<(), String> {
+    session_import::start_rebuild(db_state.db().clone(), input)
+}
+
+/// The rebuild phase and counters to poll while the background task runs.
+#[tauri::command]
+pub fn proxy_gateway_session_usage_rebuild_progress(
+) -> Option<session_import::SessionRebuildProgress> {
+    session_import::rebuild_progress_snapshot()
+}
+
 /// Reads the local-session-usage display toggle from gateway settings.
 fn session_usage_enabled(db_state: &SqliteDbState) -> Result<bool, String> {
     Ok(settings::load_settings_from_sqlite_state(db_state)?.session_usage_enabled)

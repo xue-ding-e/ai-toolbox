@@ -1373,6 +1373,70 @@ fn upgraded_ledger_restores_a_native_row_with_a_conflicting_proxy_identity() {
     );
 }
 
+/// The exotic-id lookup must find both spellings a proxy row can carry:
+/// Claude writes a bare `SESSION:<envelope>`, every other CLI scopes it with
+/// app and provider. Splitting the old `OR` of concatenated expressions into
+/// two indexed lookups is what makes a rebuild finish in seconds, so this
+/// guards the semantics the split has to preserve.
+#[test]
+fn exact_envelope_match_finds_bare_and_scoped_proxy_ids() {
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    db.with_conn(|conn| {
+        for (id, app_type, provider_id) in [
+            ("SESSION:claude-envelope", "claude", "provider"),
+            ("SESSION:codex:provider:codex-envelope", "codex", "provider"),
+        ] {
+            conn.execute(
+                "INSERT INTO proxy_request_logs (request_id, provider_id, app_type, model,
+                    input_tokens, output_tokens, created_at, status_code, request_kind, data_source)
+                 VALUES (?1, ?2, ?3, 'usage-test-model', 1, 1, ?4, 200, 'request', 'proxy')",
+                params![id, provider_id, app_type, THEN],
+            )
+            .map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    })
+    .unwrap();
+
+    let record = |cli_key: GatewayUsageTool, envelope: &str| SessionUsageRecord {
+        metadata: SessionUsageMetadata::default(),
+        request_id: String::new(),
+        legacy_request_ids: Vec::new(),
+        cli_key,
+        model: "usage-test-model".into(),
+        usage: TokenUsage {
+            envelope_id: Some(envelope.into()),
+            ..Default::default()
+        },
+        created_at: THEN,
+        session_id: String::new(),
+        reported_cost_usd: None,
+        project_path: None,
+        credits: None,
+        duration_ms: None,
+    };
+    let find = |cli_key, envelope| {
+        db.with_conn(|conn| {
+            find_matching_proxy(conn, &record(cli_key, envelope), None)
+                .map_err(|error| error.to_string())
+        })
+        .unwrap()
+    };
+
+    assert_eq!(
+        find(GatewayUsageTool::Claude, "claude-envelope").as_deref(),
+        Some("SESSION:claude-envelope"),
+    );
+    assert_eq!(
+        find(GatewayUsageTool::Codex, "codex-envelope").as_deref(),
+        Some("SESSION:codex:provider:codex-envelope"),
+    );
+    // The scoped form is namespaced by CLI: a Claude record must not adopt a
+    // Codex proxy row even though both carry the same envelope text.
+    assert_eq!(find(GatewayUsageTool::Claude, "codex-envelope"), None);
+    assert_eq!(find(GatewayUsageTool::Codex, "claude-envelope"), None);
+}
+
 #[test]
 fn final_usage_rechecks_an_earlier_heuristic_proxy_match() {
     let root = tempfile::tempdir().unwrap();
@@ -1395,6 +1459,31 @@ fn final_usage_rechecks_an_earlier_heuristic_proxy_match() {
         run_sync(&db, GatewayCliKey::Gemini, root.path()).inserted_records,
         0
     );
+}
+
+/// The background rebuild exposes one task slot: a second start must be
+/// rejected while the first is running so two rebuilds never clear the same
+/// CLI concurrently. A finished (or failed) task releases the slot.
+#[test]
+fn rebuild_slot_rejects_overlapping_starts_until_the_first_finishes() {
+    let mut task = RebuildTask::default();
+    claim_rebuild_slot(&mut task).unwrap();
+    assert!(task.progress.as_ref().is_some_and(|p| !p.is_finished()));
+    assert!(
+        claim_rebuild_slot(&mut task).is_err(),
+        "a second rebuild must not start while one is running"
+    );
+
+    task.progress.as_mut().unwrap().phase = SessionRebuildPhase::Done;
+    claim_rebuild_slot(&mut task).expect("a finished rebuild releases the slot");
+    assert_eq!(
+        task.progress.as_ref().unwrap().phase,
+        SessionRebuildPhase::BackingUp,
+        "the new task starts from its first phase"
+    );
+
+    task.progress.as_mut().unwrap().phase = SessionRebuildPhase::Failed;
+    claim_rebuild_slot(&mut task).expect("a failed rebuild releases the slot too");
 }
 
 #[test]

@@ -200,6 +200,168 @@ fn source_failures() -> &'static SourceFailureLog {
     LOG.get_or_init(SourceFailureLog::default)
 }
 
+/// Phase labels a rebuild reports to the UI. They mirror the steps of
+/// [`rebuild_sources`] so a slow step is named rather than guessed from a
+/// spinner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionRebuildPhase {
+    BackingUp,
+    Clearing,
+    ScanningFiles,
+    ImportingFiles,
+    ReconcileLateRows,
+    RetireDesktopRecords,
+    ReconcileCosts,
+    RollupAndPrune,
+    Done,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct SessionRebuildProgress {
+    pub phase: SessionRebuildPhase,
+    /// Files found by the scan; 0 until `ScanningFiles` finishes.
+    pub total_files: u64,
+    /// Files already visited by the import loop.
+    pub processed_files: u64,
+    pub inserted_records: u64,
+    pub updated_records: u64,
+    pub skipped_records: u64,
+    pub failed_files: u64,
+    /// RFC 3339. The UI renders elapsed time from it instead of trusting its
+    /// own clock, so a reloaded page still shows the true duration.
+    pub started_at: String,
+    pub finished_at: Option<String>,
+    pub error: Option<String>,
+}
+
+impl SessionRebuildProgress {
+    fn new() -> Self {
+        Self {
+            phase: SessionRebuildPhase::BackingUp,
+            total_files: 0,
+            processed_files: 0,
+            inserted_records: 0,
+            updated_records: 0,
+            skipped_records: 0,
+            failed_files: 0,
+            started_at: Utc::now().to_rfc3339(),
+            finished_at: None,
+            error: None,
+        }
+    }
+
+    fn is_finished(&self) -> bool {
+        matches!(
+            self.phase,
+            SessionRebuildPhase::Done | SessionRebuildPhase::Failed
+        )
+    }
+}
+
+/// The one rebuild the app allows at a time.
+///
+/// A rebuild already serializes on [`sync_mutex`], so tracking a single task
+/// matches what can actually run. Keeping it in memory is deliberate: a
+/// restart means the task is gone, and the UI must not show a stale progress
+/// it cannot reconcile with the database.
+#[derive(Default)]
+struct RebuildTask {
+    progress: Option<SessionRebuildProgress>,
+}
+
+fn rebuild_task() -> &'static std::sync::Mutex<RebuildTask> {
+    static TASK: OnceLock<std::sync::Mutex<RebuildTask>> = OnceLock::new();
+    TASK.get_or_init(|| std::sync::Mutex::new(RebuildTask::default()))
+}
+
+fn update_rebuild_progress(update: impl FnOnce(&mut SessionRebuildProgress)) {
+    let guard = rebuild_task();
+    let mut task = guard
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(progress) = task.progress.as_mut() {
+        // The finished snapshot is the record the UI reports to the user. The
+        // 60-second background sync shares `sync_sources` and would otherwise
+        // keep adding to its counters after the rebuild is over.
+        if progress.is_finished() {
+            return;
+        }
+        update(progress);
+    }
+}
+
+/// Claims the single rebuild slot.
+///
+/// Split from [`start_rebuild`] so the overlap guard is testable without
+/// spawning the async task: a second start must be rejected while the first
+/// is still running, and accepted again once it finished.
+fn claim_rebuild_slot(task: &mut RebuildTask) -> Result<(), String> {
+    if task
+        .progress
+        .as_ref()
+        .is_some_and(|progress| !progress.is_finished())
+    {
+        return Err("A session usage rebuild is already running".to_string());
+    }
+    task.progress = Some(SessionRebuildProgress::new());
+    Ok(())
+}
+
+/// Snapshot of the current (or last) rebuild. `None` means this process has
+/// not run one yet.
+pub fn rebuild_progress_snapshot() -> Option<SessionRebuildProgress> {
+    let guard = rebuild_task();
+    let task = guard
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    task.progress.clone()
+}
+
+/// Starts a rebuild in the background and returns immediately.
+///
+/// The command used to await the whole rebuild, which left the toolbar
+/// spinning for tens of minutes with no phase, no progress and no way to
+/// leave the page. The returned result is the progress record to poll; the
+/// final figures land there when the task finishes.
+pub fn start_rebuild(db: SqliteDbState, input: GatewaySessionUsageImportInput) -> Result<(), String> {
+    {
+        let guard = rebuild_task();
+        let mut task = guard
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        claim_rebuild_slot(&mut task)?;
+    }
+    let app_handle = tauri::async_runtime::spawn(async move {
+        let result = rebuild_session_usage(db.clone(), input).await;
+        match result {
+            Ok(import_result) => {
+                update_rebuild_progress(|progress| {
+                    progress.phase = SessionRebuildPhase::Done;
+                    progress.inserted_records = import_result.inserted_records;
+                    progress.updated_records = import_result.updated_records;
+                    progress.skipped_records = import_result.skipped_records;
+                    progress.failed_files = import_result.failed_files;
+                    progress.processed_files = progress.total_files;
+                    progress.finished_at = Some(Utc::now().to_rfc3339());
+                });
+            }
+            Err(error) => {
+                update_rebuild_progress(|progress| {
+                    progress.phase = SessionRebuildPhase::Failed;
+                    progress.error = Some(error);
+                    progress.finished_at = Some(Utc::now().to_rfc3339());
+                });
+            }
+        }
+    });
+    // The task owns its own handle; detaching is the point of this command.
+    drop(app_handle);
+    Ok(())
+}
+
 /// Discard everything this collector derived for `cli_key` and re-import it.
 ///
 /// Imported usage is a projection of transcripts that are still on disk, so a
@@ -273,6 +435,7 @@ fn rebuild_sources(
     // reads (unmounted WSL root, never-created sessions directory) — clearing
     // by cli_key regardless would wipe that CLI's imported history and import
     // nothing back.
+    update_rebuild_progress(|progress| progress.phase = SessionRebuildPhase::ScanningFiles);
     let scanned: Vec<_> = sources
         .iter()
         .flat_map(|(cli_key, root)| {
@@ -295,7 +458,12 @@ fn rebuild_sources(
         // rather than failing on a fresh installation.
         return Ok(GatewaySessionUsageImportResult::default());
     }
+    update_rebuild_progress(|progress| {
+        progress.total_files = scanned.len() as u64;
+        progress.phase = SessionRebuildPhase::BackingUp;
+    });
     create_rebuild_backup(db)?;
+    update_rebuild_progress(|progress| progress.phase = SessionRebuildPhase::Clearing);
     clear_imported_usage(db, cli_keys)?;
     sync_sources(db, sources, now)
 }
@@ -1239,6 +1407,10 @@ fn sync_sources(
     let mut result = GatewaySessionUsageImportResult::default();
     let mut retired_records = Vec::new();
     let mut failed_tools = HashSet::new();
+    update_rebuild_progress(|progress| {
+        progress.phase = SessionRebuildPhase::ImportingFiles;
+        progress.total_files = files.len() as u64;
+    });
     for (cli_key, path) in files {
         result.scanned_files += 1;
         let source_id = format!("{}:{}", cli_key.as_str(), source_identity(cli_key, &path));
@@ -1320,6 +1492,13 @@ fn sync_sources(
                 }
             }
         }
+        update_rebuild_progress(|progress| {
+            progress.processed_files = progress.processed_files.saturating_add(1);
+            progress.inserted_records = result.inserted_records;
+            progress.updated_records = result.updated_records;
+            progress.skipped_records = result.skipped_records;
+            progress.failed_files = result.failed_files;
+        });
     }
     for (cli_key, root) in sources {
         if *cli_key == GatewayUsageTool::OpenClaw {
@@ -1458,7 +1637,9 @@ fn sync_sources(
             }
         }
     }
+    update_rebuild_progress(|progress| progress.phase = SessionRebuildPhase::ReconcileLateRows);
     result.updated_records += reconcile_late_proxy_rows(db, &mut states, &mut claimed_proxies)?;
+    update_rebuild_progress(|progress| progress.phase = SessionRebuildPhase::RetireDesktopRecords);
     result.updated_records +=
         reconciliation::retire_desktop_records(db, &mut states, retired_records)?;
     for cli_key in GatewayUsageTool::all()
@@ -1467,6 +1648,7 @@ fn sync_sources(
         // tools can still reconcile, and this tool retries on the next sync.
         .filter(|tool| cost_reconciliation::supports(*tool) && !failed_tools.contains(tool))
     {
+        update_rebuild_progress(|progress| progress.phase = SessionRebuildPhase::ReconcileCosts);
         match cost_reconciliation::reconcile_session_costs(db, cli_key, sources, &mut states) {
             Ok(updated) => result.updated_records += updated,
             Err(error) => {
@@ -1478,6 +1660,7 @@ fn sync_sources(
             }
         }
     }
+    update_rebuild_progress(|progress| progress.phase = SessionRebuildPhase::RollupAndPrune);
     // Backfills can add old rows after the proxy writer's pruning throttle has
     // run. Archive them now, even when the gateway itself has never started.
     let maintenance = super::settings::load_settings_from_sqlite_state(db).and_then(|settings| {
@@ -1687,22 +1870,54 @@ fn find_matching_proxy(
     only_proxy_id: Option<&str>,
 ) -> Result<Option<String>, String> {
     if let Some(envelope_id) = &record.usage.envelope_id {
+        // Two index-friendly lookups instead of one `OR` of concatenated
+        // expressions: SQLite gives up the `request_id` primary-key index as
+        // soon as a branch concatenates columns, and then every record scans
+        // the whole history (measured ~180 ms per lookup on 60k rows, which
+        // made a full rebuild take tens of minutes). Each half is now a
+        // constant-time lookup.
+        //
+        // Claude writes the bare form; every other CLI scopes the id by app
+        // and provider (`stable_usage_request_id`). Both forms are tried so
+        // ids written by older versions still match.
+        let bare = format!("SESSION:{envelope_id}");
         let exact = conn
             .query_row(
                 "SELECT request_id FROM proxy_request_logs
-             WHERE COALESCE(data_source, 'proxy') = 'proxy' AND app_type = ?1
-               AND request_kind = 'request'
-               AND (?3 IS NULL OR request_id = ?3)
-               AND (request_id = 'SESSION:' || ?2
-                    OR request_id = 'SESSION:' || app_type || ':' || provider_id || ':' || ?2)
-             LIMIT 1",
-                params![record.cli_key.as_str(), envelope_id, only_proxy_id],
+                 WHERE request_id = ?1
+                   AND COALESCE(data_source, 'proxy') = 'proxy'
+                   AND app_type = ?2 AND request_kind = 'request'
+                   AND (?3 IS NULL OR request_id = ?3)
+                 LIMIT 1",
+                params![bare, record.cli_key.as_str(), only_proxy_id],
                 |row| row.get::<_, String>(0),
             )
             .optional()
             .map_err(|error| error.to_string())?;
         if exact.is_some() {
             return Ok(exact);
+        }
+        // A range bounds the lookup to `SESSION:<cli>:...`; the equality on
+        // the constructed id pins `app_type`, so no separate app filter is
+        // needed (and leaving it out keeps the primary-key index in use).
+        let prefix = format!("SESSION:{}:", record.cli_key.as_str());
+        let upper = format!("SESSION:{};", record.cli_key.as_str());
+        let scoped = conn
+            .query_row(
+                "SELECT request_id FROM proxy_request_logs
+                 WHERE request_id >= ?1 AND request_id < ?2
+                   AND request_id = 'SESSION:' || app_type || ':' || provider_id || ':' || ?3
+                   AND COALESCE(data_source, 'proxy') = 'proxy'
+                   AND request_kind = 'request'
+                   AND (?4 IS NULL OR request_id = ?4)
+                 LIMIT 1",
+                params![prefix, upper, envelope_id, only_proxy_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        if scoped.is_some() {
+            return Ok(scoped);
         }
     }
     // Zero counters cannot identify an invocation. A known native envelope

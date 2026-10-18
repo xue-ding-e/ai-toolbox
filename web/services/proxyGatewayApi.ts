@@ -904,6 +904,46 @@ export const rebuildProxyGatewaySessionUsage = async (
   return invoke<GatewaySessionUsageImportResult>('proxy_gateway_rebuild_session_usage', { input });
 };
 
+export type GatewaySessionRebuildPhase =
+  | 'backing_up'
+  | 'clearing'
+  | 'scanning_files'
+  | 'importing_files'
+  | 'reconcile_late_rows'
+  | 'retire_desktop_records'
+  | 'reconcile_costs'
+  | 'rollup_and_prune'
+  | 'done'
+  | 'failed';
+
+export interface GatewaySessionRebuildProgress {
+  phase: GatewaySessionRebuildPhase;
+  total_files: number;
+  processed_files: number;
+  inserted_records: number;
+  updated_records: number;
+  skipped_records: number;
+  failed_files: number;
+  started_at: string;
+  finished_at: string | null;
+  error: string | null;
+}
+
+/**
+ * Starts a rebuild in the background and returns at once. Poll
+ * `getProxyGatewaySessionRebuildProgress` while it runs; the final counts land
+ * in the same snapshot.
+ */
+export const startProxyGatewaySessionRebuild = async (
+  input: GatewaySessionUsageImportInput
+): Promise<void> => {
+  return invoke<void>('proxy_gateway_start_session_usage_rebuild', { input });
+};
+
+export const getProxyGatewaySessionRebuildProgress = async (): Promise<GatewaySessionRebuildProgress | null> => {
+  return invoke<GatewaySessionRebuildProgress | null>('proxy_gateway_session_usage_rebuild_progress');
+};
+
 export const getProxyGatewayDataSourceBreakdown = async (
   input: DataSourceBreakdownInput = {}
 ): Promise<DataSourceBreakdownItem[]> => {

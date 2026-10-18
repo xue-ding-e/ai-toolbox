@@ -2199,6 +2199,8 @@ pub fn run() {
             coding::proxy_gateway::proxy_gateway_data_source_breakdown,
             coding::proxy_gateway::proxy_gateway_import_session_usage,
             coding::proxy_gateway::proxy_gateway_rebuild_session_usage,
+            coding::proxy_gateway::proxy_gateway_start_session_usage_rebuild,
+            coding::proxy_gateway::proxy_gateway_session_usage_rebuild_progress,
             coding::proxy_gateway::proxy_gateway_test_provider_model_connectivity,
             coding::proxy_gateway::get_model_pricing_list,
             coding::proxy_gateway::upsert_model_pricing,

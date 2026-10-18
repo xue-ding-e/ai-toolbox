@@ -364,7 +364,22 @@
         "rebuildConfirmTitle": "重建 Session 用量？",
         "rebuildConfirmContent": "将先备份数据库，再清空并从各 CLI 的会话记录重新导入 Session 用量。CLI 已删除的会话将不再出现；解析器升级导致的旧计数错误也会被修正。",
         "rebuildConfirmOk": "重建",
-        "rebuildDone": "重建完成：新增 {{inserted}}，更新 {{updated}}，跳过 {{skipped}}；扫描 {{files}} 项"
+        "rebuildDone": "重建完成：新增 {{inserted}}，更新 {{updated}}，跳过 {{skipped}}；扫描 {{files}} 项",
+        "rebuildFailed": "重建失败：{{error}}",
+        "rebuildFilesProgress": "已处理 {{processed}} / {{total}} 项",
+        "rebuildRecordProgress": "新增 {{inserted}}，更新 {{updated}}",
+        "rebuildPhase": {
+          "backing_up": "正在备份数据库…",
+          "clearing": "正在清空旧的 Session 用量…",
+          "scanning_files": "正在扫描各 CLI 的会话记录…",
+          "importing_files": "正在导入会话记录…",
+          "reconcile_late_rows": "正在核对后到达的网关记录…",
+          "retire_desktop_records": "正在处理桌面端会话…",
+          "reconcile_costs": "正在按价格表补充费用…",
+          "rollup_and_prune": "正在归档旧明细…",
+          "done": "重建完成",
+          "failed": "重建失败"
+        }
       },
       "requestRateHint": "RPM 表示所选 CLI 最近 60 秒进入网关的请求数，每 5 秒刷新，不受日期筛选影响；本地会话用量不计入实时网关速率。",
       "rpm": "RPM"

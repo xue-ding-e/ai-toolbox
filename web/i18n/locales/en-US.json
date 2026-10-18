@@ -364,7 +364,22 @@
         "rebuildConfirmTitle": "Rebuild session usage?",
         "rebuildConfirmContent": "Backs up the database first, then clears and re-imports session usage from the CLI transcripts. Sessions the CLI has since deleted will disappear; counts an older parser got wrong are corrected.",
         "rebuildConfirmOk": "Rebuild",
-        "rebuildDone": "Rebuild done: {{inserted}} inserted, {{updated}} updated, {{skipped}} skipped; {{files}} files scanned"
+        "rebuildDone": "Rebuild done: {{inserted}} inserted, {{updated}} updated, {{skipped}} skipped; {{files}} files scanned",
+        "rebuildFailed": "Rebuild failed: {{error}}",
+        "rebuildFilesProgress": "{{processed}} / {{total}} files",
+        "rebuildRecordProgress": "{{inserted}} inserted, {{updated}} updated",
+        "rebuildPhase": {
+          "backing_up": "Backing up the database…",
+          "clearing": "Clearing the previous session usage…",
+          "scanning_files": "Scanning CLI session records…",
+          "importing_files": "Importing session records…",
+          "reconcile_late_rows": "Reconciling late gateway rows…",
+          "retire_desktop_records": "Handling desktop sessions…",
+          "reconcile_costs": "Pricing sessions from the price list…",
+          "rollup_and_prune": "Archiving old detail rows…",
+          "done": "Rebuild complete",
+          "failed": "Rebuild failed"
+        }
       },
       "requestRateHint": "RPM counts requests entering the gateway for the selected CLI in the last 60 seconds. It refreshes every 5 seconds, is independent of the date filter, and excludes local session imports.",
       "rpm": "RPM"

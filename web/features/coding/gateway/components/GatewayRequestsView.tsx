@@ -25,9 +25,11 @@ import { useTranslation } from 'react-i18next';
 import {
   exportProxyGatewayRequestLogDetail,
   getProxyGatewayRequestLogDetail,
+  getProxyGatewaySessionRebuildProgress,
   importProxyGatewaySessionUsage,
-  rebuildProxyGatewaySessionUsage,
+  startProxyGatewaySessionRebuild,
   listProxyGatewayRequestLogs,
+  type GatewaySessionRebuildProgress,
   type GatewayUsageTool,
   GATEWAY_USAGE_TOOLS,
   type GatewayRequestLogDetail,
@@ -74,6 +76,8 @@ const COLLAPSED_LINE_LIMIT = 10;
 const COLLAPSED_CHARACTER_LIMIT = 8_000;
 const PAGE_SIZE = 20;
 const EXPORT_NOTICE_DURATION_MS = 3000;
+/** A rebuild is minutes long; one second keeps the phase label responsive. */
+const REBUILD_POLL_INTERVAL_MS = 1000;
 const EXCLUDE_MODEL_LIST_STORAGE_KEY = 'gateway.requests.excludeModelList';
 
 const readExcludeModelListPreference = (): boolean => {
@@ -319,6 +323,7 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
   const [detailLoading, setDetailLoading] = React.useState(false);
   const [importing, setImporting] = React.useState(false);
   const [rebuilding, setRebuilding] = React.useState(false);
+  const [rebuildProgress, setRebuildProgress] = React.useState<GatewaySessionRebuildProgress | null>(null);
   const [exportingDetail, setExportingDetail] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<string | null>(null);
@@ -493,8 +498,72 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
    * Backup, clear and re-import. Destructive enough to confirm first: the
    * backend takes a database backup and refuses an empty source set, but the
    * confirmation states what a rebuild means so the button is not a mystery.
+   *
+   * The rebuild itself runs in the background: a full history takes minutes,
+   * and awaiting it here left the toolbar spinning with no phase or progress
+   * and no way to leave the page. The poll below keeps the phase visible while
+   * the task runs and refreshes the list once it finishes.
    */
-  const handleRebuildSessionUsage = async () => {
+  const finishRebuild = React.useCallback((progress: GatewaySessionRebuildProgress) => {
+    if (progress.phase === 'failed') {
+      setRebuildProgress(null);
+      setRebuilding(false);
+      setError(t('gateway.page.requests.rebuildFailed', {
+        error: progress.error ?? '',
+      }));
+      return;
+    }
+    setRebuildProgress(null);
+    setRebuilding(false);
+    setNotice(t(progress.failed_files > 0
+      ? 'gateway.page.requests.importPartialFailure'
+      : 'gateway.page.requests.rebuildDone', {
+      inserted: formatInteger(progress.inserted_records),
+      updated: formatInteger(progress.updated_records),
+      skipped: formatInteger(progress.skipped_records),
+      files: formatInteger(progress.total_files),
+      failed: formatInteger(progress.failed_files),
+      count: progress.failed_files,
+    }));
+    setNoticeKind(progress.failed_files > 0 ? 'warning' : 'success');
+    setPage(1);
+    setImportRefreshRevision((revision) => revision + 1);
+  }, [t]);
+
+  React.useEffect(() => {
+    if (!rebuilding) {
+      return undefined;
+    }
+    let cancelled = false;
+    const poll = window.setInterval(() => {
+      void getProxyGatewaySessionRebuildProgress().then((progress) => {
+        if (cancelled || !progress) {
+          return;
+        }
+        setRebuildProgress(progress);
+        if (progress.phase === 'done' || progress.phase === 'failed') {
+          window.clearInterval(poll);
+          finishRebuild(progress);
+        }
+      }).catch((pollError) => {
+        if (cancelled) {
+          return;
+        }
+        window.clearInterval(poll);
+        setRebuilding(false);
+        setRebuildProgress(null);
+        setError(t('gateway.page.requests.rebuildFailed', {
+          error: formatGatewayError(pollError),
+        }));
+      });
+    }, REBUILD_POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(poll);
+    };
+  }, [finishRebuild, rebuilding, t]);
+
+  const handleRebuildSessionUsage = () => {
     Modal.confirm({
       title: t('gateway.page.requests.rebuildConfirmTitle'),
       content: t('gateway.page.requests.rebuildConfirmContent'),
@@ -503,27 +572,14 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
       cancelText: t('common.cancel'),
       onOk: async () => {
         setRebuilding(true);
+        setRebuildProgress(null);
         setError(null);
         setNotice(null);
         try {
-          const result = await rebuildProxyGatewaySessionUsage({ cli_key: 'all' });
-          setNotice(t(result.failed_files > 0
-            ? 'gateway.page.requests.importPartialFailure'
-            : 'gateway.page.requests.rebuildDone', {
-            inserted: formatInteger(result.inserted_records),
-            updated: formatInteger(result.updated_records),
-            skipped: formatInteger(result.skipped_records),
-            files: formatInteger(result.scanned_files),
-            failed: formatInteger(result.failed_files),
-            count: result.failed_files,
-          }));
-          setNoticeKind(result.failed_files > 0 ? 'warning' : 'success');
-          setPage(1);
-          setImportRefreshRevision((revision) => revision + 1);
+          await startProxyGatewaySessionRebuild({ cli_key: 'all' });
         } catch (rebuildError) {
-          setError(t('gateway.page.requests.importFailed', { error: formatGatewayError(rebuildError) }));
-        } finally {
           setRebuilding(false);
+          setError(t('gateway.page.requests.rebuildFailed', { error: formatGatewayError(rebuildError) }));
         }
       },
     });
@@ -1028,6 +1084,13 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
     },
   ];
 
+  // The import loop is the only long phase; the closing reconcilers carry no
+  // per-unit counter, so they keep the bar at its last value instead of
+  // jumping back to zero.
+  const rebuildPercent = rebuildProgress && rebuildProgress.total_files > 0
+    ? Math.min(100, Math.round((rebuildProgress.processed_files / rebuildProgress.total_files) * 100))
+    : 0;
+
   return (
     <div className={styles.viewStack} aria-busy={loading}>
       {error ? (
@@ -1040,6 +1103,36 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
         <div className={joinClassNames(styles.inlineNotice, noticeKind === 'warning' && styles.inlineWarning)} role="status" aria-live="polite">
           {noticeKind === 'warning' ? <AlertCircle size={14} aria-hidden="true" /> : <Check size={14} aria-hidden="true" />}
           <span>{notice}</span>
+        </div>
+      ) : null}
+      {rebuildProgress ? (
+        <div className={styles.rebuildProgress} role="status" aria-live="polite">
+          <Loader2 className={styles.spin} size={14} aria-hidden="true" />
+          <div className={styles.rebuildProgressBody}>
+            <span>{t(`gateway.page.requests.rebuildPhase.${rebuildProgress.phase}`)}</span>
+            {rebuildProgress.total_files > 0 ? (
+              <span className={styles.rebuildProgressCounts}>
+                {t('gateway.page.requests.rebuildFilesProgress', {
+                  processed: formatInteger(rebuildProgress.processed_files),
+                  total: formatInteger(rebuildProgress.total_files),
+                })}
+                {' · '}
+                {t('gateway.page.requests.rebuildRecordProgress', {
+                  inserted: formatInteger(rebuildProgress.inserted_records),
+                  updated: formatInteger(rebuildProgress.updated_records),
+                })}
+              </span>
+            ) : null}
+            <div
+              className={styles.rebuildProgressBar}
+              role="progressbar"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={rebuildPercent}
+            >
+              <span style={{ width: `${rebuildPercent}%` }} />
+            </div>
+          </div>
         </div>
       ) : null}
 
