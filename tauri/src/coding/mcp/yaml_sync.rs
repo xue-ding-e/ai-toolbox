@@ -134,6 +134,126 @@ pub fn json_value_to_yaml(value: &Value) -> Result<serde_yaml::Value, String> {
         .map_err(|error| format!("Failed to convert JSON to YAML: {error}"))
 }
 
+/// Marker js-yaml's `!!js` type constructs for an expression scalar (dsh's
+/// loader reads `value.__jsExpr`).
+const JS_EXPR_KEY: &str = "__jsExpr";
+
+/// Rewrite one YAML tag spelling into another, outside quoted scalars.
+///
+/// serde_yaml only preserves single-bang tags (`!js`) as `Value::Tagged`;
+/// the standard `!!js` form is resolved away and the expression degrades to a
+/// plain string. dsh's js-yaml requires `!!js`. Converting on read and back on
+/// write keeps expression semantics intact. Quoted text is left alone so a
+/// literal string containing the same characters is not rewritten.
+pub fn rewrite_unquoted_tag(text: &str, from: &str, to: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut chars = text.char_indices().peekable();
+    let mut quote: Option<char> = None;
+    while let Some((index, character)) = chars.next() {
+        if let Some(active) = quote {
+            result.push(character);
+            if character == '\\' && active == '"' {
+                if let Some((_, escaped)) = chars.next() {
+                    result.push(escaped);
+                }
+            } else if character == active {
+                quote = None;
+            }
+            continue;
+        }
+        if character == '"' || character == '\'' {
+            quote = Some(character);
+            result.push(character);
+            continue;
+        }
+        let boundary_before = index == 0
+            || text[..index]
+                .chars()
+                .next_back()
+                .is_some_and(|ch| ch.is_whitespace() || matches!(ch, '[' | '{' | ',' | '-' | ':'));
+        let tag_here = text[index..].starts_with(from)
+            && text[index + from.len()..]
+                .chars()
+                .next()
+                .is_some_and(|ch| ch.is_whitespace());
+        if tag_here && boundary_before {
+            result.push_str(to);
+            for _ in 1..from.len() {
+                chars.next();
+            }
+            continue;
+        }
+        result.push(character);
+    }
+    result
+}
+
+/// Parse YAML into JSON while keeping `!!js` expression scalars.
+///
+/// serde_yaml resolves `!!js` to the standard `tag:yaml.org,2002:js` tag and
+/// keeps it as a `Tagged` node, but `serde_json::to_value` flattens that node
+/// to a plain string — rewriting the file would then turn an expression into
+/// literal text. dsh's js-yaml schema instead constructs `{ "__jsExpr": src }`,
+/// so this conversion produces that same marker and [`json_to_yaml_lossless`]
+/// turns it back into a tag.
+pub fn yaml_to_json_lossless(value: serde_yaml::Value) -> Value {
+    match value {
+        serde_yaml::Value::Tagged(tagged) => {
+            let tag = tagged.tag.to_string();
+            let inner = yaml_to_json_lossless(tagged.value);
+            if tag == "!!js" || tag == "!js" {
+                let source = inner.as_str().unwrap_or_default().to_string();
+                return serde_json::json!({ JS_EXPR_KEY: source });
+            }
+            inner
+        }
+        serde_yaml::Value::Sequence(items) => {
+            Value::Array(items.into_iter().map(yaml_to_json_lossless).collect())
+        }
+        serde_yaml::Value::Mapping(mapping) => {
+            let mut object = Map::new();
+            for (key, value) in mapping {
+                let key = match key {
+                    serde_yaml::Value::String(key) => key,
+                    other => serde_yaml::to_string(&other)
+                        .unwrap_or_default()
+                        .trim()
+                        .to_string(),
+                };
+                object.insert(key, yaml_to_json_lossless(value));
+            }
+            Value::Object(object)
+        }
+        other => serde_json::to_value(other).unwrap_or(Value::Null),
+    }
+}
+
+/// Inverse of [`yaml_to_json_lossless`]: a one-key `{ "__jsExpr": ... }` object
+/// becomes a `!!js` tagged scalar again, so dsh evaluates it as an expression.
+pub fn json_to_yaml_lossless(value: Value) -> serde_yaml::Value {
+    match value {
+        Value::Object(object) => {
+            if object.len() == 1 {
+                if let Some(source) = object.get(JS_EXPR_KEY).and_then(Value::as_str) {
+                    return serde_yaml::Value::Tagged(Box::new(serde_yaml::value::TaggedValue {
+                        tag: serde_yaml::value::Tag::new("!!js"),
+                        value: serde_yaml::Value::String(source.to_string()),
+                    }));
+                }
+            }
+            let mut mapping = serde_yaml::Mapping::new();
+            for (key, value) in object {
+                mapping.insert(serde_yaml::Value::String(key), json_to_yaml_lossless(value));
+            }
+            serde_yaml::Value::Mapping(mapping)
+        }
+        Value::Array(items) => serde_yaml::Value::Sequence(
+            items.into_iter().map(json_to_yaml_lossless).collect(),
+        ),
+        other => serde_yaml::to_value(other).unwrap_or(serde_yaml::Value::Null),
+    }
+}
+
 /// Serialize a top-level section `key:` + value into a YAML fragment like:
 ///
 /// ```yaml

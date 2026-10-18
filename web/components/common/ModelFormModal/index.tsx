@@ -43,7 +43,7 @@ export type ModelFormMessageKey =
   | 'selectPreset' | 'otherPresets'
   | 'inputModalities' | 'inputModalitiesPlaceholder'
   | 'outputModalities' | 'outputModalitiesPlaceholder' | 'modalitiesHint'
-  | 'toolCall' | 'temperatureSetting' | 'attachment'
+  | 'toolCall' | 'temperatureSetting' | 'attachment' | 'attachmentModalitiesHint'
   | 'variants' | 'variantsHint' | 'invalidVariants'
   | 'modalitiesBothRequired' | 'limitsBothRequired';
 
@@ -130,6 +130,12 @@ interface ModelFormModalProps {
   showVariants?: boolean;
   /** Whether to show modalities field (OpenCode only) */
   showModalities?: boolean;
+  /**
+   * OpenCode 2.0 has no `capabilities.attachment` field: media support is
+   * expressed through input modalities. In that mode the checkbox is disabled
+   * and the user is pointed at the modality selector (issue #430).
+   */
+  attachmentViaModalities?: boolean;
   /** Whether to show input types as a standalone model field (Pi only) */
   showInputTypes?: boolean;
   /** Whether to show a per-model API override field (Pi only) */
@@ -199,6 +205,7 @@ const ModelFormModal: React.FC<ModelFormModalProps> = ({
   showOptions = true,
   showVariants = false,
   showModalities = false,
+  attachmentViaModalities = false,
   showInputTypes = false,
   showApi = false,
   apiOptions = [],
@@ -242,7 +249,6 @@ const ModelFormModal: React.FC<ModelFormModalProps> = ({
   const [advancedExpanded, setAdvancedExpanded] = React.useState(false);
   const [presetsExpanded, setPresetsExpanded] = React.useState(false);
   const [capReasoning, setCapReasoning] = React.useState(true);
-  const [capAttachment, setCapAttachment] = React.useState(false);
   const [capToolCall, setCapToolCall] = React.useState(true);
   const [capTemperature, setCapTemperature] = React.useState(true);
   const apiValue = Form.useWatch('api', form);
@@ -339,7 +345,6 @@ const ModelFormModal: React.FC<ModelFormModalProps> = ({
       setCapReasoning(preset.reasoning !== undefined ? preset.reasoning : true);
     }
     if (showModalities) {
-      setCapAttachment(preset.attachment !== undefined ? preset.attachment : false);
       setCapToolCall(preset.tool_call !== undefined ? preset.tool_call : true);
       setCapTemperature(preset.temperature !== undefined ? preset.temperature : true);
     }
@@ -579,7 +584,6 @@ const ModelFormModal: React.FC<ModelFormModalProps> = ({
           setCapReasoning(initialValues.reasoning !== undefined ? initialValues.reasoning : false);
         }
         if (showModalities) {
-          setCapAttachment(initialValues.attachment !== undefined ? initialValues.attachment : false);
           setCapToolCall(initialValues.tool_call !== undefined ? initialValues.tool_call : false);
           setCapTemperature(initialValues.temperature !== undefined ? initialValues.temperature : false);
         }
@@ -599,7 +603,6 @@ const ModelFormModal: React.FC<ModelFormModalProps> = ({
         setOutputModalities([]);
         setAdvancedExpanded(true);
         setCapReasoning(true);
-        setCapAttachment(false);
         setCapToolCall(true);
         setCapTemperature(true);
       }
@@ -773,7 +776,11 @@ const ModelFormModal: React.FC<ModelFormModalProps> = ({
       }
 
       if (showModalities) {
-        result.attachment = capAttachment;
+        // V2 has no attachment flag: the input modality list is the source of
+        // truth, so the field is neither shown nor submitted.
+        if (!attachmentViaModalities) {
+          result.attachment = initialValues?.attachment;
+        }
         result.tool_call = capToolCall;
         result.temperature = capTemperature;
       }
@@ -1080,10 +1087,19 @@ const ModelFormModal: React.FC<ModelFormModalProps> = ({
                         <Checkbox checked={capTemperature} onChange={(e) => setCapTemperature(e.target.checked)}>
                           {t('common.model.temperatureSetting')}
                         </Checkbox>
-                        <Checkbox checked={capAttachment} onChange={(e) => setCapAttachment(e.target.checked)}>
+                        <Checkbox
+                          checked={attachmentViaModalities ? inputModalities.some((item) => item === 'image' || item === 'pdf') : false}
+                          disabled={attachmentViaModalities}
+                        >
                           {t('common.model.attachment')}
                         </Checkbox>
                       </div>
+                      {attachmentViaModalities && (
+                        <Text type="secondary" style={{ fontSize: 12 }}>
+                          {messageOverrides?.attachmentModalitiesHint
+                            ?? t('common.model.attachmentModalitiesHint')}
+                        </Text>
+                      )}
                     </Form.Item>
                   </>
                 )}

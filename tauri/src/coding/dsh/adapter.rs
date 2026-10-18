@@ -10,6 +10,10 @@ pub fn settings_from_db_value(value: Value) -> DshSettingsConfig {
             .get("config_dir")
             .and_then(Value::as_str)
             .map(str::to_string),
+        profile: value
+            .get("profile")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         updated_at: value
             .get("updated_at")
             .and_then(Value::as_str)
@@ -18,11 +22,14 @@ pub fn settings_from_db_value(value: Value) -> DshSettingsConfig {
     }
 }
 
-pub fn settings_to_db_value(config_dir: Option<&str>) -> Value {
+pub fn settings_to_db_value(config_dir: Option<&str>, profile: Option<&str>) -> Value {
     let now = Local::now().to_rfc3339();
     let mut value = json!({ "updated_at": now });
     if let Some(config_dir) = config_dir.filter(|dir| !dir.trim().is_empty()) {
         value["config_dir"] = json!(config_dir);
+    }
+    if let Some(profile) = profile.filter(|profile| !profile.trim().is_empty()) {
+        value["profile"] = json!(profile);
     }
     value
 }

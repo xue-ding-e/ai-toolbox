@@ -1781,6 +1781,7 @@
       "toolCall": "工具调用",
       "temperatureSetting": "温度设置",
       "attachment": "附件",
+      "attachmentModalitiesHint": "OpenCode V2 没有独立的「附件」能力，媒体支持由上方输入模态（Image / PDF）决定。",
       "variants": "模型变体",
       "variantsHint": "配置模型的变体，如 reasoning effort、text verbosity 等。",
       "invalidVariants": "Variants JSON 格式不正确",
@@ -5427,7 +5428,17 @@
       "settingsYamlTitle": "settings.yaml",
       "credentialsYamlTitle": ".credentials.yaml",
       "agentsMdTitle": "AGENTS.md",
-      "cordisPatchTitle": "cordis.patch.yml"
+      "cordisPatchTitle": "cordis.patch.yml",
+      "profilePatchTitle": "profile 配置 ({{profile}})"
+    },
+    "profile": {
+      "label": "配置 Profile",
+      "auto": "自动检测（{{profile}}）",
+      "autoDetecting": "自动检测",
+      "migrationTitle": "配置已迁移到 profile 层",
+      "migrationWithFile": "dsh 0.1.7 起不再读取 settings.yaml：它已被导入到 {{patchPath}} 并重命名为 {{importedPath}}。本页的供应商与默认模型现在直接写入 profile 补丁文件，旧文件仅作历史记录。",
+      "otherSettingsFrozenTitle": "其他配置已由 dsh 自身管理",
+      "otherSettingsFrozenDesc": "profile 补丁文件里是 dsh 全部插件的配置行，直接编辑容易破坏其它插件。请使用 dsh 设置页（设置 → 插件）维护这些配置；本页只管理供应商与默认模型。"
     },
     "modelSettings": {
       "title": "默认模型",

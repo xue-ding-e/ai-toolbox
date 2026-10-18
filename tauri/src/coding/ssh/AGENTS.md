@@ -59,6 +59,7 @@ sequenceDiagram
 - Codex `config.toml` 可能通过顶层 `model_catalog_json = "ai-toolbox-codex-model-catalog.json"` 引用 AI Toolbox 生成的模型映射文件。同步 `codex-config` 时必须连带镜像这个同目录 companion JSON；但只处理 AI Toolbox 自有文件名，不要接管用户自定义的外部 catalog 路径。
 - Grok 默认映射覆盖 `auth.json`、`config.toml`、`AGENTS.md` 和 `plugins/`，不默认同步 `sessions/`；SSH 仍是手动同步主模型，Grok MCP 由 `grok-config` 映射承载。
 - Kimi 默认映射覆盖 `config.toml`、`AGENTS.md`、`credentials/` 和 `plugins/`，不默认同步 `sessions/`；SSH 仍是手动同步主模型，kimi 无事件驱动自动同步，配置不走 MCP 专用同步。新增映射走 `ssh_defaults_version` v15 backfill，只补本版本新加的 id。
+- dsh 的 `dsh-mcp`（home 级 `cordis.patch.yml`）与 `dsh-profile-patch`（`profiles/<active>/cordis.patch.yml`）都参与 MCP 专用同步；后者路径按当前活动 profile 动态解析（DB 固定值 → desktop → web → 最新），固定回退 `profiles/desktop`。新增 dsh 映射时同步更新 `mcp_sync.rs` 白名单与 `ssh_defaults_version` backfill。
 - 新增通过文件映射承载 MCP 配置的工具时，不能只加默认 file mapping。还要同步更新 `mcp_sync.rs` 的 MCP 配置 mapping 白名单、进度/错误文案，以及 `cmd /c` 后处理识别。MCP 专用同步只能包含实际承载 MCP 配置的文件，不能把同模块的 env、prompt、OAuth 等普通映射一起纳入。
 - bump `ssh_defaults_version` 新增默认映射时，只能 backfill 本版本新加的 mapping id。不要把所有缺失的默认 mapping 重新插回去，否则会恢复用户之前主动删除的旧默认映射；新安装空列表仍应一次性创建完整默认集合。
 - OpenCode Markdown Agent 的规范目录是复数 `~/.config/opencode/agents`（单数 `agent` 仅为旧版别名，不再作为默认映射同步）。把它作为一个独立目录映射即可；不要用整个 OpenCode 配置目录替代，否则 SSH 同步会意外接管无关文件。

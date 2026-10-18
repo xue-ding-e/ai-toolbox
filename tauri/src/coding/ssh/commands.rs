@@ -10,6 +10,7 @@ use crate::coding::config_cleanup;
 use crate::coding::dsh::constants::{
     DSH_CREDENTIALS_FILE, DSH_MCP_FILE, DSH_PROMPT_FILE, DSH_SETTINGS_FILE,
 };
+use crate::coding::dsh::profile_patch;
 use crate::coding::oh_my_pi::constants::{
     OMP_CONFIG_FILE, OMP_MCP_FILE, OMP_MODELS_FILE, OMP_PROMPT_FILE,
 };
@@ -1145,7 +1146,7 @@ async fn backfill_default_file_mappings(
     mut file_mappings: Vec<SSHFileMapping>,
 ) -> Vec<SSHFileMapping> {
     // Bump this number whenever new default file_mappings are added.
-    const CURRENT_DEFAULTS_VERSION: u64 = 21;
+    const CURRENT_DEFAULTS_VERSION: u64 = 22;
     const DEFAULTS_VERSION_BEFORE_AGENT_DIRECTORIES: u64 = 7;
     const DEFAULT_MAPPING_IDS_ADDED_IN_V8: &[&str] = &["opencode-agents"];
     const DEFAULT_MAPPING_IDS_ADDED_IN_V9: &[&str] =
@@ -1188,6 +1189,7 @@ async fn backfill_default_file_mappings(
         "zcode-skills",
     ];
     const DEFAULT_MAPPING_IDS_ADDED_IN_V21: &[&str] = &["omo-native-prompt"];
+    const DEFAULT_MAPPING_IDS_ADDED_IN_V22: &[&str] = &["dsh-profile-patch"];
 
     // Read stored version
     let stored_version: u64 = db
@@ -1273,6 +1275,11 @@ async fn backfill_default_file_mappings(
                 21,
                 &default_mapping.id,
                 DEFAULT_MAPPING_IDS_ADDED_IN_V21,
+            ) || should_backfill_versioned_mapping(
+                stored_version,
+                22,
+                &default_mapping.id,
+                DEFAULT_MAPPING_IDS_ADDED_IN_V22,
             ))
         {
             let mapping_data = adapter::mapping_to_db_value(&default_mapping);
@@ -1815,6 +1822,19 @@ pub async fn resolve_dynamic_paths_with_db(
                     };
                     mapping.local_path = config_dir.join(file_name).to_string_lossy().to_string();
                     mapping.remote_path = format!("~/.dsh/{file_name}");
+                }
+            }
+            "dsh-profile-patch" => {
+                if let Ok((config_dir, _)) =
+                    crate::coding::dsh::get_dsh_config_dir_from_db_async(db).await
+                {
+                    let profile = crate::coding::dsh::resolve_active_profile_async(db)
+                        .await
+                        .unwrap_or_else(|| profile_patch::DSH_DESKTOP_PROFILE.to_string());
+                    let relative = format!("profiles/{profile}/{}", DSH_MCP_FILE);
+                    mapping.local_path =
+                        config_dir.join(&relative).to_string_lossy().to_string();
+                    mapping.remote_path = format!("~/.dsh/{relative}");
                 }
             }
             "claude-desktop-config" => {
@@ -2586,6 +2606,20 @@ pub fn default_file_mappings() -> Vec<SSHFileMapping> {
             module: "dsh".to_string(),
             local_path: "~/.dsh/cordis.patch.yml".to_string(),
             remote_path: "~/.dsh/cordis.patch.yml".to_string(),
+            enabled: true,
+            is_pattern: false,
+            is_directory: false,
+            directory_excludes: vec![],
+            cleanup_paths: vec![],
+        },
+        // dsh >= 0.1.7 keeps providers/default model in the active profile's
+        // patch; the path is resolved per profile by `resolve_dynamic_paths_with_db`.
+        SSHFileMapping {
+            id: "dsh-profile-patch".to_string(),
+            name: "DeepSeek Harness Profile 配置".to_string(),
+            module: "dsh".to_string(),
+            local_path: "~/.dsh/profiles/desktop/cordis.patch.yml".to_string(),
+            remote_path: "~/.dsh/profiles/desktop/cordis.patch.yml".to_string(),
             enabled: true,
             is_pattern: false,
             is_directory: false,

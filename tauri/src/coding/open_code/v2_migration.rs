@@ -195,18 +195,17 @@ fn snake_object(object: &Map<String, Value>) -> Map<String, Value> {
         .collect()
 }
 
-fn bearer(value: Option<&Value>) -> Option<String> {
-    string_value(value).map(|value| format!("Bearer {value}"))
-}
-
-fn insert_optional_string(map: &mut Map<String, Value>, key: &str, value: Option<String>) {
-    if let Some(value) = value {
-        map.insert(key.to_string(), Value::String(value));
-    }
-}
-
-/// Provider-level option lowering, mirroring the official
-/// `@opencode-ai/core/v1/config/provider-options` lowerers.
+/// Provider-level option lowering, mirroring the released OpenCode 2.0
+/// `packages/core/src/v1/config/provider-options.ts` `provider()` lowerer.
+///
+/// That lowerer only splits `headers` and `body` out of the option object;
+/// every other option (including `apiKey`) stays in `settings`, because the
+/// AI SDK factory receives `settings` verbatim and derives its own auth header
+/// (`Authorization`, `x-api-key`, `x-goog-api-key`, `api-key`, ...). An older
+/// OpenCode lowerer synthesized those headers here and deleted `apiKey` from
+/// `settings`; that shape is not written by any 2.0.x release (the lowerers
+/// were removed in `e57d9ca390`, shipped in v2.0.0), so writing it made the
+/// editor lose the key on every save (issue #429).
 ///
 /// The result is stored under `api.url`, `api.settings` and `request`.
 #[derive(Default)]
@@ -218,104 +217,21 @@ struct RenderedProviderOptions {
 }
 
 fn render_provider_options(
-    package_name: Option<&str>,
     options: &Map<String, Value>,
     explicit_api: Option<&str>,
 ) -> RenderedProviderOptions {
-    let package_name = package_name.unwrap_or("");
+    // The released 2.0 lowerer is package-agnostic: only `headers` and `body`
+    // leave the option object. `apiKey`, `authToken`, `organization`,
+    // `project`, `timeout`, ... stay in `settings` and reach the AI SDK
+    // factory verbatim, which derives the authentication header itself.
     let mut settings = options.clone();
-    // Official lowerers let an explicit `options.headers` entry win over the
-    // generated Authorization/x-api-key/api-key header, so merge it last.
-    let custom_headers = header_map(options.get("headers"));
-    let mut headers = Map::new();
-    let mut body = object_from(options.get("body"));
-    let mut url = string_value(options.get("baseURL")).map(Value::String);
-    if url.is_none() {
-        url = explicit_api.map(|value| Value::String(value.to_string()));
-    }
+    remove_keys(&mut settings, &["baseURL", "headers", "body"]);
 
-    match package_name {
-        "@ai-sdk/openai" => {
-            insert_optional_string(
-                &mut headers,
-                "Authorization",
-                string_value(options.get("apiKey")).map(|key| format!("Bearer {key}")),
-            );
-            insert_optional_string(
-                &mut headers,
-                "OpenAI-Organization",
-                string_value(options.get("organization")),
-            );
-            insert_optional_string(
-                &mut headers,
-                "OpenAI-Project",
-                string_value(options.get("project")),
-            );
-            remove_keys(
-                &mut settings,
-                &[
-                    "apiKey",
-                    "baseURL",
-                    "organization",
-                    "project",
-                    "headers",
-                    "body",
-                ],
-            );
-        }
-        "@ai-sdk/anthropic" | "@ai-sdk/google-vertex/anthropic" => {
-            insert_optional_string(
-                &mut headers,
-                "x-api-key",
-                string_value(options.get("apiKey")),
-            );
-            insert_optional_string(
-                &mut headers,
-                "Authorization",
-                bearer(options.get("authToken")),
-            );
-            remove_keys(
-                &mut settings,
-                &["apiKey", "authToken", "baseURL", "headers", "body"],
-            );
-        }
-        "@ai-sdk/google" | "@ai-sdk/google-vertex" => {
-            insert_optional_string(
-                &mut headers,
-                "x-goog-api-key",
-                string_value(options.get("apiKey")),
-            );
-            remove_keys(&mut settings, &["apiKey", "baseURL", "headers", "body"]);
-        }
-        "@ai-sdk/azure" => {
-            insert_optional_string(&mut headers, "api-key", string_value(options.get("apiKey")));
-            remove_keys(&mut settings, &["apiKey", "baseURL", "headers", "body"]);
-        }
-        "@ai-sdk/amazon-bedrock" => {
-            remove_keys(&mut settings, &["headers", "body"]);
-        }
-        "@ai-sdk/openai-compatible"
-        | "@ai-sdk/cerebras"
-        | "@ai-sdk/deepinfra"
-        | "@ai-sdk/groq"
-        | "@ai-sdk/mistral"
-        | "@ai-sdk/togetherai"
-        | "@ai-sdk/xai"
-        | "@openrouter/ai-sdk-provider"
-        | "ai-gateway-provider"
-        | "venice-ai-sdk-provider" => {
-            remove_keys(&mut settings, &["baseURL", "headers", "body"]);
-        }
-        _ => {
-            // Official `raw` lowerer: the entire option object becomes the body.
-            body = options.clone();
-            settings.clear();
-        }
-    }
-
-    for (key, value) in custom_headers {
-        headers.insert(key, value);
-    }
+    let headers = header_map(options.get("headers"));
+    let body = object_from(options.get("body"));
+    let url = string_value(options.get("baseURL"))
+        .map(Value::String)
+        .or_else(|| explicit_api.map(|value| Value::String(value.to_string())));
 
     RenderedProviderOptions {
         url,
@@ -719,6 +635,8 @@ fn migrate_model(value: Value, parent_package: Option<&str>) -> Result<Value, St
     let limit = model.remove("limit");
     let modalities = model.remove("modalities");
     let tool_call = model.remove("tool_call");
+    let reasoning = model.remove("reasoning");
+    let temperature = model.remove("temperature");
     let cost = model.remove("cost");
     let options = take_object(&mut model, "options")?;
     let headers = model.remove("headers");
@@ -770,27 +688,36 @@ fn migrate_model(value: Value, parent_package: Option<&str>) -> Result<Value, St
         out.insert("api".to_string(), json!({ "id": id }));
     }
 
-    let capabilities = if tool_call.is_some()
-        || modalities
-            .as_ref()
-            .and_then(|value| value.get("input"))
-            .is_some()
-        || modalities
-            .as_ref()
-            .and_then(|value| value.get("output"))
-            .is_some()
-    {
-        Some(json!({
-            "tools": tool_call.as_ref().and_then(Value::as_bool).unwrap_or(false),
-            "input": modalities.as_ref().and_then(|value| value.get("input")).cloned().unwrap_or_else(|| json!([])),
-            "output": modalities.as_ref().and_then(|value| value.get("output")).cloned().unwrap_or_else(|| json!([])),
-        }))
-    } else {
-        None
-    };
-    if let Some(capabilities) = capabilities {
-        out.insert("capabilities".to_string(), capabilities);
+    // Released 2.0 keeps the legacy flags on `capabilities`: `tools`,
+    // `input`/`output`, `temperature`, and `reasoning: { supported }`. Unset
+    // modalities fall back to the official `Capabilities.default()` rather
+    // than `[]`, which would silently strip image/pdf input from the model.
+    // `attachment` has no 2.0 field — the runtime derives media support from
+    // `capabilities.input` — so it is not written.
+    let input = modalities
+        .as_ref()
+        .and_then(|value| value.get("input"))
+        .cloned()
+        .unwrap_or_else(|| json!(["text", "image"]));
+    let output = modalities
+        .as_ref()
+        .and_then(|value| value.get("output"))
+        .cloned()
+        .unwrap_or_else(|| json!(["text"]));
+    let mut capabilities = Map::new();
+    capabilities.insert(
+        "tools".to_string(),
+        Value::Bool(tool_call.as_ref().and_then(Value::as_bool).unwrap_or(true)),
+    );
+    capabilities.insert("input".to_string(), input);
+    capabilities.insert("output".to_string(), output);
+    if let Some(temperature) = temperature.as_ref().and_then(Value::as_bool) {
+        capabilities.insert("temperature".to_string(), Value::Bool(temperature));
     }
+    if let Some(reasoning) = reasoning.as_ref().and_then(Value::as_bool) {
+        capabilities.insert("reasoning".to_string(), json!({ "supported": reasoning }));
+    }
+    out.insert("capabilities".to_string(), Value::Object(capabilities));
 
     let rendered_request = package_name
         .as_deref()
@@ -872,13 +799,13 @@ fn migrate_model(value: Value, parent_package: Option<&str>) -> Result<Value, St
     }
 
     // Preserve unknown model fields that are not part of the V1 schema this
-    // converter understands. Known legacy flags are intentionally not ported
-    // (official migrate drops reasoning/temperature/attachment/interleaved).
+    // converter understands. `reasoning` and `temperature` are lifted into
+    // `capabilities` above, while flags 2.0 has no home for
+    // (`release_date`/`attachment`/`experimental`/`interleaved`) are dropped as
+    // the official migrate does.
     for key in [
         "release_date",
         "attachment",
-        "reasoning",
-        "temperature",
         "experimental",
         "interleaved",
         "status",
@@ -903,8 +830,7 @@ fn migrate_provider(value: Value) -> Result<Value, String> {
     let models = provider.remove("models");
     let name = provider.remove("name");
     let env = provider.remove("env");
-    let rendered =
-        render_provider_options(package_name.as_deref(), &options, explicit_api.as_deref());
+    let rendered = render_provider_options(&options, explicit_api.as_deref());
 
     let mut out = Map::new();
     if let Some(name) = name {
@@ -1170,6 +1096,81 @@ pub fn v1_to_v2_value(mut value: Value) -> Result<Value, String> {
     Ok(value)
 }
 
+/// Authentication header the AI SDK package derives from `settings.apiKey`
+/// (and, for Anthropic, `settings.authToken`). The released 2.0 writer keeps
+/// the key in `settings`, but hand-written and third-party files may carry it
+/// as a header instead; lifting it back keeps one source of truth in the
+/// editor (issue #429).
+fn auth_header_names(package_name: &str) -> &'static [&'static str] {
+    match package_name {
+        "@ai-sdk/openai" => &["Authorization"],
+        "@ai-sdk/anthropic" | "@ai-sdk/google-vertex/anthropic" => {
+            &["x-api-key", "Authorization"]
+        }
+        "@ai-sdk/google" | "@ai-sdk/google-vertex" => &["x-goog-api-key"],
+        "@ai-sdk/azure" => &["api-key"],
+        _ => &[],
+    }
+}
+
+/// Find a header case-insensitively.
+fn find_header(headers: &Map<String, Value>, name: &str) -> Option<(String, String)> {
+    headers
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case(name))
+        .and_then(|(key, value)| {
+            value
+                .as_str()
+                .map(|value| (key.clone(), value.trim().to_string()))
+        })
+}
+
+fn strip_bearer(value: &str) -> Option<String> {
+    let (scheme, token) = value.split_once(' ')?;
+    scheme
+        .eq_ignore_ascii_case("bearer")
+        .then(|| token.trim().to_string())
+        .filter(|token| !token.is_empty())
+}
+
+/// Move authentication headers back into the option fields the editor reads.
+///
+/// Only a header whose matching option is unset is lifted, so an explicit
+/// `apiKey` keeps winning over a stale header. Non-authentication headers stay
+/// untouched, and an emptied `headers` object is dropped.
+fn lift_auth_headers(options: &mut Map<String, Value>, package_name: Option<&str>) {
+    let Some(package_name) = package_name else {
+        return;
+    };
+    let Some(mut headers) = options
+        .remove("headers")
+        .and_then(|value| value.as_object().cloned())
+    else {
+        return;
+    };
+    for header in auth_header_names(package_name) {
+        let Some((key, value)) = find_header(&headers, header) else {
+            continue;
+        };
+        let target = match (*header, package_name) {
+            ("Authorization", "@ai-sdk/openai") => ("apiKey", strip_bearer(&value)),
+            ("Authorization", _) => ("authToken", strip_bearer(&value)),
+            _ => ("apiKey", Some(value)),
+        };
+        if let (field, Some(token)) = target {
+            // An explicit option wins over a leftover header; in that case the
+            // header stays as the deliberate override.
+            if !options.contains_key(field) {
+                options.insert(field.to_string(), Value::String(token));
+                headers.remove(&key);
+            }
+        }
+    }
+    if !headers.is_empty() {
+        options.insert("headers".to_string(), Value::Object(headers));
+    }
+}
+
 fn convert_provider_v2_to_v1(value: Value) -> Result<Value, String> {
     let mut provider = value
         .as_object()
@@ -1247,6 +1248,8 @@ fn convert_provider_v2_to_v1(value: Value) -> Result<Value, String> {
             provider.remove(key);
         }
     }
+    let package_name = out.get("npm").and_then(Value::as_str).map(str::to_string);
+    lift_auth_headers(&mut options, package_name.as_deref());
     if !options.is_empty() {
         out.insert("options".to_string(), Value::Object(options));
     }
@@ -1349,6 +1352,19 @@ fn convert_model_v2_to_v1(value: Value) -> Result<Value, String> {
         }
         if let Some(tools) = capabilities.get("tools") {
             model.insert("tool_call".to_string(), tools.clone());
+        }
+        if let Some(temperature) = capabilities.get("temperature").and_then(Value::as_bool) {
+            model.insert("temperature".to_string(), Value::Bool(temperature));
+        }
+        // Released 2.0 spells this `{ supported: boolean }`; accept a bare
+        // boolean too so hand-edited files in the older shape still round-trip.
+        let reasoning = capabilities.get("reasoning").and_then(|value| {
+            value
+                .as_bool()
+                .or_else(|| value.get("supported").and_then(Value::as_bool))
+        });
+        if let Some(reasoning) = reasoning {
+            model.insert("reasoning".to_string(), Value::Bool(reasoning));
         }
     }
     if let Some(variants) = model
@@ -2147,11 +2163,11 @@ mod tests {
         assert!(restored.get("experimental").is_none());
     }
 
-    /// Anthropic providers lower their key into an `x-api-key` header instead of
-    /// `settings`, so the flat shape has to carry the header overlay for the
-    /// released reader to authenticate at all.
+    /// Released 2.0 keeps a provider key in `settings` and lets the AI SDK
+    /// derive `x-api-key`; synthesizing the header here made the editor lose
+    /// the key on every save (issue #429).
     #[test]
-    fn v1_anthropic_provider_writes_the_flat_shape_with_its_auth_header() {
+    fn v1_anthropic_provider_keeps_its_key_in_settings() {
         let v1 = json!({
             "provider": {
                 "anthropic-relay": {
@@ -2167,9 +2183,12 @@ mod tests {
         assert_eq!(provider["package"], "@ai-sdk/anthropic");
         assert_eq!(
             provider["settings"],
-            json!({ "baseURL": "https://relay.example.com" })
+            json!({
+                "apiKey": "sk-ant-test",
+                "baseURL": "https://relay.example.com"
+            })
         );
-        assert_eq!(provider["headers"], json!({ "x-api-key": "sk-ant-test" }));
+        assert!(provider.get("headers").is_none());
         assert_eq!(
             provider["models"]["claude-x"]["modelID"],
             "claude-x-20260101"
@@ -2178,6 +2197,136 @@ mod tests {
             written["providers"]["anthropic-relay"]["api"]["url"],
             "https://relay.example.com"
         );
+
+        // The editor must see the key again after a read.
+        let restored = v2_to_v1_value(written).unwrap();
+        assert_eq!(
+            restored["provider"]["anthropic-relay"]["options"]["apiKey"],
+            "sk-ant-test"
+        );
+    }
+
+    /// Files written before the fix (and by other tools) carry the key as an
+    /// authentication header; reading one lifts it back into `options.apiKey`
+    /// so saving cannot keep rewriting the header form (issue #429).
+    #[test]
+    fn v2_auth_headers_lift_back_into_provider_options() {
+        let value = json!({
+            "providers": {
+                "openai-relay": {
+                    "package": "@ai-sdk/openai",
+                    "settings": { "baseURL": "https://openai.example.com/v1" },
+                    "headers": {
+                        "Authorization": "Bearer sk-openai",
+                        "OpenAI-Organization": "org-1"
+                    }
+                },
+                "anthropic-relay": {
+                    "package": "@ai-sdk/anthropic",
+                    "headers": {
+                        "x-api-key": "sk-ant",
+                        "Authorization": "Bearer token-1"
+                    }
+                },
+                "google-relay": {
+                    "package": "@ai-sdk/google",
+                    "headers": { "x-goog-api-key": "goog-key" }
+                },
+                "azure-relay": {
+                    "package": "@ai-sdk/azure",
+                    "headers": { "api-key": "azure-key" }
+                }
+            }
+        });
+
+        let restored = v2_to_v1_value(value).unwrap();
+        let openai = &restored["provider"]["openai-relay"]["options"];
+        assert_eq!(openai["apiKey"], "sk-openai");
+        assert_eq!(openai["headers"], json!({ "OpenAI-Organization": "org-1" }));
+
+        let anthropic = &restored["provider"]["anthropic-relay"]["options"];
+        assert_eq!(anthropic["apiKey"], "sk-ant");
+        assert_eq!(anthropic["authToken"], "token-1");
+        assert!(anthropic.get("headers").is_none());
+
+        assert_eq!(
+            restored["provider"]["google-relay"]["options"]["apiKey"],
+            "goog-key"
+        );
+        assert_eq!(
+            restored["provider"]["azure-relay"]["options"]["apiKey"],
+            "azure-key"
+        );
+    }
+
+    /// An explicit option outranks a leftover header, so a deliberate
+    /// header override is never silently deleted.
+    #[test]
+    fn v2_explicit_api_key_wins_over_auth_header() {
+        let value = json!({
+            "providers": {
+                "relay": {
+                    "package": "@ai-sdk/openai",
+                    "settings": { "apiKey": "sk-option" },
+                    "headers": { "Authorization": "Bearer sk-header" }
+                }
+            }
+        });
+
+        let restored = v2_to_v1_value(value).unwrap();
+        let options = &restored["provider"]["relay"]["options"];
+        assert_eq!(options["apiKey"], "sk-option");
+        assert_eq!(
+            options["headers"],
+            json!({ "Authorization": "Bearer sk-header" })
+        );
+    }
+
+    /// `reasoning`/`temperature` live on `capabilities` in V2 and must survive
+    /// a V1 → V2 → V1 round trip; `attachment` has no V2 field and is dropped
+    /// (issue #430).
+    #[test]
+    fn model_capabilities_round_trip_reasoning_and_temperature() {
+        let v1 = json!({
+            "provider": {
+                "relay": {
+                    "npm": "@ai-sdk/openai-compatible",
+                    "models": {
+                        "gpt-x": {
+                            "id": "gpt-x",
+                            "reasoning": true,
+                            "temperature": false,
+                            "attachment": true,
+                            "tool_call": true
+                        }
+                    }
+                }
+            }
+        });
+
+        let written = v1_to_v2_value(v1).unwrap();
+        assert_eq!(
+            written["providers"]["relay"]["models"]["gpt-x"]["capabilities"],
+            json!({
+                "tools": true,
+                // Official `Capabilities.default()` when modalities are unset.
+                "input": ["text", "image"],
+                "output": ["text"],
+                "temperature": false,
+                "reasoning": { "supported": true }
+            })
+        );
+        assert!(
+            written["providers"]["relay"]["models"]["gpt-x"]
+                .get("attachment")
+                .is_none()
+        );
+
+        let restored = v2_to_v1_value(written).unwrap();
+        let model = &restored["provider"]["relay"]["models"]["gpt-x"];
+        assert_eq!(model["reasoning"], true);
+        assert_eq!(model["temperature"], false);
+        assert!(model.get("attachment").is_none());
     }
 
     /// A file written by OpenCode 2.0 itself carries the flat shape only, so the

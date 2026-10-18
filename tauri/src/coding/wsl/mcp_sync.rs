@@ -334,6 +334,7 @@ fn is_mapped_mcp_config_file(mapping_id: &str) -> bool {
             | "kimi-mcp"
             | "hermes-config"
             | "dsh-mcp"
+            | "dsh-profile-patch"
             | "zcode-cli-config"
             | "omo-native-mcp"
     )
@@ -465,7 +466,9 @@ mod tests {
     fn local_hermes_and_dsh_sync_only_enabled_mcp_files() {
         let mut mappings = wsl_get_default_mappings();
         let selected = filter_mcp_file_mappings(mappings.clone(), &HashSet::new());
-        for id in ["hermes-config", "dsh-mcp"] {
+        // dsh >= 0.1.7 keeps user MCP rows in the active profile patch, so the
+        // profile mapping joins the home-level `cordis.patch.yml` in MCP sync.
+        for id in ["hermes-config", "dsh-mcp", "dsh-profile-patch"] {
             assert!(selected.iter().any(|mapping| mapping.id == id));
         }
         for id in [

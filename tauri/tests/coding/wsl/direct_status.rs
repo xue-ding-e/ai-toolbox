@@ -48,6 +48,7 @@ async fn save_root(app: &tauri::App<MockRuntime>, module: &str, root: Option<&st
                 dsh::types::DshSettingsConfigInput {
                     root_dir: root.map(str::to_string),
                     clear_root_dir: root.is_none(),
+                    profile: None,
                 },
             )
             .await

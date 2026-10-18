@@ -9,9 +9,11 @@ use super::builtin_models::{builtin_model_ids, builtin_models_for, has_builtin_m
 use super::constants::{
     builtin_provider_name, is_builtin_provider, DSH_CREDENTIALS_FILE, DSH_CREDENTIALS_RECORDS_KEY,
     DSH_CREDENTIALS_REFS_KEY, DSH_CREDENTIALS_VERSION, DSH_CREDENTIALS_VERSION_KEY,
-    DSH_CREDENTIAL_RECORD_SCOPE, DSH_DEFAULT_MODEL_SECTION, DSH_ENV_KEY, DSH_LLM_PI_AI_SECTION,
+    DSH_CREDENTIAL_RECORD_SCOPE, DSH_DEFAULT_MODEL_PACKAGE, DSH_DEFAULT_MODEL_SECTION,
+    DSH_ENV_KEY, DSH_IMPORTED_SETTINGS_FILE, DSH_LLM_PI_AI_PACKAGE, DSH_LLM_PI_AI_SECTION,
     DSH_PROMPT_FILE, DSH_PROVIDERS_KEY, DSH_SETTINGS_FILE,
 };
+use super::profile_patch;
 use super::types::*;
 use crate::coding::db_id::db_new_id;
 use crate::coding::open_code::shell_env;
@@ -97,6 +99,12 @@ pub async fn get_dsh_config_dir_from_db_async(
     Ok(resolve_dsh_path_without_db())
 }
 
+fn get_dsh_settings_config_record(db: &SqliteDbState) -> Result<Option<DshSettingsConfig>, String> {
+    Ok(db
+        .with_conn(|conn| db_get(conn, DbTable::DshSettingsConfig, "common"))?
+        .map(adapter::settings_from_db_value))
+}
+
 fn get_dsh_config_dir_from_db_sync(db: &SqliteDbState) -> Result<(PathBuf, String), String> {
     let custom = db
         .with_conn(|conn| db_get(conn, DbTable::DshSettingsConfig, "common"))
@@ -135,6 +143,147 @@ pub async fn get_dsh_root_dir_from_db_async(db: &SqliteDbState) -> Result<PathBu
 
 pub fn get_dsh_config_path_from_root(root_dir: &Path) -> PathBuf {
     root_dir.join(DSH_SETTINGS_FILE)
+}
+
+/// The layer the live configuration actually comes from.
+///
+/// dsh >= 0.1.7 imports `settings.yaml` once into `profiles/<profile>/cordis.patch.yml`
+/// and keeps writing there; the old file is renamed to `settings.yaml.imported`
+/// and no longer reaches the composition. Everything below therefore treats
+/// the profile patch as the source of truth whenever a profile exists, and
+/// only falls back to `settings.yaml` for dsh versions that still read it.
+enum DshConfigLayer {
+    ProfilePatch {
+        profile: String,
+        path: PathBuf,
+    },
+    SettingsYaml {
+        path: PathBuf,
+    },
+}
+
+impl DshConfigLayer {
+    fn path(&self) -> &Path {
+        match self {
+            Self::ProfilePatch { path, .. } | Self::SettingsYaml { path } => path,
+        }
+    }
+
+    fn profile(&self) -> Option<&str> {
+        match self {
+            Self::ProfilePatch { profile, .. } => Some(profile),
+            Self::SettingsYaml { .. } => None,
+        }
+    }
+}
+
+/// Resolve the writable configuration layer for `root_dir`.
+fn resolve_config_layer(root_dir: &Path, configured_profile: Option<&str>) -> DshConfigLayer {
+    match profile_patch::detect_profile(root_dir, configured_profile) {
+        Some(profile) => DshConfigLayer::ProfilePatch {
+            path: profile_patch::profile_patch_path(root_dir, &profile),
+            profile,
+        },
+        None => DshConfigLayer::SettingsYaml {
+            path: get_dsh_config_path_from_root(root_dir),
+        },
+    }
+}
+
+async fn resolve_config_layer_from_db(db: &SqliteDbState) -> Result<DshConfigLayer, String> {
+    let root_dir = get_dsh_root_dir_from_db_async(db).await?;
+    let configured = get_dsh_settings_config_record(db)
+        .ok()
+        .flatten()
+        .and_then(|record| record.profile);
+    Ok(resolve_config_layer(&root_dir, configured.as_deref()))
+}
+
+/// Profile whose patch layer backs the live configuration, for consumers that
+/// only need the name (WSL/SSH file mappings). `None` means dsh still reads
+/// the legacy `settings.yaml`.
+pub async fn resolve_active_profile_async(db: &SqliteDbState) -> Option<String> {
+    match resolve_config_layer_from_db(db).await {
+        Ok(layer) => layer.profile().map(str::to_string),
+        Err(_) => None,
+    }
+}
+
+/// Read the managed sections (`llm-pi-ai`, `agent-default-model`) from a layer.
+///
+/// Profile patch entries store each section under `config`; `settings.yaml`
+/// stores them at the top level. Both are returned in the same shape so the
+/// provider-default-model logic stays layer-agnostic.
+fn read_config_sections(layer: &DshConfigLayer) -> Result<Value, String> {
+    match layer {
+        DshConfigLayer::ProfilePatch { path, .. } => {
+            let entries = profile_patch::read_patch_entries(path)?;
+            let mut config = Map::new();
+            if let Some(llm) = profile_patch::entry_config(&entries, DSH_LLM_PI_AI_SECTION) {
+                config.insert(
+                    DSH_LLM_PI_AI_SECTION.to_string(),
+                    Value::Object(llm.clone()),
+                );
+            }
+            if let Some(default_model) =
+                profile_patch::entry_config(&entries, DSH_DEFAULT_MODEL_SECTION)
+            {
+                config.insert(
+                    DSH_DEFAULT_MODEL_SECTION.to_string(),
+                    Value::Object(default_model.clone()),
+                );
+            }
+            Ok(Value::Object(config))
+        }
+        DshConfigLayer::SettingsYaml { path } => read_yaml_object_or_empty(path),
+    }
+}
+
+/// Write the managed sections back into the layer, preserving every other row.
+///
+/// The patch `config` replaces the entry's whole config, so the caller must
+/// hand in complete objects (that is exactly what the readers produce).
+fn write_config_sections(layer: &DshConfigLayer, config: &Value) -> Result<(), String> {
+    if !config.is_object() {
+        return Err("dsh config must be a YAML mapping object".to_string());
+    }
+    match layer {
+        DshConfigLayer::ProfilePatch { path, .. } => {
+            let mut entries = profile_patch::read_patch_entries(path)?;
+            for (id, package) in [
+                (DSH_LLM_PI_AI_SECTION, DSH_LLM_PI_AI_PACKAGE),
+                (DSH_DEFAULT_MODEL_SECTION, DSH_DEFAULT_MODEL_PACKAGE),
+            ] {
+                match config.get(id).and_then(Value::as_object) {
+                    Some(section) if !section.is_empty() => profile_patch::set_entry_config(
+                        &mut entries,
+                        id,
+                        Some(package),
+                        section.clone(),
+                    ),
+                    _ => {
+                        profile_patch::remove_entry(&mut entries, id);
+                    }
+                }
+            }
+            profile_patch::write_patch_entries(path, &entries)
+        }
+        DshConfigLayer::SettingsYaml { path } => {
+            let mut document = read_yaml_object_or_empty(path)?;
+            let object = object_mut(&mut document)?;
+            for id in [DSH_LLM_PI_AI_SECTION, DSH_DEFAULT_MODEL_SECTION] {
+                match config.get(id) {
+                    Some(value) if !value.is_null() => {
+                        object.insert(id.to_string(), value.clone());
+                    }
+                    _ => {
+                        object.remove(id);
+                    }
+                }
+            }
+            write_yaml_object(path, &document)
+        }
+    }
 }
 
 pub fn get_dsh_credentials_path_from_root(root_dir: &Path) -> PathBuf {
@@ -727,9 +876,15 @@ pub async fn save_dsh_settings_config<R: Runtime>(
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_string)
-            .or_else(|| existing.and_then(|value| value.config_dir))
+            .or_else(|| existing.as_ref().and_then(|value| value.config_dir.clone()))
     };
-    let data = adapter::settings_to_db_value(config_dir.as_deref());
+    // `None` keeps the current pin; `Some("")` clears it (back to
+    // auto-detection); `Some(name)` pins that profile.
+    let profile = match input.profile.as_deref() {
+        Some(value) => Some(value.trim().to_string()).filter(|value| !value.is_empty()),
+        None => existing.and_then(|value| value.profile),
+    };
+    let data = adapter::settings_to_db_value(config_dir.as_deref(), profile.as_deref());
     db.with_conn(|conn| db_put(conn, DbTable::DshSettingsConfig, "common", &data))?;
     runtime_location::refresh_runtime_location_cache_for_module_async(db, "dsh").await?;
     let _ = app.emit("wsl-config-changed", ());
@@ -748,21 +903,44 @@ pub async fn read_dsh_runtime_config(
     let db = state.db();
     let root_path_info = get_dsh_root_path_info_from_db_async(&db).await?;
     let root_dir = PathBuf::from(&root_path_info.path);
-    let config_path = get_dsh_config_path_from_root(&root_dir);
     let credentials_path = get_dsh_credentials_path_from_root(&root_dir);
     let prompt_path = get_dsh_prompt_path_from_root(&root_dir);
 
-    let config = read_yaml_object_or_empty(&config_path)?;
+    let layer = resolve_config_layer_from_db(&db).await?;
+    let config_path = layer.path().to_path_buf();
+    // Managed sections only: `settings.yaml` may still carry unrelated keys, and
+    // a profile patch carries every unrelated plugin row. Neither belongs to
+    // the provider editor, so the returned `config` is the managed view.
+    let config = read_config_sections(&layer)?;
     let credentials = CredentialsDocument::read(&credentials_path)?;
     let cordis_patch_path = get_dsh_cordis_patch_path(&db).await?;
+
+    // Advertise every profile so the UI can pin one, plus the settings.yaml
+    // migration state so the editor can explain where the data went.
+    let profiles = profile_patch::list_profiles(&root_dir);
+    let imported_settings_path = root_dir.join(DSH_IMPORTED_SETTINGS_FILE);
+    let migrated_from_settings = layer.profile().is_some()
+        && imported_settings_path.is_file()
+        && config.get(DSH_LLM_PI_AI_SECTION).is_some();
 
     Ok(DshRuntimeConfig {
         root_path_info,
         config_path: config_path.to_string_lossy().to_string(),
         credentials_path: credentials_path.to_string_lossy().to_string(),
         prompt_path: prompt_path.to_string_lossy().to_string(),
+        profile: layer.profile().map(str::to_string),
+        profiles,
+        migrated_from_settings,
+        settings_yaml_path: get_dsh_config_path_from_root(&root_dir)
+            .to_string_lossy()
+            .to_string(),
         model_settings: model_settings_from_config(&config),
-        other_settings: build_other_settings(&config),
+        // Profile patches also carry dsh's own plugin rows; only a legacy
+        // settings.yaml exposes a user-editable "other" mapping.
+        other_settings: match &layer {
+            DshConfigLayer::ProfilePatch { .. } => Value::Object(Map::new()),
+            DshConfigLayer::SettingsYaml { .. } => build_other_settings(&config),
+        },
         providers: build_provider_views(&config, &credentials),
         builtin_providers: builtin_providers(),
         credentials: read_credentials_views(&credentials_path),
@@ -806,7 +984,7 @@ fn providers_dict_mut(config: &mut Value) -> Result<&mut Map<String, Value>, Str
 }
 
 fn write_provider_with_credential(
-    config_path: &Path,
+    layer: &DshConfigLayer,
     config: &Value,
     credentials_path: &Path,
     credential: &DshCredentialInput,
@@ -818,7 +996,8 @@ fn write_provider_with_credential(
             Err(error) => Err(format!("Failed to read {}: {error}", path.display())),
         }
     }
-    let previous_config = snapshot(config_path)?;
+    let config_path = layer.path().to_path_buf();
+    let previous_config = snapshot(&config_path)?;
     let previous_credentials = snapshot(credentials_path)?;
     let mut credentials = CredentialsDocument::read(credentials_path)?;
     if credential.ref_name.trim().is_empty() {
@@ -827,11 +1006,11 @@ fn write_provider_with_credential(
     credentials.set_ref(credential.ref_name.trim(), Some(credential.value.trim()));
     let result = credentials
         .write(credentials_path)
-        .and_then(|()| write_yaml_object(config_path, config));
+        .and_then(|()| write_config_sections(layer, config));
     if let Err(error) = result {
         let mut failures = Vec::new();
         for (path, previous) in [
-            (config_path, previous_config),
+            (config_path.as_path(), previous_config),
             (credentials_path, previous_credentials),
         ] {
             let restore = match previous {
@@ -870,8 +1049,8 @@ pub async fn save_dsh_models_provider<R: tauri::Runtime>(
     }
 
     let db = state.db();
-    let config_path = get_dsh_config_path_async(&db).await?;
-    let mut config = read_yaml_object_or_empty(&config_path)?;
+    let layer = resolve_config_layer_from_db(&db).await?;
+    let mut config = read_config_sections(&layer)?;
 
     let mut payload = input.provider;
     payload.as_object_mut().map(|obj| {
@@ -883,9 +1062,9 @@ pub async fn save_dsh_models_provider<R: tauri::Runtime>(
 
     if let Some(credential) = &input.credential {
         let credentials_path = get_dsh_credentials_path_async(&db).await?;
-        write_provider_with_credential(&config_path, &config, &credentials_path, credential)?;
+        write_provider_with_credential(&layer, &config, &credentials_path, credential)?;
     } else {
-        write_yaml_object(&config_path, &config)?;
+        write_config_sections(&layer, &config)?;
     }
     emit_config_changed(&app, "window");
     read_dsh_runtime_config(state).await
@@ -902,8 +1081,8 @@ pub async fn delete_dsh_runtime_provider(
         return Err("Provider name is required".to_string());
     }
     let db = state.db();
-    let config_path = get_dsh_config_path_async(&db).await?;
-    let mut config = read_yaml_object_or_empty(&config_path)?;
+    let layer = resolve_config_layer_from_db(&db).await?;
+    let mut config = read_config_sections(&layer)?;
 
     let removed = {
         if let Some(llm_section) = config
@@ -938,7 +1117,7 @@ pub async fn delete_dsh_runtime_provider(
         return Err(format!("Provider '{provider_key}' not found"));
     }
 
-    write_yaml_object(&config_path, &config)?;
+    write_config_sections(&layer, &config)?;
     emit_config_changed(&app, "window");
     read_dsh_runtime_config(state).await
 }
@@ -947,6 +1126,43 @@ pub async fn delete_dsh_runtime_provider(
 // Model settings
 // ---------------------------------------------------------------------------
 
+/// Apply a default-model input to the managed section.
+///
+/// A profile patch replaces the entry's entire `config`, and dsh requires both
+/// `provider` and `model`, so a partial section would invalidate the row (and
+/// drop the bundle's `deepseek-official` default). When either required field
+/// ends up empty, the whole entry is removed instead: dsh then falls back to
+/// the bundled default model.
+fn apply_model_settings(config: &mut Value, input: &DshModelSettingsInput) -> Result<(), String> {
+    let config_object = object_mut(config)?;
+    let mut model_section = config_object
+        .get(DSH_DEFAULT_MODEL_SECTION)
+        .filter(|value| value.is_object())
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let model_object = object_mut(&mut model_section)?;
+    apply_string_field(model_object, "provider", input.provider.clone());
+    apply_string_field(model_object, "model", input.model.clone());
+    apply_string_field(
+        model_object,
+        "reasoningEffort",
+        input.reasoning_effort.clone(),
+    );
+
+    let required_present = ["provider", "model"].iter().all(|key| {
+        model_section
+            .get(*key)
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+    });
+    if model_section.as_object().map(Map::is_empty).unwrap_or(false) || !required_present {
+        config_object.remove(DSH_DEFAULT_MODEL_SECTION);
+    } else {
+        config_object.insert(DSH_DEFAULT_MODEL_SECTION.to_string(), model_section);
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn save_dsh_model_settings(
     state: tauri::State<'_, SqliteDbState>,
@@ -954,30 +1170,10 @@ pub async fn save_dsh_model_settings(
     input: DshModelSettingsInput,
 ) -> Result<DshRuntimeConfig, String> {
     let db = state.db();
-    let config_path = get_dsh_config_path_async(&db).await?;
-    let mut config = read_yaml_object_or_empty(&config_path)?;
-    let object = object_mut(&mut config)?;
-
-    let mut model_section = object
-        .get(DSH_DEFAULT_MODEL_SECTION)
-        .filter(|value| value.is_object())
-        .cloned()
-        .unwrap_or_else(|| json!({}));
-    let model_object = object_mut(&mut model_section)?;
-    apply_string_field(model_object, "provider", input.provider);
-    apply_string_field(model_object, "model", input.model);
-    apply_string_field(model_object, "reasoningEffort", input.reasoning_effort);
-    if model_section
-        .as_object()
-        .map(|m| m.is_empty())
-        .unwrap_or(false)
-    {
-        object.remove(DSH_DEFAULT_MODEL_SECTION);
-    } else {
-        object.insert(DSH_DEFAULT_MODEL_SECTION.to_string(), model_section);
-    }
-
-    write_yaml_object(&config_path, &config)?;
+    let layer = resolve_config_layer_from_db(&db).await?;
+    let mut config = read_config_sections(&layer)?;
+    apply_model_settings(&mut config, &input)?;
+    write_config_sections(&layer, &config)?;
     emit_config_changed(&app, "window");
     read_dsh_runtime_config(state).await
 }
@@ -998,21 +1194,17 @@ pub async fn apply_dsh_model_internal<R: Runtime>(
         return Err("Model id is required".to_string());
     }
 
-    let config_path = get_dsh_config_path_async(db).await?;
-    let mut config = read_yaml_object_or_empty(&config_path)?;
-    let object = object_mut(&mut config)?;
-
-    let mut model_section = object
-        .get(DSH_DEFAULT_MODEL_SECTION)
-        .filter(|value| value.is_object())
-        .cloned()
-        .unwrap_or_else(|| json!({}));
-    let model_object = object_mut(&mut model_section)?;
-    model_object.insert("provider".to_string(), json!(provider_key));
-    model_object.insert("model".to_string(), json!(model_id));
-    object.insert(DSH_DEFAULT_MODEL_SECTION.to_string(), model_section);
-
-    write_yaml_object(&config_path, &config)?;
+    let layer = resolve_config_layer_from_db(db).await?;
+    let mut config = read_config_sections(&layer)?;
+    apply_model_settings(
+        &mut config,
+        &DshModelSettingsInput {
+            provider: Some(provider_key.to_string()),
+            model: Some(model_id.to_string()),
+            reasoning_effort: None,
+        },
+    )?;
+    write_config_sections(&layer, &config)?;
     emit_config_changed(app, if from_tray { "tray" } else { "window" });
     if let Err(error) =
         crate::settings::provider_list_state::record_provider_last_used_in_sqlite_state(
@@ -1097,6 +1289,11 @@ pub async fn get_dsh_credential_value(
 // Other settings
 // ---------------------------------------------------------------------------
 
+/// Legacy-only editor for top-level `settings.yaml` keys.
+///
+/// On a profile layer this refuses: the layer is a list of plugin rows, not a
+/// key/value document, and rewriting it here would duplicate the plugin
+/// manager dsh already ships. Callers surface the message to the user.
 #[tauri::command]
 pub async fn save_dsh_other_settings(
     state: tauri::State<'_, SqliteDbState>,
@@ -1107,12 +1304,18 @@ pub async fn save_dsh_other_settings(
         return Err("dsh other settings must be an object".to_string());
     }
     let db = state.db();
-    let config_path = get_dsh_config_path_async(&db).await?;
-    let mut config = read_yaml_object_or_empty(&config_path)?;
+    let layer = resolve_config_layer_from_db(&db).await?;
+    if let DshConfigLayer::ProfilePatch { .. } = layer {
+        return Err(
+            "dsh 0.1.7+ 已把配置迁到 profiles/<profile>/cordis.patch.yml，请使用 dsh 自身的设置页维护其它配置"
+                .to_string(),
+        );
+    }
+    let mut config = read_yaml_object_or_empty(layer.path())?;
     let object = object_mut(&mut config)?;
     apply_dsh_other_settings(object, other_settings.as_object().unwrap());
 
-    write_yaml_object(&config_path, &config)?;
+    write_yaml_object(layer.path(), &config)?;
     emit_config_changed(&app, "window");
     read_dsh_runtime_config(state).await
 }
@@ -1440,6 +1643,127 @@ mod tests {
         CredentialsDocument::from_document(value.as_object().cloned().expect("object"))
     }
 
+    fn seed_profile(root: &Path, name: &str) {
+        let patch_path = super::profile_patch::profile_patch_path(root, name);
+        fs::create_dir_all(patch_path.parent().unwrap()).unwrap();
+        fs::write(patch_path.with_file_name("package.json"), "{}\n").unwrap();
+        fs::write(
+            patch_path,
+            "- id: webserver\n  config:\n    port: !!js ctx.port ?? 3080\n",
+        )
+        .unwrap();
+    }
+
+    /// The desktop profile wins over web, and its patch is the writable layer.
+    #[test]
+    fn profile_layer_is_detected_before_legacy_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        seed_profile(dir.path(), super::profile_patch::DSH_WEB_PROFILE);
+        seed_profile(dir.path(), super::profile_patch::DSH_DESKTOP_PROFILE);
+        fs::write(dir.path().join(DSH_SETTINGS_FILE), "agent-default-model: {}\n").unwrap();
+
+        let layer = resolve_config_layer(dir.path(), None);
+        assert_eq!(layer.profile(), Some(super::profile_patch::DSH_DESKTOP_PROFILE));
+        assert!(layer.path().ends_with("cordis.patch.yml"));
+    }
+
+    /// Without any profile, dsh still reads settings.yaml (pre-0.1.7).
+    #[test]
+    fn legacy_settings_yaml_is_the_layer_without_profiles() {
+        let dir = tempfile::tempdir().unwrap();
+        let layer = resolve_config_layer(dir.path(), None);
+        assert_eq!(layer.profile(), None);
+        assert!(layer.path().ends_with(DSH_SETTINGS_FILE));
+    }
+
+    /// Writing a provider touches only the llm-pi-ai row; unrelated rows,
+    /// including `!!js` expressions, survive the rewrite.
+    #[test]
+    fn provider_write_preserves_other_patch_rows_and_js_expressions() {
+        let dir = tempfile::tempdir().unwrap();
+        seed_profile(dir.path(), super::profile_patch::DSH_DESKTOP_PROFILE);
+        let layer = resolve_config_layer(dir.path(), None);
+
+        let mut config = read_config_sections(&layer).unwrap();
+        config["llm-pi-ai"] = json!({
+            "providers": { "relay": { "api": "openai-completions", "baseURL": "https://relay" } }
+        });
+        write_config_sections(&layer, &config).unwrap();
+
+        let entries = super::profile_patch::read_patch_entries(layer.path()).unwrap();
+        assert!(entries.iter().any(|entry| {
+            entry.get("id").and_then(Value::as_str) == Some("webserver")
+                && entry["config"]["port"]["__jsExpr"] == json!("ctx.port ?? 3080")
+        }));
+        assert!(entries.iter().any(|entry| {
+            entry.get("id").and_then(Value::as_str) == Some(DSH_LLM_PI_AI_SECTION)
+                && entry["config"]["providers"]["relay"]["baseURL"] == json!("https://relay")
+        }));
+
+        let text = fs::read_to_string(layer.path()).unwrap();
+        assert!(text.contains("@deepseek-ai/dsh-llm-pi-ai"), "package name: {text}");
+        assert!(text.contains("!!js ctx.port ?? 3080"), "expression kept: {text}");
+
+        // Reading it back yields the provider again.
+        let reread = read_config_sections(&layer).unwrap();
+        assert_eq!(
+            reread["llm-pi-ai"]["providers"]["relay"]["baseURL"],
+            json!("https://relay")
+        );
+    }
+
+    /// Deleting the last provider removes the row so dsh falls back to its
+    /// catalog, but leaves every other row intact.
+    #[test]
+    fn empty_managed_sections_remove_their_patch_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        seed_profile(dir.path(), super::profile_patch::DSH_DESKTOP_PROFILE);
+        let layer = resolve_config_layer(dir.path(), None);
+
+        write_config_sections(&layer, &json!({ "llm-pi-ai": {}, "agent-default-model": {} }))
+            .unwrap();
+        let entries = super::profile_patch::read_patch_entries(layer.path()).unwrap();
+        assert!(entries
+            .iter()
+            .all(|entry| entry.get("id").and_then(Value::as_str) != Some(DSH_LLM_PI_AI_SECTION)));
+        assert!(entries.iter().any(|entry| {
+            entry.get("id").and_then(Value::as_str) == Some("webserver")
+        }));
+    }
+
+    /// A profile patch replaces the whole config, so a default model without
+    /// both required fields is dropped instead of invalidating the row.
+    #[test]
+    fn default_model_requires_provider_and_model() {
+        let mut config = json!({
+            "agent-default-model": { "provider": "deepseek", "model": "deepseek-chat", "reasoningEffort": "high" }
+        });
+        apply_model_settings(
+            &mut config,
+            &DshModelSettingsInput {
+                provider: Some(String::new()),
+                model: None,
+                reasoning_effort: None,
+            },
+        )
+        .unwrap();
+        assert!(config.get(DSH_DEFAULT_MODEL_SECTION).is_none());
+
+        apply_model_settings(
+            &mut config,
+            &DshModelSettingsInput {
+                provider: Some("relay".to_string()),
+                model: Some("gpt-x".to_string()),
+                reasoning_effort: Some("low".to_string()),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            config[DSH_DEFAULT_MODEL_SECTION],
+            json!({ "provider": "relay", "model": "gpt-x", "reasoningEffort": "low" })
+        );
+    }
+
     #[test]
     fn model_settings_from_config_reads_section() {
         let config = json!({
@@ -1720,21 +2044,23 @@ mod tests {
             value: "new-key".to_string(),
         };
         // The second writer rejects a non-mapping after the credential write.
-        let result =
-            write_provider_with_credential(&config_path, &Value::Null, &credentials_path, &input);
+        let legacy_layer = DshConfigLayer::SettingsYaml {
+            path: config_path.clone(),
+        };
+        let result = write_provider_with_credential(&legacy_layer, &Value::Null, &credentials_path, &input);
         assert!(result.is_err());
         assert_eq!(fs::read(&config_path).unwrap(), original_config);
         assert_eq!(fs::read(&credentials_path).unwrap(), original_credentials);
 
         let new_config = dir.path().join("new/settings.yaml");
         let new_credentials = dir.path().join("new/.credentials.yaml");
-        assert!(write_provider_with_credential(
-            &new_config,
-            &Value::Null,
-            &new_credentials,
-            &input
-        )
-        .is_err());
+        let new_layer = DshConfigLayer::SettingsYaml {
+            path: new_config.clone(),
+        };
+        assert!(
+            write_provider_with_credential(&new_layer, &Value::Null, &new_credentials, &input)
+                .is_err()
+        );
         assert!(!new_config.exists());
         assert!(!new_credentials.exists());
     }
@@ -1878,7 +2204,7 @@ const AGENT_INSTRUCTIONS_MAX_BYTES: u64 = 256 * 1024;
 /// Resolve the home-level `cordis.patch.yml` path via DB-priority config dir.
 async fn get_dsh_cordis_patch_path(db: &SqliteDbState) -> Result<PathBuf, String> {
     let root = get_dsh_root_dir_from_db_async(db).await?;
-    Ok(root.join("cordis.patch.yml"))
+    Ok(root.join(super::constants::DSH_PATCH_FILE))
 }
 
 /// Check whether the **home-level** `cordis.patch.yml` enables `agent-instructions`.

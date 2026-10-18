@@ -28,12 +28,21 @@ const DshConfigPreviewModal: FC<DshConfigPreviewModalProps> = ({
   const cordisPatchValue = data?.cordisPatchContent ?? null;
   const editorHeight = 'calc(75vh - 190px)';
 
+  // `configContent` is whatever layer is live: the profile patch since dsh
+  // 0.1.7, legacy settings.yaml before that. Label it truthfully.
+  const configLabel = data?.profile
+    ? t('dsh.preview.profilePatchTitle', {
+        defaultValue: 'Profile Patch ({{profile}})',
+        profile: data.profile,
+      })
+    : t('dsh.preview.settingsYamlTitle', { defaultValue: 'settings.yaml' });
+
   const items: TabsProps['items'] = [];
 
   if (configValue !== null) {
     items.push({
       key: 'config',
-      label: t('dsh.preview.settingsYamlTitle', { defaultValue: 'settings.yaml' }),
+      label: configLabel,
       children: (
         <div style={{ padding: '4px 0' }}>
           <PlainTextEditor value={configValue} readOnly language="yaml" height={editorHeight} />
@@ -69,6 +78,8 @@ const DshConfigPreviewModal: FC<DshConfigPreviewModalProps> = ({
   if (cordisPatchValue !== null) {
     items.push({
       key: 'cordis-patch',
+      // Home-level patch: MCP rows only. Never confuse it with the profile patch
+      // tab above, which is the live provider/default-model layer.
       label: t('dsh.preview.cordisPatchTitle', { defaultValue: 'cordis.patch.yml' }),
       children: (
         <div style={{ padding: '4px 0' }}>

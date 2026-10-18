@@ -16,6 +16,8 @@ export interface DshPathInfo {
 // between the two (see DshPage getCommonConfig).
 export interface DshSettingsConfig {
   configDir?: string;
+  /** Pinned profile whose `cordis.patch.yml` backs the editor. */
+  profile?: string;
   updatedAt?: string;
 }
 
@@ -23,6 +25,8 @@ export interface DshSettingsConfigInput {
   config: string;
   rootDir?: string | null;
   clearRootDir?: boolean;
+  /** Pin a profile; `''` clears the pin (back to auto-detection); omit to keep it. */
+  profile?: string;
 }
 
 export type DshDeleteScope = 'credential' | 'provider' | 'both';
@@ -75,13 +79,22 @@ export interface DshBuiltinProvider {
 
 export interface DshRuntimeConfig {
   rootPathInfo: DshPathInfo;
+  /** Writable layer: `profiles/<profile>/cordis.patch.yml`, or legacy `settings.yaml`. */
   configPath: string;
   credentialsPath: string;
   promptPath: string;
-  /** Raw `settings.yaml` as a JSON object. */
+  /** Profile whose patch layer backs the editor (`undefined` = legacy settings.yaml). */
+  profile?: string;
+  /** Profiles present under `profiles/`, for the profile picker. */
+  profiles: string[];
+  /** dsh imported the legacy `settings.yaml` into the profile patch layer. */
+  migratedFromSettings: boolean;
+  /** Legacy `settings.yaml` path, shown as migration provenance. */
+  settingsYamlPath: string;
+  /** Managed sections (`llm-pi-ai`, `agent-default-model`) of the active layer. */
   config: Record<string, unknown>;
   modelSettings: DshModelSettingsInput;
-  /** Top-level `settings.yaml` keys outside `llm-pi-ai` and `agent-default-model`. */
+  /** Legacy "other settings"; empty on a profile layer (owned by dsh's own UI). */
   otherSettings: Record<string, unknown>;
   providers: DshRuntimeProviderView[];
   builtinProviders: DshBuiltinProvider[];

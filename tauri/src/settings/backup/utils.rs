@@ -991,6 +991,29 @@ pub async fn get_dsh_config_path_from_db_async(
     Ok(path.exists().then_some(path))
 }
 
+/// Resolve the active dsh profile patch path if it exists on disk.
+///
+/// dsh >= 0.1.7 keeps providers and the default model here, so a backup that
+/// only packaged `settings.yaml` would restore a stale (or imported) file and
+/// silently lose them. The archive keeps the `profiles/<name>/` layout so the
+/// restore side can write it back verbatim.
+pub async fn get_dsh_profile_patch_path_from_db_async(
+    db: &crate::db::SqliteDbState,
+) -> Result<Option<String>, String> {
+    let (config_dir, _) = crate::coding::dsh::get_dsh_config_dir_from_db_async(db).await?;
+    let Some(profile) = crate::coding::dsh::resolve_active_profile_async(db).await else {
+        return Ok(None);
+    };
+    let relative = format!(
+        "profiles/{profile}/{}",
+        crate::coding::dsh::constants::DSH_MCP_FILE
+    );
+    Ok(config_dir
+        .join(&relative)
+        .exists()
+        .then_some(relative))
+}
+
 /// Resolve the dsh `.credentials.yaml` path if it exists on disk.
 pub async fn get_dsh_credentials_path_from_db_async(
     db: &crate::db::SqliteDbState,
@@ -1385,6 +1408,9 @@ pub async fn list_backup_file_filter_path_options(
             "dsh",
             crate::coding::dsh::constants::DSH_MCP_FILE,
         );
+    }
+    if let Some(relative) = get_dsh_profile_patch_path_from_db_async(db).await? {
+        push_backup_filter_option(&mut options, &mut seen, "dsh", &relative);
     }
 
     if let Some((normal_config_path, config_library_path)) = get_claude_desktop_settings_paths() {
@@ -3750,10 +3776,12 @@ async fn write_external_configs_to_backup_zip<W: Write + Seek>(
     let dsh_credentials_path = get_dsh_credentials_path_from_db_async(db).await?;
     let dsh_prompt_path = get_dsh_prompt_path_from_db_async(db).await?;
     let dsh_mcp_path = get_dsh_mcp_path_from_db_async(db).await?;
+    let dsh_profile_patch_relative = get_dsh_profile_patch_path_from_db_async(db).await?;
     if dsh_config_path.is_some()
         || dsh_credentials_path.is_some()
         || dsh_prompt_path.is_some()
         || dsh_mcp_path.is_some()
+        || dsh_profile_patch_relative.is_some()
     {
         add_directory_to_zip_once(
             zip,
@@ -3811,6 +3839,21 @@ async fn write_external_configs_to_backup_zip<W: Write + Seek>(
             &path,
             "dsh",
             crate::coding::dsh::constants::DSH_MCP_FILE,
+            filter_rules,
+            options,
+        )?;
+    }
+    if let Some(relative) = dsh_profile_patch_relative {
+        let path = crate::coding::dsh::get_dsh_config_dir_from_db_async(db)
+            .await?
+            .0
+            .join(&relative);
+        add_external_config_file_to_zip(
+            zip,
+            added_zip_directories,
+            &path,
+            "dsh",
+            &relative,
             filter_rules,
             options,
         )?;

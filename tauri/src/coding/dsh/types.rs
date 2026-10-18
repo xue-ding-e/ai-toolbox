@@ -22,6 +22,10 @@ pub struct DshSettingsConfigRecord {
 pub struct DshSettingsConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config_dir: Option<String>,
+    /// Explicitly pinned profile whose `cordis.patch.yml` backs the editor.
+    /// Unset means auto-detection (desktop → web → newest profile).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
     pub updated_at: String,
 }
 
@@ -32,6 +36,9 @@ pub struct DshSettingsConfigInput {
     pub root_dir: Option<String>,
     #[serde(default)]
     pub clear_root_dir: bool,
+    /// Pin a profile, or clear the pin with an empty string.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -162,14 +169,30 @@ fn is_explicit_source(source: &DshModelSource) -> bool {
 #[serde(rename_all = "camelCase")]
 pub struct DshRuntimeConfig {
     pub root_path_info: DshPathInfo,
+    /// Writable layer: `profiles/<profile>/cordis.patch.yml` when a profile
+    /// exists, otherwise the legacy `settings.yaml`.
     pub config_path: String,
     pub credentials_path: String,
     pub prompt_path: String,
-    /// Raw `settings.yaml` content as a JSON object (unknown top-level keys pass
-    /// through untouched).
+    /// Profile whose patch layer backs the editor (`None` = legacy settings.yaml).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    /// Profiles present under `profiles/`, for the profile picker.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub profiles: Vec<String>,
+    /// dsh imported the legacy `settings.yaml` into the profile patch layer
+    /// (`settings.yaml.imported` exists and the patch carries providers).
+    #[serde(default)]
+    pub migrated_from_settings: bool,
+    /// Legacy `settings.yaml` path, shown as migration provenance.
+    pub settings_yaml_path: String,
+    /// Managed sections (`llm-pi-ai`, `agent-default-model`) of the active
+    /// layer. Other keys are not part of this editor and are not echoed back.
     pub config: Value,
     pub model_settings: DshModelSettingsInput,
-    /// Everything except the managed keys (`llm-pi-ai`, `agent-default-model`).
+    /// Legacy "other settings": only top-level `settings.yaml` keys read from a
+    /// legacy layer. Empty on a profile layer, where unrelated plugin rows are
+    /// owned by dsh's own settings UI and must never be echoed back.
     pub other_settings: Value,
     pub providers: Vec<DshRuntimeProviderView>,
     pub builtin_providers: Vec<DshBuiltinProvider>,

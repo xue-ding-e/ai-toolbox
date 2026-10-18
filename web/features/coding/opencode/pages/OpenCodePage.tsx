@@ -2933,6 +2933,8 @@ const OpenCodePage: React.FC = () => {
               showOptions
               showVariants={true}
               showModalities={true}
+              // V2 has no attachment flag; media support comes from input modalities.
+              attachmentViaModalities={v2MigrationEnabled}
               limitRequired={false}
               requireCompleteLimitPair
               nameRequired={false}

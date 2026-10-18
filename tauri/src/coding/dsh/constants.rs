@@ -11,6 +11,18 @@ pub const DSH_PROMPT_FILE: &str = "AGENTS.md";
 /// The Cordis patch DSL file the `mcp::cordis_patch` adapter writes MCP servers into.
 /// Each MCP server is one `insert` row in a top-level YAML array within this file.
 pub const DSH_MCP_FILE: &str = "cordis.patch.yml";
+/// Per-profile patch layer file (`profiles/<profile>/cordis.patch.yml`).
+///
+/// dsh >= 0.1.7 keeps live configuration here instead of `settings.yaml`;
+/// the same file name is used at the home level for MCP rows.
+pub const DSH_PATCH_FILE: &str = "cordis.patch.yml";
+/// The one-shot import source dsh writes after moving `settings.yaml` into the
+/// profile patch layer; read-only history for this app.
+pub const DSH_IMPORTED_SETTINGS_FILE: &str = "settings.yaml.imported";
+/// Plugin package name of the `llm-pi-ai` row.
+pub const DSH_LLM_PI_AI_PACKAGE: &str = "@deepseek-ai/dsh-llm-pi-ai";
+/// Plugin package name of the `agent-default-model` row.
+pub const DSH_DEFAULT_MODEL_PACKAGE: &str = "@deepseek-ai/dsh-agent-default-model";
 
 /// The settings.yaml section under which llm-pi-ai plugin providers are stored
 /// as a dictionary keyed by route id (`settings["llm-pi-ai"]["providers"][route]`).

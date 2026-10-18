@@ -598,7 +598,10 @@ pub fn process_cordis_patch_yaml(
         return Ok(content.to_string());
     }
 
-    let value: serde_yaml::Value = serde_yaml::from_str(content)
+    // Keep `!!js` expressions: serde_yaml resolves that standard tag away, so
+    // parse the `!js` spelling instead and restore `!!js` when writing back.
+    let normalized = super::yaml_sync::rewrite_unquoted_tag(content, "!!js", "!js");
+    let value: serde_yaml::Value = serde_yaml::from_str(&normalized)
         .map_err(|e| format!("Failed to parse cordis.patch.yml: {}", e))?;
     let array = value
         .as_sequence()
@@ -607,8 +610,7 @@ pub fn process_cordis_patch_yaml(
     let mut changed = false;
     let mut new_array: Vec<Value> = Vec::with_capacity(array.len());
     for op in array {
-        let json_op: Value =
-            serde_json::to_value(op).map_err(|e| format!("Failed to convert cordis op: {}", e))?;
+        let json_op = super::yaml_sync::yaml_to_json_lossless(op.clone());
         let Some(insert_list) = json_op.get("insert").and_then(|v| v.as_array()) else {
             new_array.push(json_op);
             continue;
@@ -669,8 +671,10 @@ pub fn process_cordis_patch_yaml(
         return Ok(content.to_string());
     }
 
-    serde_yaml::to_string(&new_array)
-        .map_err(|e| format!("Failed to serialize cordis.patch.yml: {e}"))
+    let yaml = super::yaml_sync::json_to_yaml_lossless(Value::Array(new_array));
+    let text = serde_yaml::to_string(&yaml)
+        .map_err(|e| format!("Failed to serialize cordis.patch.yml: {e}"))?;
+    Ok(super::yaml_sync::rewrite_unquoted_tag(&text, "!js", "!!js"))
 }
 
 #[cfg(test)]

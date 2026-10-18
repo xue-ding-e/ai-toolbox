@@ -1781,6 +1781,7 @@
       "toolCall": "Tool Call",
       "temperatureSetting": "Temperature",
       "attachment": "Attachment",
+      "attachmentModalitiesHint": "OpenCode V2 has no separate attachment capability; media support is defined by the input modalities above (Image / PDF).",
       "variants": "Model Variants",
       "variantsHint": "Configure model variants like reasoning effort, text verbosity, etc.",
       "invalidVariants": "Invalid Variants JSON format",
@@ -5430,7 +5431,17 @@
       "settingsYamlTitle": "settings.yaml",
       "credentialsYamlTitle": ".credentials.yaml",
       "agentsMdTitle": "AGENTS.md",
-      "cordisPatchTitle": "cordis.patch.yml"
+      "cordisPatchTitle": "cordis.patch.yml",
+      "profilePatchTitle": "Profile Patch ({{profile}})"
+    },
+    "profile": {
+      "label": "Configuration Profile",
+      "auto": "Auto-detect ({{profile}})",
+      "autoDetecting": "Auto-detect",
+      "migrationTitle": "Configuration moved to the profile layer",
+      "migrationWithFile": "dsh 0.1.7+ no longer reads settings.yaml: it was imported into {{patchPath}} and renamed to {{importedPath}}. This page now writes providers and the default model into the profile patch; the old file is history only.",
+      "otherSettingsFrozenTitle": "Other configuration is owned by dsh",
+      "otherSettingsFrozenDesc": "The profile patch holds configuration rows for every dsh plugin, so editing it wholesale can break unrelated plugins. Maintain those values in dsh's own settings pages (Settings → Plugins); this page manages providers and the default model only."
     },
     "modelSettings": {
       "title": "Default Model",

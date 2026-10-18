@@ -342,6 +342,7 @@ fn is_mapped_mcp_config_file(mapping_id: &str) -> bool {
             | "kimi-mcp"
             | "hermes-config"
             | "dsh-mcp"
+            | "dsh-profile-patch"
             | "claude-desktop-config"
             | "zcode-cli-config"
             | "omo-native-mcp"

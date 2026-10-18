@@ -518,6 +518,24 @@ const DshPage: React.FC = () => {
     };
   }, [loadConfig]);
 
+  const [pinnedProfile, setPinnedProfile] = React.useState<string | undefined>(undefined);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    getDshSettingsConfig()
+      .then((cfg) => {
+        if (!cancelled) {
+          setPinnedProfile(cfg?.profile || undefined);
+        }
+      })
+      .catch((error) => {
+        console.error('Failed to load dsh settings config:', error);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const {
     rootDirectoryModalOpen,
     setRootDirectoryModalOpen,
@@ -535,6 +553,27 @@ const DshPage: React.FC = () => {
     },
     saveCommonConfig: saveDshSettingsConfig,
   });
+
+  /**
+   * `null` clears the pin (back to auto-detection), a name pins that profile.
+   * The backend keeps the current pin when `profile` is omitted, so an empty
+   * string is the explicit "clear" signal.
+   */
+  const handleSelectProfile = async (profile: string | null) => {
+    try {
+      const cfg = await getDshSettingsConfig();
+      await saveDshSettingsConfig({
+        config: cfg?.configDir ?? '',
+        rootDir: cfg?.configDir ?? null,
+        profile: profile ?? '',
+      });
+      setPinnedProfile(profile ?? undefined);
+      await loadConfig(true);
+    } catch (error) {
+      console.error('Failed to save dsh profile:', error);
+      message.error(t('common.error'));
+    }
+  };
 
   const providerOptions = React.useMemo(() => {
     const options = new Map<string, string>();
@@ -1484,6 +1523,29 @@ const DshPage: React.FC = () => {
     }
   };
 
+  const profileOptions = React.useMemo(
+    () => [
+      {
+        value: '',
+        // Name the profile auto-detection lands on, but only while it is really
+        // auto-detecting; under a pin that name would describe the pin, not
+        // what clearing it would pick.
+        label:
+          !pinnedProfile && runtimeConfig?.profile
+            ? t('dsh.profile.auto', {
+                defaultValue: 'Auto-detect ({{profile}})',
+                profile: runtimeConfig.profile,
+              })
+            : t('dsh.profile.autoDetecting', { defaultValue: 'Auto-detect' }),
+      },
+      ...(runtimeConfig?.profiles ?? []).map((profile) => ({
+        value: profile,
+        label: profile,
+      })),
+    ],
+    [pinnedProfile, runtimeConfig?.profile, runtimeConfig?.profiles, t],
+  );
+
   const handleImportFromAllApiHub = React.useCallback(
     async (imported: AllApiHubProviderItem[]) => {
       const existingKeys = new Set(dshProviders.map((provider) => provider.providerKey));
@@ -1915,6 +1977,22 @@ const DshPage: React.FC = () => {
                 >
                   {t('dsh.openWebUi', { defaultValue: '打开 Web UI' })}
                 </Button>
+                {runtimeConfig?.profiles.length ? (
+                  <>
+                    <Text type="secondary" className={styles.pathLabel}>
+                      {t('dsh.profile.label', { defaultValue: '配置 Profile' })}:
+                    </Text>
+                    <Select
+                      size="small"
+                      value={pinnedProfile ?? ''}
+                      options={profileOptions}
+                      onChange={(value) => {
+                        void handleSelectProfile(value ? value : null);
+                      }}
+                      style={{ minWidth: 180 }}
+                    />
+                  </>
+                ) : null}
               </Space>
             </div>
             <Button type="text" icon={<EllipsisOutlined />} onClick={() => setSettingsModalOpen(true)}>
@@ -1924,6 +2002,23 @@ const DshPage: React.FC = () => {
           <div className={styles.pageHint}>
             {t('dsh.pageHint', { defaultValue: '管理 dsh（DeepSeek Harness）的模型供应商、默认模型与全局提示词。' })}
           </div>
+
+          {runtimeConfig?.migratedFromSettings ? (
+            <Alert
+              type="info"
+              showIcon
+              style={{ marginBottom: 12 }}
+              message={t('dsh.profile.migrationTitle', {
+                defaultValue: '配置已迁移到 profile 层',
+              })}
+              description={t('dsh.profile.migrationWithFile', {
+                defaultValue:
+                  'dsh 0.1.7 起不再读取 settings.yaml：它已被导入到 {{patchPath}} 并重命名为 {{importedPath}}。本页的供应商与默认模型现在直接写入 profile 补丁文件，旧文件仅作历史记录。',
+                patchPath: runtimeConfig.configPath,
+                importedPath: `${runtimeConfig.settingsYamlPath}.imported`,
+              })}
+            />
+          ) : null}
 
           <div
             id="dsh-model-settings"
@@ -2159,7 +2254,21 @@ const DshPage: React.FC = () => {
                       <Text strong>{t('dsh.otherConfig.title', { defaultValue: '其他配置' })}</Text>
                     </Space>
                   ),
-                  children: (
+                  children: runtimeConfig?.profile ? (
+                    // The profile patch carries every dsh plugin row; a free-form
+                    // JSON editor would let a rewrite drop unrelated plugins.
+                    <Alert
+                      type="info"
+                      showIcon
+                      message={t('dsh.profile.otherSettingsFrozenTitle', {
+                        defaultValue: '其他配置已由 dsh 自身管理',
+                      })}
+                      description={t('dsh.profile.otherSettingsFrozenDesc', {
+                        defaultValue:
+                          'profile 补丁文件里是 dsh 全部插件的配置行，直接编辑容易破坏其它插件。请使用 dsh 设置页（设置 → 插件）维护这些配置；本页只管理供应商与默认模型。',
+                      })}
+                    />
+                  ) : (
                     <Form.Item
                       help={
                         <span>

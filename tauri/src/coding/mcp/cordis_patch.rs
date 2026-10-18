@@ -66,11 +66,13 @@ fn read_cordis_array(path: &Path) -> Result<Vec<Value>, String> {
     if content.trim().is_empty() {
         return Ok(vec![]);
     }
-    // Parse as a serde_yaml::Value, then convert to JSON for uniform handling.
+    // serde_yaml only keeps `!js` as a tagged node; the `!!js` spelling dsh
+    // reads is resolved away. Convert on the way in (and back on write) so an
+    // expression is never rewritten as a literal string.
+    let content = super::yaml_sync::rewrite_unquoted_tag(&content, "!!js", "!js");
     let yaml: serde_yaml::Value = serde_yaml::from_str(&content)
         .map_err(|error| format!("Failed to parse {}: {error}", path.display()))?;
-    let parsed: Value = serde_json::to_value(&yaml)
-        .map_err(|error| format!("Failed to convert {}: {error}", path.display()))?;
+    let parsed: Value = super::yaml_sync::yaml_to_json_lossless(yaml);
     if parsed.is_array() {
         Ok(parsed.as_array().cloned().unwrap_or_default())
     } else {
@@ -84,10 +86,12 @@ fn read_cordis_array(path: &Path) -> Result<Vec<Value>, String> {
     }
 }
 
-/// Write the cordis array back as YAML.
+/// Write the cordis array back as YAML, restoring dsh's `!!js` spelling.
 fn write_cordis_array(path: &Path, array: &[Value]) -> Result<(), String> {
-    let yaml_str = serde_yaml::to_string(array)
+    let yaml = super::yaml_sync::json_to_yaml_lossless(Value::Array(array.to_vec()));
+    let yaml_str = serde_yaml::to_string(&yaml)
         .map_err(|e| format!("Failed to serialize cordis.patch.yml: {e}"))?;
+    let yaml_str = super::yaml_sync::rewrite_unquoted_tag(&yaml_str, "!js", "!!js");
     atomic_write_bytes(path, yaml_str.as_bytes())
 }
 

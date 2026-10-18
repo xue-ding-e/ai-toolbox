@@ -7,6 +7,9 @@
 ## Source of Truth
 
 - 唯一读入口是 `readDshRuntimeConfig()`（后端 `read_dsh_runtime_config`），页面不推导、不缓存、不合成派生状态。
+- `runtimeConfig.configPath` 是**当前写入层**：dsh 0.1.7+ 为 `profiles/<profile>/cordis.patch.yml`，否则是 legacy `settings.yaml`。页面不要假设文件名；预览 Tab 标题、保存提示、迁移说明都以 `profile` / `settingsYamlPath` / `migratedFromSettings` 为准。
+- `runtimeConfig.profile` 是后端实际选中的 profile（固定值 → `desktop` → `web` → 最新）。顶部 `配置 Profile` 选择器把用户选择写进 `dsh_settings_config.profile`：`''` 表示恢复自动检测，省略 `profile` 字段则保留原固定值（这是 `saveDshSettingsConfig` 的三态契约，不要改成 `null` 即清空）。`profiles.length === 0` 时（legacy 层）隐藏选择器。
+- `migratedFromSettings === true` 时页面顶部必须显示迁移说明：`settings.yaml` 已被导入 `configPath` 并改名为 `settingsYamlPath + '.imported'`，旧文件不再生效。
 - 所有写命令（保存默认模型 / 供应商 / 凭据 / 其他配置）**都返回整份新的 `DshRuntimeConfig`**。页面必须用返回值整体替换 state（`setRuntimeConfig(nextConfig)` 后再 `setOtherSettings(nextConfig.otherSettings || {})`），不要只做局部 patch——后端才是文件内容的事实源，本地 patch 会与磁盘漂移。
 - `runtimeConfig.providers` 里**包含没有配置文件条目的 route**：后端把 `agent-default-model.provider` 也并进 key 集合。此时 `provider.provider === undefined`（无条目），与"有条目但内容为空对象"是两种语义，删除与保存分支都依赖这个区别。
 - 模型记录一律经 `getDshModelRecords()` 三层回退取得：显式 `models` → 适配器内置目录（`modelSource === 'builtin'` 时的 `builtinModels`）→ 空。不要在组件里另写一套回退，否则卡片显示、拉取模型、连通性测试三处会看到不同的模型集合。
@@ -52,7 +55,7 @@ sequenceDiagram
 - `DSH_KNOWN_MODEL_FIELDS` 是模型字段白名单：保存时先删除所有不在表内的键，再合并 `extraParams` 编辑器的内容。**新增模型字段必须同步加进这个集合**，否则用户填的值会被"额外参数"编辑器当成未知键洗掉；反过来，从集合里删键前要确认它不是后端 schema 的字段。
 - 模型弹窗刻意 `showReasoning={false}`（表单不提供开关）但仍通过 `initialValues` 传入 `reasoning`，`handleSaveDshModel` 会保留它。不要因为"表单里看不见"就把它从白名单里移除，那会在保存时静默清空已存的 `reasoning: true`。同理 `showCost={false}`，cost 由 handler 自己从 `nextModel.cost` 重建。
 - 删除模型（单个 / 批量 / 连通性测试移除）后，如果被删的正是默认模型，必须再调一次 `saveDshModelSettings` 把 `model` 清空并同步 `modelForm`。三处删除路径都要做，漏一处会留下指向不存在模型的默认值。
-- 其他配置（Other Settings）是失焦自动保存：保存前必须过 `otherSettingsValid`，非对象（数组/标量）一律按 `{}` 处理。托管键（`llm-pi-ai`、`agent-default-model`）由后端保留不回写文件，**前端不需要也不应该自己剔除**。
+- 其他配置（Other Settings）是失焦自动保存：保存前必须过 `otherSettingsValid`，非对象（数组/标量）一律按 `{}` 处理。托管键（`llm-pi-ai`、`agent-default-model`）由后端保留不回写文件，**前端不需要也不应该自己剔除**。**profile 层上该编辑器被后端冻结**（`otherSettings` 恒为 `{}`），页面必须按 `runtimeConfig.profile` 渲染 `dsh.profile.otherSettingsFrozen*` 说明而不是空编辑器——否则用户会以为配置被清空并尝试重新输入。
 - `agentInstructionsEnabled` 的作用域必须如实呈现：启用只写 home 级 `cordis.patch.yml`，只对 dsh tui / headless 等 base profile 生效；Web 会话的 agent-instructions 由 per-session agent preset 决定，本开关既不反映也不控制它。同一句 `dsh.agentInstructions.scopeNote` 在**两个位置**渲染（未启用时的 Alert description、已启用时的提示行），"一个事实一个 key"是有意的，不要拆成两句或只改一处。
 - 「打开 Web UI」是两阶段回退：`openDshWebUi()` 抛错才弹 Modal；Modal 的 `'initial'` 阶段启动 `dsh web`，启动失败再切到 `'npx'` 阶段（okText 同时换成"使用 npx 启动"）。npx 阶段再失败就只报错并关闭。不要把它简化成一次调用。
 - 几乎所有写操作成功后都要 `refreshTrayMenu()`：托盘 provider 菜单是另一条独立消费路径，不刷新会显示陈旧状态。
@@ -74,7 +77,9 @@ sequenceDiagram
 ## 最小验证
 
 - 打开本页：能读到当前配置目录与供应商列表；配置目录为空时显示空态而不是报错。
-- 保存一个自定义供应商（含 API Key）后：`settings.yaml` 的 `llm-pi-ai.providers.<route>` 与 `.credentials.yaml` 同时更新，其余 section 与未知键逐字未变。
+- 保存一个自定义供应商（含 API Key）后：当前写入层（legacy `settings.yaml` 或 `profiles/<profile>/cordis.patch.yml`）的 `llm-pi-ai.providers.<route>` 与 `.credentials.yaml` 同时更新，其余 section / patch 行与未知键逐字未变。
+- 切换 `配置 Profile` 后：`configPath`、供应商列表、默认模型与预览内容都来自新 profile；选「自动检测」后 DB 固定值被清除。
+- 迁移过的配置目录：顶部出现迁移说明，`其他配置` 区域显示冻结说明而非 JSON 编辑器。
 - 编辑一个**内置**渠道后：`displayName` / `api` 未被写入该 route。
 - 两个渠道共享同一 `apiKeyEnv` 时批量删除其一：ref 保留、凭据不丢；两个都删时只删一次 ref，且两份收藏都保留原密钥。
 - 删除默认供应商的当前默认模型：默认模型被清空，表单与托盘同步。
