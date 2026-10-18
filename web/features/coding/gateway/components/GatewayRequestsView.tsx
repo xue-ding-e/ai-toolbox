@@ -770,7 +770,9 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
             ))
             : '-'}</strong>
           <span title={t('gateway.page.requests.tpsHint')}>{t('gateway.page.requests.tpsLabel')}</span>
-          <strong>{formatTps(detail) ?? '-'}</strong>
+          <strong title={detail.data_source === 'session' ? t('gateway.page.requests.sessionTpsHint') : undefined}>
+            {formatTps(detail) ?? '-'}
+          </strong>
           <span>{t('gateway.page.requests.fields.attempts')}</span>
           <strong>{detail.data_source === 'session' ? '-' : [attemptCounts.current, attemptCounts.total].join(' / ')}</strong>
           {providerAttempts.length > 0 && (
@@ -985,7 +987,16 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
       dataIndex: 'tps',
       width: 90,
       align: 'right',
-      render: (_, record) => formatTps(record) ?? '-',
+      render: (_, record) => {
+        const value = formatTps(record) ?? '-';
+        if (record.data_source !== 'session') {
+          return value;
+        }
+        // A session rate divides by the transcript-estimated end-to-end
+        // duration, which includes queuing and the wait for the first chunk,
+        // so it is not comparable with the gateway's own measurement.
+        return <span title={t('gateway.page.requests.sessionTpsHint')}>{value}</span>;
+      },
     },
     {
       title: t('gateway.page.requests.columns.cost'),
