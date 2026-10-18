@@ -249,6 +249,7 @@ const ModelFormModal: React.FC<ModelFormModalProps> = ({
   const [advancedExpanded, setAdvancedExpanded] = React.useState(false);
   const [presetsExpanded, setPresetsExpanded] = React.useState(false);
   const [capReasoning, setCapReasoning] = React.useState(true);
+  const [capAttachment, setCapAttachment] = React.useState(false);
   const [capToolCall, setCapToolCall] = React.useState(true);
   const [capTemperature, setCapTemperature] = React.useState(true);
   const apiValue = Form.useWatch('api', form);
@@ -345,6 +346,7 @@ const ModelFormModal: React.FC<ModelFormModalProps> = ({
       setCapReasoning(preset.reasoning !== undefined ? preset.reasoning : true);
     }
     if (showModalities) {
+      setCapAttachment(preset.attachment !== undefined ? preset.attachment : false);
       setCapToolCall(preset.tool_call !== undefined ? preset.tool_call : true);
       setCapTemperature(preset.temperature !== undefined ? preset.temperature : true);
     }
@@ -584,6 +586,7 @@ const ModelFormModal: React.FC<ModelFormModalProps> = ({
           setCapReasoning(initialValues.reasoning !== undefined ? initialValues.reasoning : false);
         }
         if (showModalities) {
+          setCapAttachment(initialValues.attachment !== undefined ? initialValues.attachment : false);
           setCapToolCall(initialValues.tool_call !== undefined ? initialValues.tool_call : false);
           setCapTemperature(initialValues.temperature !== undefined ? initialValues.temperature : false);
         }
@@ -603,6 +606,7 @@ const ModelFormModal: React.FC<ModelFormModalProps> = ({
         setOutputModalities([]);
         setAdvancedExpanded(true);
         setCapReasoning(true);
+        setCapAttachment(false);
         setCapToolCall(true);
         setCapTemperature(true);
       }
@@ -777,9 +781,10 @@ const ModelFormModal: React.FC<ModelFormModalProps> = ({
 
       if (showModalities) {
         // V2 has no attachment flag: the input modality list is the source of
-        // truth, so the field is neither shown nor submitted.
+        // truth, so the field is neither shown nor submitted. The V1 checkbox
+        // state is `capAttachment`, seeded from presets/initial values above.
         if (!attachmentViaModalities) {
-          result.attachment = initialValues?.attachment;
+          result.attachment = capAttachment;
         }
         result.tool_call = capToolCall;
         result.temperature = capTemperature;
@@ -1088,8 +1093,11 @@ const ModelFormModal: React.FC<ModelFormModalProps> = ({
                           {t('common.model.temperatureSetting')}
                         </Checkbox>
                         <Checkbox
-                          checked={attachmentViaModalities ? inputModalities.some((item) => item === 'image' || item === 'pdf') : false}
+                          checked={attachmentViaModalities
+                            ? inputModalities.some((item) => item === 'image' || item === 'pdf')
+                            : capAttachment}
                           disabled={attachmentViaModalities}
+                          onChange={(event) => setCapAttachment(event.target.checked)}
                         >
                           {t('common.model.attachment')}
                         </Checkbox>

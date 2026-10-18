@@ -177,8 +177,10 @@ pub struct DshRuntimeConfig {
     /// Profile whose patch layer backs the editor (`None` = legacy settings.yaml).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
-    /// Profiles present under `profiles/`, for the profile picker.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Profiles present under `profiles/`, for the profile picker. Always
+    /// serialized (empty on a legacy layer) so the frontend can index it
+    /// without an extra guard.
+    #[serde(default)]
     pub profiles: Vec<String>,
     /// dsh imported the legacy `settings.yaml` into the profile patch layer
     /// (`settings.yaml.imported` exists and the patch carries providers).

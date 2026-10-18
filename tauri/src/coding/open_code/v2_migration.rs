@@ -689,35 +689,48 @@ fn migrate_model(value: Value, parent_package: Option<&str>) -> Result<Value, St
     }
 
     // Released 2.0 keeps the legacy flags on `capabilities`: `tools`,
-    // `input`/`output`, `temperature`, and `reasoning: { supported }`. Unset
-    // modalities fall back to the official `Capabilities.default()` rather
-    // than `[]`, which would silently strip image/pdf input from the model.
+    // `input`/`output`, `temperature`, and `reasoning: { supported }`.
     // `attachment` has no 2.0 field — the runtime derives media support from
     // `capabilities.input` — so it is not written.
-    let input = modalities
-        .as_ref()
-        .and_then(|value| value.get("input"))
-        .cloned()
-        .unwrap_or_else(|| json!(["text", "image"]));
-    let output = modalities
-        .as_ref()
-        .and_then(|value| value.get("output"))
-        .cloned()
-        .unwrap_or_else(|| json!(["text"]));
-    let mut capabilities = Map::new();
-    capabilities.insert(
-        "tools".to_string(),
-        Value::Bool(tool_call.as_ref().and_then(Value::as_bool).unwrap_or(true)),
-    );
-    capabilities.insert("input".to_string(), input);
-    capabilities.insert("output".to_string(), output);
-    if let Some(temperature) = temperature.as_ref().and_then(Value::as_bool) {
-        capabilities.insert("temperature".to_string(), Value::Bool(temperature));
+    //
+    // The block is only emitted when at least one flag is configured, matching
+    // the official migrate: an absent block inherits the catalog defaults, so
+    // writing one unconditionally would pin every untouched model to
+    // `{ tools: true, input: ["text","image"], output: ["text"] }` on any save.
+    let has_capabilities = tool_call.is_some()
+        || temperature.is_some()
+        || reasoning.is_some()
+        || modalities
+            .as_ref()
+            .is_some_and(|value| value.get("input").is_some() || value.get("output").is_some());
+    if has_capabilities {
+        // Missing siblings fall back to the official `Capabilities.default()`
+        // rather than `[]`, which would silently strip image/pdf input.
+        let input = modalities
+            .as_ref()
+            .and_then(|value| value.get("input"))
+            .cloned()
+            .unwrap_or_else(|| json!(["text", "image"]));
+        let output = modalities
+            .as_ref()
+            .and_then(|value| value.get("output"))
+            .cloned()
+            .unwrap_or_else(|| json!(["text"]));
+        let mut capabilities = Map::new();
+        capabilities.insert(
+            "tools".to_string(),
+            Value::Bool(tool_call.as_ref().and_then(Value::as_bool).unwrap_or(true)),
+        );
+        capabilities.insert("input".to_string(), input);
+        capabilities.insert("output".to_string(), output);
+        if let Some(temperature) = temperature.as_ref().and_then(Value::as_bool) {
+            capabilities.insert("temperature".to_string(), Value::Bool(temperature));
+        }
+        if let Some(reasoning) = reasoning.as_ref().and_then(Value::as_bool) {
+            capabilities.insert("reasoning".to_string(), json!({ "supported": reasoning }));
+        }
+        out.insert("capabilities".to_string(), Value::Object(capabilities));
     }
-    if let Some(reasoning) = reasoning.as_ref().and_then(Value::as_bool) {
-        capabilities.insert("reasoning".to_string(), json!({ "supported": reasoning }));
-    }
-    out.insert("capabilities".to_string(), Value::Object(capabilities));
 
     let rendered_request = package_name
         .as_deref()
@@ -2327,6 +2340,33 @@ mod tests {
         assert_eq!(model["reasoning"], true);
         assert_eq!(model["temperature"], false);
         assert!(model.get("attachment").is_none());
+    }
+
+    /// A model that configures no capability flag must keep inheriting the
+    /// catalog defaults: the official migrate only emits `capabilities` when a
+    /// V1 flag is present, so an untouched model is not pinned to
+    /// `Capabilities.default()` on every save.
+    #[test]
+    fn untouched_model_writes_no_capabilities_block() {
+        let value = json!({
+            "provider": {
+                "relay": {
+                    "npm": "@ai-sdk/openai-compatible",
+                    "models": { "gpt-x": { "id": "gpt-x", "name": "GPT X" } }
+                }
+            }
+        });
+
+        let migrated = v1_to_v2_value(value).unwrap();
+        assert!(migrated["providers"]["relay"]["models"]["gpt-x"]
+            .get("capabilities")
+            .is_none());
+
+        let restored = v2_to_v1_value(migrated).unwrap();
+        let model = &restored["provider"]["relay"]["models"]["gpt-x"];
+        for key in ["tool_call", "reasoning", "temperature", "attachment", "modalities"] {
+            assert!(model.get(key).is_none(), "{key} should stay unset");
+        }
     }
 
     /// A file written by OpenCode 2.0 itself carries the flat shape only, so the
