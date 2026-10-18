@@ -42,6 +42,16 @@ export const formatDuration = (durationMs: number) => {
   return `${(durationMs / 1000).toFixed(1)}s`;
 };
 
+/**
+ * Duration cell for an imported local record. The value is an estimate the
+ * parser derived from transcript timestamps, so an absent one must stay `-`
+ * rather than read as a measured zero.
+ */
+export const sessionDurationText = (durationMs?: number | null) =>
+  durationMs != null && Number.isFinite(durationMs) && durationMs > 0
+    ? formatDuration(durationMs)
+    : '-';
+
 export const formatDurationPair = (durationMs: number, firstTokenMs?: number | null) => {
   if (firstTokenMs == null || !Number.isFinite(firstTokenMs) || firstTokenMs < 0
     || !Number.isFinite(durationMs) || firstTokenMs > durationMs) {
@@ -59,13 +69,15 @@ interface GatewayTpsInput extends GatewayRequestDisplayInput {
 
 export const formatTps = (record: GatewayTpsInput): string | null => {
   const { output_tokens: outputTokens, duration_ms: durationMs, first_token_ms: firstTokenMs } = record;
-  if (record.data_source === 'session' || !isGatewayRequestUsageApplicable(record) || outputTokens == null
+  if (!isGatewayRequestUsageApplicable(record) || outputTokens == null
     || !Number.isFinite(outputTokens) || outputTokens <= 0
     || !Number.isFinite(durationMs) || durationMs <= 0) {
     return null;
   }
+  // Local session rows carry only an estimated end-to-end duration and no
+  // first-token mark, so their rate includes the wait before the first chunk.
   let generationMs = durationMs;
-  if (record.is_streaming && firstTokenMs != null) {
+  if (record.data_source !== 'session' && record.is_streaming && firstTokenMs != null) {
     if (!Number.isFinite(firstTokenMs) || firstTokenMs < 0 || firstTokenMs >= durationMs) {
       return null;
     }
@@ -525,12 +537,48 @@ export const GATEWAY_USAGE_RANGE_PRESETS = [
   'thisWeek',
   'lastWeek',
   'thisMonth',
+  'lastMonth',
   'thisYear',
-  '1d',
   'custom',
 ] as const;
 
 export type GatewayUsageRangePreset = typeof GATEWAY_USAGE_RANGE_PRESETS[number];
+
+export const isGatewayUsageRangePreset = (value: unknown): value is GatewayUsageRangePreset =>
+  typeof value === 'string'
+  && (GATEWAY_USAGE_RANGE_PRESETS as readonly string[]).includes(value);
+
+/** Wire shape of `gateway_usage_range` in the persisted app settings. */
+export interface StoredGatewayUsageRange {
+  preset: string;
+  start_date?: number | null;
+  end_date?: number | null;
+}
+
+/**
+ * Convert the page's range selection into the persisted shape. Relative
+ * presets carry no absolute bounds: the backend re-resolves them from the
+ * current clock, so "today" never freezes at the moment it was saved.
+ */
+export const gatewayUsageRangeToStored = (
+  selection: GatewayUsageRangeSelection,
+): StoredGatewayUsageRange => {
+  if (selection.preset !== 'custom') {
+    return { preset: selection.preset, start_date: null, end_date: null };
+  }
+  const [start, end] = selection.customRange ?? [];
+  return {
+    preset: 'custom',
+    start_date: start ? Math.floor(start.toDate().getTime() / 1000) : null,
+    end_date: end ? Math.floor(end.toDate().getTime() / 1000) : null,
+  };
+};
+
+/** Stable key used to skip redundant saves when nothing actually changed. */
+export const gatewayUsageRangeKey = (selection: GatewayUsageRangeSelection): string => {
+  const stored = gatewayUsageRangeToStored(selection);
+  return `${stored.preset}:${stored.start_date ?? ''}:${stored.end_date ?? ''}`;
+};
 
 interface GatewayDateLike {
   toDate: () => Date;
@@ -617,14 +665,23 @@ export const resolveGatewayUsageRange = (
       endDate,
     };
   }
+  if (selection.preset === 'lastMonth') {
+    const thisMonthStart = startOfLocalMonth(nowMs);
+    return {
+      startDate: Math.floor(startOfLocalMonth(thisMonthStart - 1) / 1000),
+      endDate: Math.floor(thisMonthStart / 1000) - 1,
+    };
+  }
   if (selection.preset === 'thisYear') {
     return {
       startDate: Math.floor(startOfLocalYear(nowMs) / 1000),
       endDate,
     };
   }
+  // `GATEWAY_USAGE_RANGE_PRESETS` has no remaining rolling preset; the fallback
+  // only keeps an unknown persisted value from producing an unbounded query.
   return {
-    startDate: endDate - DAY_SECONDS,
+    startDate: Math.floor(startOfLocalDay(nowMs) / 1000),
     endDate,
   };
 };

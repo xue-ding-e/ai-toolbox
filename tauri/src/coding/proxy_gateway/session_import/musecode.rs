@@ -15,7 +15,9 @@
 //! `source_run_record_id` when present; a record without one is still counted —
 //! the CLI only omits it on older builds where duplicates do not occur.
 
-use super::parsers::{native_record, number, read_jsonl, string, ParsedSession};
+use super::parsers::{
+    bounded_session_duration_ms, native_record, number, read_jsonl, string, ParsedSession,
+};
 use super::{GatewayUsageTool, SessionUsageGranularity, SessionUsageRecord, TokenUsage};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -143,6 +145,11 @@ pub(super) fn parse(path: &Path, fallback: i64) -> Result<ParsedSession, String>
                     token_usage,
                     created_at,
                 );
+                // The event reports its own elapsed time for the model call.
+                record.duration_ms = event
+                    .get("duration_ms")
+                    .and_then(Value::as_u64)
+                    .and_then(bounded_session_duration_ms);
                 record.metadata.granularity = SessionUsageGranularity::Request;
                 record.metadata.call_count = Some(1);
                 record.project_path = project_path.clone();

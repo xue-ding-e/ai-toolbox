@@ -18,6 +18,7 @@ pub(crate) mod settings;
 pub mod transformer;
 pub mod types;
 pub mod usage_parser;
+pub mod usage_range;
 pub mod usage_stats;
 
 pub use commands::*;

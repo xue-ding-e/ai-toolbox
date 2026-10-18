@@ -1,4 +1,6 @@
-use super::parsers::{native_record, read_jsonl_lenient, timestamp, ParsedSession};
+use super::parsers::{
+    bounded_session_duration_ms, native_record, read_jsonl_lenient, timestamp, ParsedSession,
+};
 use super::{GatewayUsageTool, SessionUsageGranularity, TokenUsage};
 use std::collections::HashMap;
 use std::fs;
@@ -131,6 +133,28 @@ struct Generation {
     output: u64,
     cached: u64,
     created_at: u64,
+    /// Milliseconds from the request being sent until the first token, and
+    /// from that token until the stream ended. Either side is `None` when the
+    /// record does not carry it.
+    ttft_ms: Option<u64>,
+    stream_ms: Option<u64>,
+}
+
+/// A `google.protobuf.Duration` (`{1: seconds, 2: nanos}`) in milliseconds.
+fn proto_duration_ms(bytes: &[u8]) -> Option<u64> {
+    let mut seconds = 0u64;
+    let mut nanos = 0u64;
+    for field in parse_proto_fields(bytes) {
+        match field.number {
+            1 => seconds = field.varint.unwrap_or(seconds),
+            2 => nanos = field.varint.unwrap_or(nanos),
+            _ => {}
+        }
+    }
+    let millis = seconds
+        .checked_mul(1000)?
+        .checked_add(nanos / 1_000_000)?;
+    (millis > 0).then_some(millis)
 }
 
 /// Decodes one record out of `gen_metadata.data`.
@@ -150,8 +174,16 @@ fn decode_generation(data: &[u8], fallback_timestamp: Option<u64>) -> Option<Gen
     let mut thoughts = 0u64;
     let mut response: Option<u64> = None;
     let mut created_at = None;
+    let mut ttft_ms = None;
+    let mut stream_ms = None;
     for field in parse_proto_fields(data) {
         match field.number {
+            11 => {
+                ttft_ms = field.bytes.as_deref().and_then(proto_duration_ms);
+            }
+            12 => {
+                stream_ms = field.bytes.as_deref().and_then(proto_duration_ms);
+            }
             19 => {
                 if let Some(bytes) = field.bytes {
                     if let Ok(name) = String::from_utf8(bytes) {
@@ -217,6 +249,8 @@ fn decode_generation(data: &[u8], fallback_timestamp: Option<u64>) -> Option<Gen
         output,
         cached,
         created_at,
+        ttft_ms,
+        stream_ms,
     })
 }
 
@@ -317,6 +351,14 @@ pub(super) fn sync_databases(
                 },
                 created_at,
             );
+            // The provider's own timing: TTFT plus the streaming window is
+            // the whole request.
+            record.duration_ms = match (generation.ttft_ms, generation.stream_ms) {
+                (Some(ttft), Some(stream)) => {
+                    bounded_session_duration_ms(ttft.saturating_add(stream))
+                }
+                _ => None,
+            };
             record.metadata.granularity = SessionUsageGranularity::Request;
             records.push(record);
         }
@@ -352,7 +394,7 @@ pub(super) fn cost_records(path: &Path) -> Result<Vec<super::SessionUsageRecord>
     Ok(read_generations(path)
         .into_iter()
         .map(|(idx, record_index, generation)| {
-            native_record(
+            let mut record = native_record(
                 GatewayUsageTool::Antigravity,
                 session_id,
                 &format!("gen:{idx}:{record_index}"),
@@ -365,7 +407,14 @@ pub(super) fn cost_records(path: &Path) -> Result<Vec<super::SessionUsageRecord>
                     ..Default::default()
                 },
                 generation.created_at as i64,
-            )
+            );
+            record.duration_ms = match (generation.ttft_ms, generation.stream_ms) {
+                (Some(ttft), Some(stream)) => {
+                    bounded_session_duration_ms(ttft.saturating_add(stream))
+                }
+                _ => None,
+            };
+            record
         })
         .collect())
 }
@@ -629,6 +678,40 @@ mod tests {
         assert_eq!(generation.output, 150);
         assert_eq!(generation.cached, 400);
         assert_eq!(generation.created_at, 1_750_000_000);
+    }
+
+    /// The provider records its own TTFT and streaming window as protobuf
+    /// Duration messages; the call's elapsed time is their sum.
+    #[test]
+    fn generation_timing_decodes_both_duration_fields() {
+        // `google.protobuf.Duration` is `{1: seconds, 2: nanos}`; the wrapper
+        // below is the generation field (11/12) that carries it.
+        let duration = |seconds: u64, nanos: u64| {
+            [field_varint(1, seconds), field_varint(2, nanos)].concat()
+        };
+        let record = [
+            field_bytes(19, b"gemini-2.5-pro"),
+            field_bytes(4, &[field_varint(2, 100), field_varint(3, 10)].concat()),
+            field_bytes(11, &duration(1, 250_000_000)),
+            field_bytes(12, &duration(3, 500_000_000)),
+            field_bytes(9, &field_bytes(4, &field_varint(1, 1_750_000_000))),
+        ]
+        .concat();
+        let generation = decode_generation(&record, None).unwrap();
+        assert_eq!(generation.ttft_ms, Some(1_250));
+        assert_eq!(generation.stream_ms, Some(3_500));
+
+        // Without both fields the pair is incomplete and no duration is made up.
+        let partial = [
+            field_bytes(19, b"gemini-2.5-pro"),
+            field_bytes(4, &field_varint(2, 100)),
+            field_bytes(12, &duration(3, 0)),
+            field_bytes(9, &field_bytes(4, &field_varint(1, 1_750_000_000))),
+        ]
+        .concat();
+        let generation = decode_generation(&partial, None).unwrap();
+        assert_eq!(generation.ttft_ms, None);
+        assert_eq!(generation.stream_ms, Some(3_000));
     }
 
     #[test]

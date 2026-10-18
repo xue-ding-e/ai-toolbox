@@ -94,8 +94,8 @@
           "thisWeek": "This week",
           "lastWeek": "Last week",
           "thisMonth": "This month",
+          "lastMonth": "Last month",
           "thisYear": "This year",
-          "1d": "1d",
           "custom": "Custom"
         },
         "refresh": {
@@ -125,6 +125,7 @@
         "empty": "No statistics yet",
         "loadFailed": "Failed to load gateway statistics: {{error}}",
         "cacheHitRateHint": "Cache-read tokens / (fresh input + cache-write + cache-read tokens), weighted by token totals in the selected range. No input usage is shown as -.",
+        "avgLatencyHint": "Averages the first-token (approximately first-chunk) latency of real model requests that went through the gateway. Imported local sessions, model-list calls, connection probes and WebSocket handshakes/warmups are excluded; a request without a recorded first token falls back to its total duration. Shows - instead of 0 when no request qualifies.",
         "freshInput": "Fresh input",
         "cacheCreation": "Cache creation",
         "cacheRead": "Cache read",
@@ -286,8 +287,9 @@
         "requestPathUnavailable": "Path not recorded",
         "notApplicable": "Not applicable",
         "tpsLabel": "TPS:",
-        "tpsHint": "Output tokens divided by generation time. Streaming uses total time minus first-chunk latency; non-streaming or missing first-chunk timing uses total time. Unavailable output or generation time is shown as -.",
-        "durationHint": "First-token latency (approximated by the first chunk) / total duration. The first chunk may be an SSE control event. Only total duration is shown when first-chunk timing is unavailable.",
+        "tpsHint": "Output tokens divided by generation time. Streaming uses total time minus first-chunk latency; non-streaming or missing first-chunk timing uses total time. Local session rows have no first-token mark, so their rate always uses the estimated end-to-end duration and includes the first-token wait. Unavailable output or generation time is shown as -.",
+        "durationHint": "First-token latency (approximated by the first chunk) / total duration. The first chunk may be an SSE control event. When first-chunk timing is unavailable only the total duration is shown (first token reads -). Imported local sessions estimate their duration from transcript timestamps; see the hover hint for the exact rule.",
+        "sessionDurationHint": "Local session rows carry no gateway HTTP timing. This shows an end-to-end estimate derived from transcript timestamps: most tools measure from the user message or tool result that sent the request to the written reply (including queuing, first-token wait, and any tool execution between streamed segments). ZCode, Grok, Muse Code and Qwen Code record the call's own duration; Antigravity adds the upstream's time-to-first-token to its streaming duration. Pairs shorter than 0.2s or longer than 30 minutes are treated as timestamp anomalies and show -.",
         "effortHint": "Explicit reasoning effort in the final upstream request. Model defaults are not inferred.",
         "serviceTierHint": "OpenAI Fast/Ultrafast service tier: the tier the upstream confirmed wins, falling back to the tier declared in the request body. Whether it costs extra is decided by this provider's billing config (the Fast / Ultrafast multipliers); unset records the standard price.",
         "compaction": {
@@ -297,7 +299,7 @@
           "hint": "Codex remote compaction v2: which side wrote the `compaction` item. Native compact: the upstream answered with its own item. Fallback compact: the trigger was forwarded first, the upstream did not answer with an item, so the gateway summarized the turn itself. Gateway compact: the provider reaches the upstream through a protocol conversion, where a native answer is impossible, so the trigger was never forwarded. The item looks identical on the wire in all three cases."
         },
         "localSession": "Session",
-        "localSessionHint": "From local CLI session logs, without HTTP status or latency. Cost uses the CLI-reported value when available, otherwise model pricing.",
+        "localSessionHint": "From local CLI session logs, without HTTP status. The duration is an end-to-end estimate derived from transcript timestamps, not a gateway measurement. Cost uses the CLI-reported value when available, otherwise model pricing.",
         "importPartialFailure": "Partially synced: {{inserted}} added, {{updated}} updated, {{skipped}} skipped; {{count}} items failed. See the application log for details.",
         "localSessionDetailUnavailable": "Local session usage does not include HTTP request bodies, response bodies, or headers.",
         "nativeUsage": {

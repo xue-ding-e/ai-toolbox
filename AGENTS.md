@@ -808,6 +808,13 @@ pub async fn save_settings(
 
 The system tray menu provides quick access to configuration selections without opening the main window. When configurations are changed (either from the main window or the tray menu), the tray menu must stay in sync.
 
+The bottom group, just above the lightweight-mode toggle, carries one read-only usage line (`tray_usage.rs`): all CLIs combined for the gateway statistics page's currently selected range, formatted `{title}  {tokens} ({cost})` with M/B units and a cost suffix that is omitted when it rounds to `$0.00`. Clicking it opens the window on `/gateway/statistics`. Rules that are easy to break:
+- The range is the persisted `AppSettings.gateway_usage_range`, written by the statistics page via `save_gateway_usage_range` (single-key patch, never a full settings save). Relative presets store only the preset name; the backend re-resolves the window from the local clock each rebuild, so "today" never freezes.
+- `usage_range.rs` must stay semantically identical to the frontend `resolveGatewayUsageRange` (local time zone, Monday-start weeks, last month = previous calendar month).
+- A failed summary read omits the item entirely; never render a failed read as `0M`.
+- The usage lookup is awaited **before** the first menu handle is created in `refresh_tray_menus_inner`: menu handles are `!Send`, and holding one across that await makes every `spawn(refresh_tray_menus)` caller fail to compile.
+- In lightweight mode the click must set the pending-navigation flag before rebuilding the webview; the new page drains it through `take_pending_gateway_statistics_navigation` because the live event races the listener mount.
+
 ### Event-Driven Architecture
 
 All configuration changes use the `config-changed` Tauri event to synchronize state:

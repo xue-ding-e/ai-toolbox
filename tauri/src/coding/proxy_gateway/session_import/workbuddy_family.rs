@@ -11,7 +11,9 @@
 //! + output`), which marks `input` as containing the cached part. Only then is
 //! the cache subtracted; an exclusive total leaves the buckets as they are.
 
-use super::parsers::{native_record, reported_cost, timestamp, ParsedSession};
+use super::parsers::{
+    native_record, reported_cost, session_duration_ms, timestamp, timestamp_millis, ParsedSession,
+};
 use super::{GatewayUsageTool, SessionUsageGranularity, SessionUsageRecord, TokenUsage};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -253,11 +255,27 @@ pub(super) fn parse(tool: GatewayUsageTool, path: &Path, fallback: i64) -> Resul
     })?;
     let mut records = BTreeMap::<String, SessionUsageRecord>::new();
     let mut session_project: Option<String> = None;
+    // The tool result (or user turn) that sent the request; the next usage
+    // item is written when the reply lands, so the pair brackets the call.
+    let mut trigger_ms: Option<i64> = None;
     for (line, item) in items {
         let session = session_of(&item, &session_fallback);
+        if item.get("type").and_then(Value::as_str) == Some("function_call_result")
+            || (item.get("type").and_then(Value::as_str) == Some("message")
+                && item.pointer("/message/role").and_then(Value::as_str) == Some("user"))
+        {
+            if let Some(at) = timestamp_millis(&item) {
+                trigger_ms = Some(at);
+            }
+        }
         let Some(usage) = usage_record(&item, &session, line, fallback) else {
             continue;
         };
+        let duration_ms = match (trigger_ms, timestamp_millis(&item)) {
+            (Some(start), Some(end)) => session_duration_ms(start, end),
+            _ => None,
+        };
+        trigger_ms = None;
         let mut record = native_record(
             tool,
             &usage.session,
@@ -272,6 +290,7 @@ pub(super) fn parse(tool: GatewayUsageTool, path: &Path, fallback: i64) -> Resul
             },
             usage.created_at,
         );
+        record.duration_ms = duration_ms;
         record.metadata.granularity = SessionUsageGranularity::Request;
         record.metadata.call_count = Some(1);
         // The item that carries the usage often omits `cwd`; the session

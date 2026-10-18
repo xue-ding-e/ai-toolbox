@@ -27,7 +27,7 @@ use std::path::Path;
 use rusqlite::Connection;
 use serde_json::Value;
 
-use super::parsers::{native_record, ParsedSession};
+use super::parsers::{native_record, session_duration_ms, ParsedSession};
 use crate::coding::proxy_gateway::usage_parser::TokenUsage;
 use super::{GatewayUsageTool, SessionUsageRecord};
 
@@ -163,6 +163,9 @@ impl UsageRow {
         );
         record.metadata.native_provider = Some(self.provider_id);
         record.metadata.reported_total_tokens = reported_total(&self.raw_usage);
+        // `started_at` and `completed_at` bracket this one upstream request,
+        // so the difference is the call's real elapsed time.
+        record.duration_ms = session_duration_ms(self.started_at, self.completed_at);
         record.project_path = self
             .project_path
             .filter(|path| !path.trim().is_empty());

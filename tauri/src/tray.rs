@@ -37,7 +37,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::TrayIconBuilder,
-    AppHandle, Manager, Runtime,
+    AppHandle, Emitter, Manager, Runtime,
 };
 
 #[derive(Clone, Copy)]
@@ -218,10 +218,53 @@ static TRAY_REFRESH_PENDING: AtomicBool = AtomicBool::new(false);
 const TRAY_SHOW_MENU_ID: &str = "show";
 const TRAY_QUIT_MENU_ID: &str = "app_quit";
 const TRAY_LIGHTWEIGHT_MENU_ID: &str = "lightweight_mode";
+/// Emitted after the main window is up when the tray usage block is clicked.
+const GATEWAY_STATISTICS_OPEN_EVENT: &str = "gateway-open-statistics";
+/// Set when the usage block is clicked while the window is gone, so the
+/// freshly built webview can drain it even if the event fires before its
+/// listener is mounted (same cold-start race as deep-link import).
+static PENDING_GATEWAY_STATISTICS_NAVIGATION: AtomicBool = AtomicBool::new(false);
 
 fn request_app_exit<R: Runtime>(app: &AppHandle<R>) {
     crate::APP_EXIT_REQUESTED.store(true, Ordering::SeqCst);
     app.exit(0);
+}
+
+/// Bring the main window forward, rebuilding it first when lightweight mode
+/// destroyed it.
+fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
+    if crate::lightweight::is_lightweight_mode() {
+        if let Err(error) = crate::lightweight::exit_lightweight_mode(app) {
+            eprintln!("Failed to exit lightweight mode: {error}");
+        }
+        return;
+    }
+    // macOS: Switch back to Regular mode to show in Dock
+    #[cfg(target_os = "macos")]
+    {
+        use tauri::ActivationPolicy;
+        let _ = app.set_activation_policy(ActivationPolicy::Regular);
+    }
+
+    if let Some(window) = crate::main_window(app) {
+        // show() does not restore a minimized window on Windows.
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
+/// Record that the next successfully loaded frontend should open the gateway
+/// statistics tab. Used when the webview is being rebuilt and cannot have
+/// mounted its event listener yet.
+fn mark_gateway_statistics_navigation_pending() {
+    PENDING_GATEWAY_STATISTICS_NAVIGATION.store(true, Ordering::SeqCst);
+}
+
+/// Frontend-facing command: atomically take the pending navigation request.
+#[tauri::command]
+pub fn take_pending_gateway_statistics_navigation() -> bool {
+    PENDING_GATEWAY_STATISTICS_NAVIGATION.swap(false, Ordering::SeqCst)
 }
 
 #[cfg(target_os = "macos")]
@@ -280,26 +323,17 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), Box<dyn std::er
             let event_id = event.id().as_ref().to_string();
 
             if event_id == TRAY_SHOW_MENU_ID {
+                show_main_window(app);
+            } else if event_id == crate::tray_usage::TRAY_GATEWAY_USAGE_MENU_ID {
+                // The menu line is itself the navigation: open the statistics
+                // tab without a second click. In lightweight mode the webview
+                // is rebuilt by `show_main_window`, so the event would race the
+                // listener mount — leave a pending flag it drains at startup.
                 if crate::lightweight::is_lightweight_mode() {
-                    // Window is destroyed in lightweight mode; rebuild it.
-                    if let Err(e) = crate::lightweight::exit_lightweight_mode(app) {
-                        eprintln!("Failed to exit lightweight mode: {}", e);
-                    }
-                } else {
-                    // macOS: Switch back to Regular mode to show in Dock
-                    #[cfg(target_os = "macos")]
-                    {
-                        use tauri::ActivationPolicy;
-                        let _ = app.set_activation_policy(ActivationPolicy::Regular);
-                    }
-
-                    if let Some(window) = crate::main_window(app) {
-                        // show() does not restore a minimized window on Windows.
-                        let _ = window.show();
-                        let _ = window.unminimize();
-                        let _ = window.set_focus();
-                    }
+                    mark_gateway_statistics_navigation_pending();
                 }
+                show_main_window(app);
+                let _ = app.emit(GATEWAY_STATISTICS_OPEN_EVENT, ());
             } else if event_id == TRAY_LIGHTWEIGHT_MENU_ID {
                 if crate::lightweight::is_lightweight_mode() {
                     if let Err(e) = crate::lightweight::exit_lightweight_mode(app) {
@@ -800,10 +834,11 @@ pub async fn refresh_tray_menus<R: Runtime>(app: &AppHandle<R>) -> Result<(), St
 
 /// Refresh tray menus with flat structure
 async fn refresh_tray_menus_inner<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
-    let (visible_tabs, texts) = match crate::settings::commands::get_settings(app.state()).await {
+    let (visible_tabs, texts, language) = match crate::settings::commands::get_settings(app.state()).await {
         Ok(settings) => (
             settings.visible_tabs,
             tray_texts(effective_language(&settings.language)),
+            effective_language(&settings.language),
         ),
         Err(err) => {
             log::warn!("Failed to read settings for tray visibility: {err}");
@@ -829,11 +864,17 @@ async fn refresh_tray_menus_inner<R: Runtime>(app: &AppHandle<R>) -> Result<(), 
                 // the catalogue's English check fails on. Any later successful
                 // rebuild restores the stored value.
                 tray_texts(effective_language("")),
+                effective_language(""),
             )
         }
     };
 
     let is_tab_visible = |tab: &str| visible_tabs.iter().any(|item| item == tab);
+
+    // Built first: it awaits the database, and every menu handle created below
+    // is `!Send`. Holding one across this await would make the whole menu
+    // future `!Send` and break every `spawn(refresh_tray_menus)` caller.
+    let usage_item = build_usage_item(app, language).await?;
 
     // Check if modules are enabled
     let opencode_enabled =
@@ -2202,6 +2243,12 @@ async fn refresh_tray_menus_inner<R: Runtime>(app: &AppHandle<R>) -> Result<(), 
         }
         append_separator(&menu)?;
     }
+    // Usage of the statistics page's selected range, shown just above the
+    // bottom group so it is visible without opening the window.
+    if let Some(usage_item) = usage_item {
+        menu.append(&usage_item).map_err(|e| e.to_string())?;
+        append_separator(&menu)?;
+    }
     // Lightweight mode and quit form the bottom group (cc-switch style),
     // with a separator between the toggle and the exit action.
     menu.append(&lightweight_item).map_err(|e| e.to_string())?;
@@ -2213,6 +2260,62 @@ async fn refresh_tray_menus_inner<R: Runtime>(app: &AppHandle<R>) -> Result<(), 
     tray.set_menu(Some(menu)).map_err(|e| e.to_string())?;
 
     Ok(())
+}
+
+/// Build the "current usage" menu line: the statistics page's selected range,
+/// all CLIs combined, rendered as `{title}  {tokens} ({cost})`.
+///
+/// Returns `None` when the range or the summary cannot be read — a failed read
+/// must not render as "0M", which would read as a real zero-usage day.
+async fn build_usage_item<R: Runtime>(
+    app: &AppHandle<R>,
+    language: &str,
+) -> Result<Option<MenuItem<R>>, String> {
+    let sqlite_state = (*app.state::<crate::SqliteDbState>()).clone();
+    let texts = crate::tray_usage::usage_texts(language);
+    let loaded = tauri::async_runtime::spawn_blocking(move || {
+        let settings = crate::settings::store::load_settings_from_sqlite_state(&sqlite_state)?;
+        let gateway_settings =
+            crate::coding::proxy_gateway::settings::load_settings_from_sqlite_state(&sqlite_state)?;
+        let (start_date, end_date) = crate::coding::proxy_gateway::usage_range::resolve_usage_range(
+            &settings.gateway_usage_range,
+            chrono::Utc::now().timestamp_millis(),
+        );
+        let summary = crate::coding::proxy_gateway::usage_stats::usage_summary(
+            &sqlite_state,
+            Some(start_date),
+            Some(end_date),
+            None,
+            gateway_settings.session_usage_enabled,
+        )?;
+        Ok::<_, String>((settings.gateway_usage_range, summary, start_date, end_date))
+    })
+    .await
+    .map_err(|error| format!("Failed to build tray usage item: {error}"))?;
+    let (selection, summary, start_date, end_date) = match loaded {
+        Ok(value) => value,
+        Err(error) => {
+            log::warn!("Failed to load tray usage summary: {error}");
+            return Ok(None);
+        }
+    };
+    let text = crate::tray_usage::format_usage_menu_text(
+        texts,
+        &selection,
+        summary.total_tokens,
+        &summary.total_cost_usd,
+        start_date,
+        end_date,
+    );
+    MenuItem::with_id(
+        app,
+        crate::tray_usage::TRAY_GATEWAY_USAGE_MENU_ID,
+        text,
+        true,
+        None::<&str>,
+    )
+    .map(Some)
+    .map_err(|e| e.to_string())
 }
 
 /// Build a model selection submenu from tray data

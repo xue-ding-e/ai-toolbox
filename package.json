@@ -53,6 +53,7 @@
     "@tauri-apps/plugin-os": "2.3.2",
     "@tauri-apps/plugin-shell": "2.3.4",
     "antd": "6.4.3",
+    "dayjs": "1.11.23",
     "github-markdown-css": "5.8.1",
     "i18next": "25.7.4",
     "json5": "2.2.3",

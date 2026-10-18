@@ -11,7 +11,9 @@
 //! and lets the rollup contribute only the remainder the request files do not
 //! cover.
 
-use super::parsers::{native_record, number, read_jsonl, string, timestamp, ParsedSession};
+use super::parsers::{
+    bounded_session_duration_ms, native_record, number, read_jsonl, string, timestamp, ParsedSession,
+};
 use super::{GatewayUsageTool, SessionUsageGranularity, SessionUsageRecord, TokenUsage};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -91,6 +93,11 @@ fn request_record(value: &Value, fallback: i64) -> Option<SessionUsageRecord> {
         },
         timestamp(value).unwrap_or(fallback),
     );
+    // The per-request record times the API call it describes.
+    record.duration_ms = value
+        .get("apiDurationMs")
+        .and_then(Value::as_u64)
+        .and_then(bounded_session_duration_ms);
     record.metadata.granularity = SessionUsageGranularity::Request;
     record.metadata.call_count = Some(1);
     Some(record)

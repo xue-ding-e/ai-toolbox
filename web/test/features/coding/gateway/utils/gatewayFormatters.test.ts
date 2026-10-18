@@ -4,6 +4,8 @@ import test from 'node:test';
 import {
   calculateCacheHitRate,
   deriveGatewayRequestDisplay,
+  gatewayUsageRangeKey,
+  gatewayUsageRangeToStored,
   formatCacheHitRate,
   formatDuration,
   formatDurationPair,
@@ -21,6 +23,7 @@ import {
   normalizeAttemptCounts,
   requestExportPrefix,
   requestLineText,
+  sessionDurationText,
   resolveGatewayRequestRange,
   resolveGatewayUsageRange,
   serviceTierLabel,
@@ -53,7 +56,7 @@ test('WebSocket handshake and warmup do not pretend to be ordinary model usage',
 
 test('request presets use the statistics ranges and refresh their relative end time', () => {
   const now = new Date(2026, 8, 12, 22, 24, 0).getTime();
-  for (const preset of ['today', 'thisWeek', 'thisMonth', 'thisYear', '1d'] as const) {
+  for (const preset of ['today', 'thisWeek', 'thisMonth', 'thisYear'] as const) {
     const expected = resolveGatewayUsageRange({ preset }, now);
     assert.deepEqual(resolveGatewayRequestRange({ preset }, now), {
       start_date: expected.startDate,
@@ -62,7 +65,7 @@ test('request presets use the statistics ranges and refresh their relative end t
     assert.equal(resolveGatewayRequestRange({ preset }, now + 60_000).end_date, expected.endDate + 60);
   }
   // Calendar past ranges are fixed: refreshing must not slide the window.
-  for (const preset of ['yesterday', 'lastWeek'] as const) {
+  for (const preset of ['yesterday', 'lastWeek', 'lastMonth'] as const) {
     const expected = resolveGatewayUsageRange({ preset }, now);
     assert.deepEqual(resolveGatewayRequestRange({ preset }, now + 60_000), {
       start_date: expected.startDate,
@@ -100,10 +103,19 @@ test('calendar presets use local day, Monday-start week, month and year boundari
     startDate: new Date(2026, 0, 1).getTime() / 1000,
     endDate: Math.floor(now / 1000),
   });
-  // `1d` stays a rolling 24 hours, distinct from the calendar "today".
-  assert.deepEqual(resolveGatewayUsageRange({ preset: '1d' }, now), {
-    startDate: Math.floor(now / 1000) - day,
-    endDate: Math.floor(now / 1000),
+  // The previous calendar month through the last second before this month.
+  assert.deepEqual(resolveGatewayUsageRange({ preset: 'lastMonth' }, now), {
+    startDate: new Date(2026, 7, 1).getTime() / 1000,
+    endDate: Math.floor(new Date(2026, 8, 1).getTime() / 1000) - 1,
+  });
+});
+
+test('last month steps back across a year boundary', () => {
+  // Friday 2026-01-09 12:00 local time.
+  const january = new Date(2026, 0, 9, 12, 0, 0).getTime();
+  assert.deepEqual(resolveGatewayUsageRange({ preset: 'lastMonth' }, january), {
+    startDate: new Date(2025, 11, 1).getTime() / 1000,
+    endDate: Math.floor(new Date(2026, 0, 1).getTime() / 1000) - 1,
   });
 });
 
@@ -183,7 +195,34 @@ test('TPS formats output speed with units and subtracts TTFT only for streaming 
     assert.equal(formatTps({ ...record, ...invalid }), null);
   }
   assert.equal(formatTps({ ...record, method: 'GET', path: '/openai/v1/models' }), null);
-  assert.equal(formatTps({ ...record, data_source: 'session' }), null);
+});
+
+test('session rows rate end-to-end because they have no first-token mark', () => {
+  const session = {
+    method: '',
+    path: '',
+    requested_model: 'gpt-5',
+    output_tokens: 297,
+    duration_ms: 13_600,
+    first_token_ms: null,
+    is_streaming: false,
+    data_source: 'session',
+  };
+  // The whole duration counts: 297 / 13.6s, and a stray first-token mark on a
+  // session row is ignored rather than subtracted.
+  assert.equal(formatTps(session), '21.8 tok/s');
+  assert.equal(formatTps({ ...session, first_token_ms: 400 }), '21.8 tok/s');
+  assert.equal(formatTps({ ...session, duration_ms: 0 }), null);
+  assert.equal(formatTps({ ...session, output_tokens: 0 }), null);
+});
+
+test('session duration shows an estimate and keeps missing values as a dash', () => {
+  assert.equal(sessionDurationText(13_600), '13.6s');
+  assert.equal(sessionDurationText(400), '400ms');
+  assert.equal(sessionDurationText(0), '-');
+  assert.equal(sessionDurationText(null), '-');
+  assert.equal(sessionDurationText(undefined), '-');
+  assert.equal(sessionDurationText(Number.NaN), '-');
 });
 
 test('effort display uses explicit metadata and cache rate distinguishes zero from no data', () => {
@@ -448,4 +487,57 @@ test('project names come from the last path segment and tolerate both separators
   assert.equal(gatewayProjectName('   '), null);
   // A bare drive prefix has no project segment left after trimming.
   assert.equal(gatewayProjectName('C:' + '\\'), 'C:');
+});
+
+test('stored ranges drop absolute bounds for relative presets and freeze custom ones', () => {
+  assert.deepEqual(gatewayUsageRangeToStored({ preset: 'today' }), {
+    preset: 'today',
+    start_date: null,
+    end_date: null,
+  });
+  assert.deepEqual(gatewayUsageRangeToStored({ preset: 'lastMonth' }), {
+    preset: 'lastMonth',
+    start_date: null,
+    end_date: null,
+  });
+
+  const start = new Date(2026, 8, 1, 9, 30, 0);
+  const end = new Date(2026, 8, 5, 18, 0, 0);
+  const asDateLike = (date: Date) => ({ toDate: () => date });
+  assert.deepEqual(
+    gatewayUsageRangeToStored({ preset: 'custom', customRange: [asDateLike(start), asDateLike(end)] }),
+    {
+      preset: 'custom',
+      start_date: Math.floor(start.getTime() / 1000),
+      end_date: Math.floor(end.getTime() / 1000),
+    },
+  );
+  // A half-filled custom range keeps the missing side null so the backend can
+  // fall back to "now" / "24h before end" instead of inventing a bound.
+  assert.deepEqual(
+    gatewayUsageRangeToStored({ preset: 'custom', customRange: [asDateLike(start), null] }),
+    {
+      preset: 'custom',
+      start_date: Math.floor(start.getTime() / 1000),
+      end_date: null,
+    },
+  );
+});
+
+test('range keys distinguish presets from custom bounds', () => {
+  assert.equal(
+    gatewayUsageRangeKey({ preset: 'today' }),
+    gatewayUsageRangeKey({ preset: 'today' }),
+  );
+  assert.notEqual(
+    gatewayUsageRangeKey({ preset: 'today' }),
+    gatewayUsageRangeKey({ preset: 'lastMonth' }),
+  );
+  const start = new Date(2026, 8, 1, 9, 30, 0);
+  const end = new Date(2026, 8, 5, 18, 0, 0);
+  const asDateLike = (date: Date) => ({ toDate: () => date });
+  assert.notEqual(
+    gatewayUsageRangeKey({ preset: 'custom', customRange: [asDateLike(start), asDateLike(end)] }),
+    gatewayUsageRangeKey({ preset: 'custom', customRange: [asDateLike(start), null] }),
+  );
 });

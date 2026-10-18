@@ -69,6 +69,11 @@ struct SessionUsageRecord {
     /// disk and records Credits instead, so this is the only usage measure
     /// available there. Stored for every tool but not rendered yet.
     credits: Option<f64>,
+    /// How long the model call took, when the transcript carries timestamps
+    /// that bracket it. This is an estimate derived from local events, never a
+    /// gateway HTTP measurement; `None` means the transcript has no usable
+    /// start/end pair.
+    duration_ms: Option<u64>,
 }
 
 impl SessionUsageRecord {
@@ -102,6 +107,7 @@ impl SessionUsageRecord {
             self.metadata,
             self.project_path,
             self.credits,
+            self.duration_ms,
         ]);
         format!("{:x}", Sha256::digest(value.to_string().as_bytes()))
     }
@@ -1779,7 +1785,7 @@ fn write_record(conn: &Connection, record: &SessionUsageRecord) -> Result<(), St
             usage_metadata, usage_request_count, extra_tokens, project_path, credits
          ) VALUES (
             ?1, 'session', ?2, ?3, ?3, ?4, ?5, ?6, ?7,
-            ?8, ?9, ?10, ?11, ?12, 0, NULL, 0, 200, NULL, ?13, 'session', 0, '1.0', ?14, 'session',
+            ?8, ?9, ?10, ?11, ?12, 0, NULL, ?20, 200, NULL, ?13, 'session', 0, '1.0', ?14, 'session',
             jsonb(?15), ?16, ?17, ?18, ?19
          ) ON CONFLICT(request_id) DO UPDATE SET
             model = excluded.model, request_model = excluded.request_model,
@@ -1790,7 +1796,7 @@ fn write_record(conn: &Connection, record: &SessionUsageRecord) -> Result<(), St
             total_cost_usd = excluded.total_cost_usd, session_id = excluded.session_id, created_at = excluded.created_at,
             usage_metadata = excluded.usage_metadata, usage_request_count = excluded.usage_request_count,
             extra_tokens = excluded.extra_tokens, project_path = excluded.project_path,
-            credits = excluded.credits
+            credits = excluded.credits, duration_ms = excluded.duration_ms
          WHERE proxy_request_logs.data_source = 'session'",
         params![record.request_id, record.cli_key.as_str(), record.model, input as i64, output as i64, read as i64, creation as i64,
             format_decimal_cost(costs.input_cost_usd), format_decimal_cost(costs.output_cost_usd),
@@ -1798,7 +1804,7 @@ fn write_record(conn: &Connection, record: &SessionUsageRecord) -> Result<(), St
             total, record.session_id, record.created_at,
             serde_json::to_string(&metadata).map_err(|error| error.to_string())?,
             record.call_count() as i64, record.extra_tokens() as i64,
-            record.project_path, record.credits],
+            record.project_path, record.credits, record.duration_ms.map(|value| value as i64)],
     ).map_err(|error| error.to_string())?;
     Ok(())
 }
@@ -1871,10 +1877,11 @@ fn reconcile_late_proxy_rows(
                     .and_then(|record| record.envelope_id.clone()),
             },
             reported_cost_usd: None,
-            // Only used to re-find a proxy match; the project never enters the
-            // matcher and this row is not written back.
+            // Only used to re-find a proxy match; neither the project nor the
+            // duration enters the matcher and this row is not written back.
             project_path: None,
             credits: None,
+            duration_ms: None,
         };
         let matched = db.with_conn(|conn| find_matching_proxy(conn, &record, None))?;
         let Some(proxy_id) = matched.filter(|proxy_id| !claimed_proxies.contains_key(proxy_id))

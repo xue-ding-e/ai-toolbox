@@ -55,6 +55,7 @@ import {
   requestLineText,
   resolveGatewayRequestRange,
   sanitizeGatewayFileNamePart,
+  sessionDurationText,
   shouldShowBodyComparison,
   stringifyDetailValue,
   type GatewayRequestRangeSelection,
@@ -704,7 +705,11 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
           <span title={t('gateway.page.requests.durationHint')}>{t('gateway.page.requests.fields.firstToken')}</span>
           <strong>{detail.first_token_ms != null ? formatDuration(detail.first_token_ms) : '-'}</strong>
           <span>{t('gateway.page.requests.fields.duration')}</span>
-          <strong>{detail.data_source === 'session' ? '-' : formatDuration(detail.duration_ms)}</strong>
+          <strong title={detail.data_source === 'session' ? t('gateway.page.requests.sessionDurationHint') : undefined}>
+            {detail.data_source === 'session'
+              ? sessionDurationText(detail.duration_ms)
+              : formatDuration(detail.duration_ms)}
+          </strong>
           <span>{t('gateway.page.requests.fields.streaming')}</span>
           <strong>{detail.data_source === 'session' ? '-' : detail.is_streaming ? t('common.yes') : t('common.no')}</strong>
           <span>{t('gateway.page.requests.fields.tokens')}</span>
@@ -914,7 +919,9 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
       align: 'right',
       render: (value: number, record) => {
         if (record.data_source === 'session') {
-          return '-';
+          // Local records have no HTTP first-token mark; the single line is
+          // the duration the parser estimated from the transcript's events.
+          return sessionDurationText(value);
         }
         return (
           <div className={styles.tokenCell}>

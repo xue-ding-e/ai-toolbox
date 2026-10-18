@@ -94,8 +94,8 @@
           "thisWeek": "本周",
           "lastWeek": "上周",
           "thisMonth": "本月",
+          "lastMonth": "上月",
           "thisYear": "本年",
-          "1d": "1d",
           "custom": "自定义"
         },
         "refresh": {
@@ -125,6 +125,7 @@
         "empty": "暂无统计数据",
         "loadFailed": "加载网关统计失败：{{error}}",
         "cacheHitRateHint": "缓存读取 token /（非缓存输入 + 缓存写入 + 缓存读取 token），按当前筛选范围的 token 总量计算。无输入用量显示 -。",
+        "avgLatencyHint": "只统计经过网关的真实模型请求（不含本地 Session 导入、模型列表、连接探测、WebSocket 握手/预热），按这些请求的「首字（近似首包）耗时」取平均；未记录首字时回退为总耗时。没有任何符合条件的请求时显示 -，而不是 0。",
         "freshInput": "新增输入",
         "cacheCreation": "缓存创建",
         "cacheRead": "缓存命中",
@@ -286,8 +287,9 @@
         "requestPathUnavailable": "路径未记录",
         "notApplicable": "不适用",
         "tpsLabel": "TPS：",
-        "tpsHint": "输出 token ÷ 生成耗时。流式请求使用总耗时减去首包等待；非流式或缺少首包记录时使用总耗时。无有效输出或生成耗时显示 -。",
-        "durationHint": "首字时间（近似首包）/总耗时。首包可能是 SSE 控制事件；未记录首包时仅显示总耗时。",
+        "tpsHint": "输出 token ÷ 生成耗时。流式请求使用总耗时减去首包等待；非流式或缺少首包记录时使用总耗时。本地 Session 记录没有首包时间，一律按估算的端到端耗时计算，因此速度含首字等待。无有效输出或生成耗时显示 -。",
+        "durationHint": "首字时间（近似首包）/总耗时。首包可能是 SSE 控制事件；未记录首包时仅显示总耗时（首字显示 -）。本地 Session 记录的耗时由解析器根据转录中的相邻事件时间戳估算，见悬停说明。",
+        "sessionDurationHint": "本地 Session 记录没有网关 HTTP 计时，这里显示解析器按转录时间戳估算的端到端耗时：多数工具取「触发本次请求的用户消息/工具结果」到「回复写入」的间隔（含排队与首字等待，也含两段输出之间等待工具执行的时间）；ZCode、Grok、Muse Code、Qwen Code 等直接读取调用自带的耗时字段；Antigravity 用上游返回的首字延迟加流式时长。不足 0.2 秒或超过 30 分钟的配对视为时间戳异常，显示 -。",
         "effortHint": "最终上游请求中明确设置的思考强度；未设置时不推断模型默认值。",
         "serviceTierHint": "OpenAI 的 Fast/Ultrafast 服务档：优先取上游响应确认的档位，上游未确认时回退请求体声明的档位。是否额外计费由该供应商的计费配置（Fast / Ultrafast 倍率）决定，未配置时按标准价记账。",
         "compaction": {
@@ -297,7 +299,7 @@
           "hint": "Codex 远程压缩 v2：这条 `compaction` 项由哪一侧写出。「原生压缩」＝上游自己回了该项；「回退压缩」＝先把 trigger 原样转发过，上游没有回该项，网关改为自行摘要并封装；「网关压缩」＝该供应商要经协议转换才能到达上游，原生不可能实现，因此没有转发过 trigger。三者在线路上的形状完全一致。"
         },
         "localSession": "Session",
-        "localSessionHint": "来自 CLI 本地会话日志，不包含 HTTP 状态和耗时。成本优先使用 CLI 上报值，缺失时按模型价格估算。",
+        "localSessionHint": "来自 CLI 本地会话日志，不包含 HTTP 状态。耗时是解析器按转录时间戳估算的端到端时长，不是网关测量值。成本优先使用 CLI 上报值，缺失时按模型价格估算。",
         "importPartialFailure": "部分完成：新增 {{inserted}}，更新 {{updated}}，跳过 {{skipped}}；{{count}} 项未能同步，详情见应用日志。",
         "localSessionDetailUnavailable": "本地会话用量不包含 HTTP 请求体、响应体和 Headers 明细。",
         "nativeUsage": {

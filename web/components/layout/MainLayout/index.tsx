@@ -2,8 +2,10 @@ import React from 'react';
 import { Tabs } from 'antd';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { listen } from '@tauri-apps/api/event';
 import { CodeOutlined, SettingOutlined } from '@ant-design/icons';
 import { platform } from '@tauri-apps/plugin-os';
+import { takePendingGatewayStatisticsNavigation } from '@/services';
 import { MODULES } from '@/constants';
 import { useAppStore, useSettingsStore } from '@/stores';
 import { useThemeStore } from '@/stores/themeStore';
@@ -77,6 +79,43 @@ const MainLayout: React.FC = () => {
     };
   }, []);
 
+  // Tray usage block: opening the window counts as "show me that usage", so the
+  // click navigates to the statistics tab. Tray clicks fire inside the native
+  // menu's modal loop, which can run before this window's listener exists, so
+  // the backend also leaves a pending flag for the rebuilt webview to drain.
+  //
+  // The pending drain must win over the cold-boot "restore last tab" redirect
+  // below: in lightweight mode both run in the same mount pass, and whichever
+  // navigates last decides the route. `trayNavigationPendingRef` blocks that
+  // redirect for the rest of this mount until the tray target has landed.
+  const trayNavigationPendingRef = React.useRef(false);
+  React.useEffect(() => {
+    let disposed = false;
+    const openStatistics = () => {
+      trayNavigationPendingRef.current = true;
+      navigate('/gateway/statistics');
+    };
+
+    void (async () => {
+      const pending = await takePendingGatewayStatisticsNavigation();
+      if (!disposed && pending) openStatistics();
+    })();
+
+    let unlisten: (() => void) | undefined;
+    void listen('gateway-open-statistics', () => openStatistics()).then((dispose) => {
+      if (disposed) {
+        dispose();
+        return;
+      }
+      unlisten = dispose;
+    });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [navigate]);
+
   const isSettingsPage = location.pathname.startsWith('/settings');
   const isSkillsPage = location.pathname.startsWith('/skills');
   const isMcpPage = location.pathname.startsWith('/mcp');
@@ -142,6 +181,9 @@ const MainLayout: React.FC = () => {
     if (isStandalonePage) return;
     const isOnVisibleTab = subTabs.some((tab) => location.pathname.startsWith(tab.path));
     if (!isOnVisibleTab) {
+      // A tray click that is still resolving owns the route; restoring the
+      // last tab here would immediately navigate away from it.
+      if (trayNavigationPendingRef.current) return;
       // Cold boot (window rebuild or app restart): prefer the last active
       // coding tab persisted by appStore over the first visible tab.
       const restoredPath = resolveInitialTabPath(location.pathname, PAGE_ROUTES, subTabs, currentSubTab);

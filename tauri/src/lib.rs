@@ -34,6 +34,7 @@ pub mod settings;
 pub mod single_instance;
 pub mod startup_recovery;
 pub mod tray;
+mod tray_usage;
 pub mod update;
 
 // Re-export SqliteDbState for use in other modules
@@ -1856,6 +1857,20 @@ pub fn run() {
                 });
             }
 
+            // Keep the tray usage block current without waiting for a settings
+            // or config event. Request counts only move when gateway or session
+            // traffic lands, so a minute is fine; the menu is rebuilt from the
+            // DB anyway, this just refreshes the text.
+            {
+                let app_clone = app_handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    loop {
+                        tokio::time::sleep(Duration::from_secs(60)).await;
+                        let _ = tray::refresh_tray_menus(&app_clone).await;
+                    }
+                });
+            }
+
             // Check for resync / re-apply flags after restore (delayed to ensure DB is ready)
             {
                 let app_clone = app_handle.clone();
@@ -2131,6 +2146,8 @@ pub fn run() {
             settings::save_settings,
             settings::get_session_detail_filters,
             settings::save_session_detail_filters,
+            settings::get_gateway_usage_range,
+            settings::save_gateway_usage_range,
             settings::get_provider_list_state,
             settings::save_provider_sort_mode,
             settings::save_provider_view_mode,
@@ -2785,6 +2802,7 @@ pub fn run() {
             coding::open_claw::launch_openclaw_gateway,
             // Tray
             tray::refresh_tray_menu,
+            tray::take_pending_gateway_statistics_navigation,
             // Oh My OpenAgent
             coding::oh_my_openagent::list_oh_my_openagent_configs,
             coding::oh_my_openagent::create_oh_my_openagent_config,

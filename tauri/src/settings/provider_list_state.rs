@@ -71,7 +71,12 @@ pub fn record_provider_last_used_in_sqlite_state(
     patch_or_create_settings_field(sqlite_state, "provider_last_used", value)
 }
 
-fn patch_or_create_settings_field(
+/// Patch one top-level settings key without rewriting the whole row.
+///
+/// Several background writers (tray, gateway statistics) touch their own nested
+/// key concurrently with the settings panel's full-object save; patching only
+/// their field keeps an unrelated in-flight save from clobbering it.
+pub(crate) fn patch_or_create_settings_field(
     sqlite_state: &SqliteDbState,
     field: &str,
     value: Value,

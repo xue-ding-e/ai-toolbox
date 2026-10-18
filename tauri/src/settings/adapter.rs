@@ -1,7 +1,8 @@
 use super::types::{
     default_backup_file_filter_rules, default_sidebar_hidden_by_page, AppSettings,
-    BackupCustomEntry, BackupEncryptionConfig, BackupFileFilterRule, S3Config,
-    SessionContentFilter, SessionDetailFilters, SessionRoleFilter, WebDAVConfig,
+    BackupCustomEntry, BackupEncryptionConfig, BackupFileFilterRule,
+    GatewayUsageRangeSelection, S3Config, SessionContentFilter, SessionDetailFilters,
+    SessionRoleFilter, WebDAVConfig,
 };
 /**
  * Settings Adapter Layer
@@ -104,6 +105,7 @@ pub fn from_db_value(value: Value) -> AppSettings {
         provider_sort_modes: get_string_map(&value, "provider_sort_modes"),
         provider_last_used: get_string_map(&value, "provider_last_used"),
         provider_view_modes: get_string_map(&value, "provider_view_modes"),
+        gateway_usage_range: get_gateway_usage_range(&value),
     }
 }
 
@@ -169,6 +171,26 @@ fn get_string_array(value: &Value, key: &str, defaults: &[&str]) -> Vec<String> 
                 .collect()
         })
         .unwrap_or_else(|| defaults.iter().map(|s| s.to_string()).collect())
+}
+
+/// Read the persisted gateway statistics range. A row written before this field
+/// existed reads back as the statistics page's own default (`today`) instead of
+/// an empty preset, so the tray never has to guess what "no selection" means.
+fn get_gateway_usage_range(value: &Value) -> GatewayUsageRangeSelection {
+    let Some(block) = value.get("gateway_usage_range").and_then(|v| v.as_object()) else {
+        return GatewayUsageRangeSelection::default();
+    };
+    let preset = block
+        .get("preset")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|preset| !preset.is_empty())
+        .unwrap_or("today");
+    GatewayUsageRangeSelection {
+        preset: preset.to_string(),
+        start_date: block.get("start_date").and_then(|v| v.as_i64()),
+        end_date: block.get("end_date").and_then(|v| v.as_i64()),
+    }
 }
 
 fn get_string_map(value: &Value, key: &str) -> HashMap<String, String> {

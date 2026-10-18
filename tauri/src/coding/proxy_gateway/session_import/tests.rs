@@ -179,6 +179,47 @@ fn claude_zero_token_responses_are_counted_once_and_can_receive_final_usage() {
     assert_eq!(summary.total_tokens, 120);
 }
 
+/// A translating gateway opens every stream with `input: 1 / output: 1` (the
+/// real counts only arrive with `message_delta`). When the CLI persists that
+/// opening snapshot, it is not a billed call: importing it created thousands
+/// of 2-token "requests" and a wrong total.
+#[test]
+fn claude_message_start_placeholders_are_not_imported() {
+    let root = tempfile::tempdir().unwrap();
+    let file = root.path().join("gateway-placeholder.jsonl");
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    let mut opening = claude_message("gateway-message", 1);
+    opening["message"]["usage"] = json!({
+        "input_tokens": 1, "output_tokens": 1,
+        "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0
+    });
+    // A settled reply with the same tiny counters is a real measurement the
+    // gateway reported, so it must stay.
+    let mut settled_small = opening.clone();
+    settled_small["message"]["id"] = json!("settled-small");
+    settled_small["message"]["stop_reason"] = json!("end_turn");
+    settled_small["message"]["model"] = json!("glm-5.2");
+    // The settled snapshot of the same response carries the real counts.
+    let mut final_usage = claude_message("gateway-message", 120);
+    final_usage["message"]["stop_reason"] = json!("tool_use");
+    write_jsonl(&file, &[opening, settled_small, final_usage]);
+
+    let result = run_sync(&db, GatewayCliKey::Claude, root.path());
+    assert_eq!(result.inserted_records, 2);
+    let logs = usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true)
+        .unwrap();
+    let ids = logs.data.iter().map(|row| row.trace_id.as_str()).collect::<Vec<_>>();
+    assert!(ids.contains(&"SESSION:gateway-message"));
+    assert!(ids.contains(&"SESSION:settled-small"));
+    let placeholder = logs
+        .data
+        .iter()
+        .find(|row| row.trace_id == "SESSION:gateway-message")
+        .unwrap();
+    assert_eq!(placeholder.input_tokens, 100);
+    assert_eq!(placeholder.output_tokens, 120);
+}
+
 #[test]
 fn parser_revision_revisits_unchanged_claude_files_without_discarding_the_ledger() {
     let root = tempfile::tempdir().unwrap();
@@ -1454,6 +1495,39 @@ fn proxy_execution_interval_and_delayed_session_writes_converge() {
             );
         }
     }
+}
+
+/// A local row that converges onto a proxy row is deleted, not merged: the
+/// gateway measured that request itself, so the session estimate must not
+/// reappear in the table through a later re-import.
+#[test]
+fn a_proxy_match_removes_the_session_estimate_instead_of_merging_it() {
+    let root = tempfile::tempdir().unwrap();
+    let mut message = gemini_message("guessed-duration", 10);
+    message["timestamp"] = json!(THEN);
+    write_jsonl(&root.path().join("session-guess.jsonl"), &[message]);
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    run_sync(&db, GatewayCliKey::Gemini, root.path());
+    let before = usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true)
+        .unwrap();
+    assert_eq!(before.data[0].data_source, "session");
+
+    insert_proxy(&db, "gateway-copy");
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE proxy_request_logs SET duration_ms = 4_321 WHERE request_id = 'gateway-copy'",
+            [],
+        )
+        .map_err(|error| error.to_string())?;
+        Ok(())
+    })
+    .unwrap();
+    run_sync(&db, GatewayCliKey::Gemini, root.path());
+    let after = usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true)
+        .unwrap();
+    assert_eq!(after.data.len(), 1);
+    assert_eq!(after.data[0].data_source, "proxy");
+    assert_eq!(after.data[0].duration_ms, 4_321);
 }
 
 #[test]
@@ -2775,4 +2849,224 @@ fn qoder_credits_are_stored_beside_zero_tokens() {
         })
         .unwrap();
     assert_eq!(claude_credits, None);
+}
+
+/// Local transcripts only bracket a call with two events. The estimate must
+/// land on the row as a real duration and must survive an unchanged rescan.
+#[test]
+fn session_rows_carry_the_duration_estimated_from_adjacent_events() {
+    let root = tempfile::tempdir().unwrap();
+    // Claude writes the prompt, then streamed snapshots of one reply.
+    let prompt = json!({"type":"user","sessionId":"claude-session","timestamp":rfc3339(THEN),
+        "message":{"role":"user","content":"go"}});
+    let mut reply = claude_message("timed-message", 10);
+    reply["timestamp"] = json!(rfc3339_millis(THEN * 1000 + 12_500));
+    write_jsonl(&root.path().join("claude.jsonl"), &[prompt, reply]);
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    run_sync(&db, GatewayCliKey::Claude, root.path());
+    let rows = usage_stats::request_logs(
+        &db,
+        &GatewayRequestLogFilters::default(),
+        0,
+        10,
+        true,
+    )
+    .unwrap();
+    assert_eq!(rows.data.len(), 1);
+    assert_eq!(rows.data[0].duration_ms, 12_500);
+    // An unchanged transcript is not re-timed or re-billed.
+    assert_eq!(
+        run_sync(&db, GatewayCliKey::Claude, root.path()).parsed_records,
+        0
+    );
+    let again = usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true)
+        .unwrap();
+    assert_eq!(again.data[0].duration_ms, 12_500);
+}
+
+#[test]
+fn session_timing_beyond_the_sanity_window_is_not_written() {
+    let root = tempfile::tempdir().unwrap();
+    let prompt = json!({"type":"user","sessionId":"claude-session",
+        "timestamp":rfc3339(THEN - 45 * 60),
+        "message":{"role":"user","content":"go"}});
+    let mut reply = claude_message("slow-message", 10);
+    // 45 minutes later is a resumed session, not one model call.
+    reply["timestamp"] = json!(rfc3339(THEN));
+    write_jsonl(&root.path().join("claude.jsonl"), &[prompt, reply]);
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    run_sync(&db, GatewayCliKey::Claude, root.path());
+    let rows = usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true)
+        .unwrap();
+    assert_eq!(rows.data[0].duration_ms, 0);
+}
+
+/// Codex records the tool result that sent the request and writes the
+/// authoritative usage record when the response ends.
+#[test]
+fn codex_authoritative_records_use_the_sending_event_as_start() {
+    let root = tempfile::tempdir().unwrap();
+    let sessions = root.path().join("sessions");
+    fs::create_dir_all(&sessions).unwrap();
+    write_jsonl(
+        &sessions.join(format!("rollout-{PARENT}.jsonl")),
+        &[
+            json!({"type":"session_meta","timestamp":rfc3339(THEN),"payload":{"id":PARENT}}),
+            json!({"type":"event_msg","timestamp":rfc3339(THEN + 1),
+                "payload":{"type":"task_started"}}),
+            json!({"type":"response_item","timestamp":rfc3339(THEN + 5),
+                "payload":{"type":"function_call_output"}}),
+            json!({"type":"token_usage_record","timestamp":rfc3339_millis(THEN * 1000 + 9_250),
+                "payload":{"response_id":"gen_timed","usage":{
+                    "input_tokens":100,"cached_input_tokens":0,
+                    "output_tokens":10,"reasoning_output_tokens":0}}}),
+        ],
+    );
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    run_sync(&db, GatewayCliKey::Codex, &sessions);
+    let rows = usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true)
+        .unwrap();
+    assert_eq!(rows.data.len(), 1);
+    // The tool result at +5s is the start; task_started at +1s belongs to the
+    // turn, not to this call.
+    assert_eq!(rows.data[0].duration_ms, 4_250);
+}
+
+
+/// Every native adapter stores the call's own elapsed time when its source
+/// records one; a source without timing leaves the field empty instead of
+/// inventing a zero.
+#[test]
+fn native_sources_record_their_own_durations() {
+    // ZCode: one row per request with both ends in milliseconds.
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("db.sqlite");
+    let native = Connection::open(&path).unwrap();
+    native
+        .execute_batch(
+            "CREATE TABLE model_usage (
+                id TEXT PRIMARY KEY, attempt_index INTEGER NOT NULL DEFAULT 0,
+                session_id TEXT NOT NULL, provider_id TEXT NOT NULL, model_id TEXT NOT NULL,
+                status TEXT NOT NULL, started_at INTEGER NOT NULL,
+                completed_at INTEGER NOT NULL DEFAULT 0,
+                input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0, raw_usage_json TEXT
+            );
+            INSERT INTO model_usage VALUES
+              ('u1', 0, 'sess_a', 'account:zai', 'GLM-5.3', 'completed', 1, 2, 100, 20, 0, 0, NULL);",
+        )
+        .unwrap();
+    native
+        .execute(
+            "UPDATE model_usage SET started_at = ?1, completed_at = ?2",
+            [
+                (THEN - 4) * 1000,
+                (THEN - 4) * 1000 + 1_854,
+            ],
+        )
+        .unwrap();
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    run_sync(&db, GatewayUsageTool::Zcode, &path);
+    let rows = usage_stats::request_logs(
+        &db,
+        &GatewayRequestLogFilters {
+            cli_key: Some(GatewayUsageTool::Zcode),
+            ..Default::default()
+        },
+        0,
+        10,
+        true,
+    )
+    .unwrap();
+    assert_eq!(rows.data[0].duration_ms, 1_854);
+
+    // Grok: each inference reports how long the model itself ran.
+    let root = tempfile::tempdir().unwrap();
+    let logs = root.path().join("logs");
+    fs::create_dir_all(&logs).unwrap();
+    write_jsonl(
+        &logs.join("unified.jsonl"),
+        &[json!({"ts":THEN,"sid":"grok-session","msg":"shell.turn.inference_done",
+            "ctx":{"loop_index":1,"attempts":1,"prompt_tokens":100,
+                "completion_tokens":10,"model_elapsed_ms":5_466}})],
+    );
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    run_sync(&db, GatewayUsageTool::Grok, root.path());
+    let rows = usage_stats::request_logs(
+        &db,
+        &GatewayRequestLogFilters {
+            cli_key: Some(GatewayUsageTool::Grok),
+            ..Default::default()
+        },
+        0,
+        10,
+        true,
+    )
+    .unwrap();
+    assert_eq!(rows.data[0].duration_ms, 5_466);
+
+    // Muse Code: the completed model event carries its own duration.
+    let root = tempfile::tempdir().unwrap();
+    let session = root.path().join("sessions/2026/09/02/run-a");
+    fs::create_dir_all(&session).unwrap();
+    write_jsonl(
+        &session.join("session.jsonl"),
+        &[json!({"stream":{"id":"muse-session"},"payload_type":"runtime.session",
+            "payload":{"kind":"run","run_id":"run-1","event":{"kind":"model_completed",
+                "duration_ms":3_250,
+                "usage":{"input_tokens":100,"output_tokens":10}}},
+            "recorded_at":THEN * 1000,"source_run_record_id":"record-1"})],
+    );
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    run_sync(&db, GatewayUsageTool::Musecode, root.path());
+    let rows = usage_stats::request_logs(
+        &db,
+        &GatewayRequestLogFilters {
+            cli_key: Some(GatewayUsageTool::Musecode),
+            ..Default::default()
+        },
+        0,
+        10,
+        true,
+    )
+    .unwrap();
+    assert_eq!(rows.data[0].duration_ms, 3_250);
+
+    // Qwen Code: the per-request record times the API call.
+    let root = tempfile::tempdir().unwrap();
+    let usage = root.path().join("usage");
+    fs::create_dir_all(&usage).unwrap();
+    write_jsonl(
+        &usage.join("token-usage-2026-09-20.jsonl"),
+        &[json!({"schemaVersion":1,"id":"req-1","sessionId":"qwen-session",
+            "model":"qwen-model","timestamp":THEN,"inputTokens":100,"outputTokens":10,
+            "apiDurationMs":7_500,"localDate":"2026-09-20"})],
+    );
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    run_sync(&db, GatewayUsageTool::Qwencode, root.path());
+    let rows = usage_stats::request_logs(
+        &db,
+        &GatewayRequestLogFilters {
+            cli_key: Some(GatewayUsageTool::Qwencode),
+            ..Default::default()
+        },
+        0,
+        10,
+        true,
+    )
+    .unwrap();
+    assert_eq!(rows.data[0].duration_ms, 7_500);
+}
+
+fn rfc3339(seconds: i64) -> String {
+    chrono::DateTime::<chrono::Utc>::from_timestamp(seconds, 0)
+        .unwrap()
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+fn rfc3339_millis(millis: i64) -> String {
+    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(millis)
+        .unwrap()
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }

@@ -18,7 +18,10 @@
 //! `input_tokens` includes both cache buckets, so the fresh input stored here
 //! is `input - cache_read - cache_creation`.
 
-use super::parsers::{native_record, number, read_jsonl_lenient, string, timestamp, ParsedSession};
+use super::parsers::{
+    native_record, number, read_jsonl_lenient, session_duration_ms, string, timestamp,
+    timestamp_millis, ParsedSession,
+};
 use super::{GatewayUsageTool, SessionUsageGranularity, SessionUsageRecord, TokenUsage};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -83,6 +86,9 @@ pub(super) fn parse(
         .into_owned();
     let mut configured_model: Option<String> = None;
     let mut items = Vec::new();
+    // The user turn that sent the current reply; Qoder's usage rows carry no
+    // timing of their own, so this pair brackets the call end to end.
+    let mut trigger_ms: Option<i64> = None;
     // Compaction rewrites the transcript in place, so a broken row in the middle
     // must not fail the whole read.
     let pending = read_jsonl_lenient(path, |line, value| {
@@ -97,6 +103,11 @@ pub(super) fn parse(
             Some("user") | Some("assistant") => {
                 if let Some(id) = value.get("sessionId").and_then(Value::as_str) {
                     session_fallback = id.to_string();
+                }
+                if value.get("type").and_then(Value::as_str) == Some("user") {
+                    if let Some(at) = timestamp_millis(&value) {
+                        trigger_ms = Some(at);
+                    }
                 }
                 items.push((line, value));
             }
@@ -139,6 +150,12 @@ pub(super) fn parse(
             usage,
             timestamp(&item).unwrap_or(fallback),
         );
+        // Every snapshot of one reply is bracketed by the same user (or tool
+        // result) turn, so the trigger stays until the next turn replaces it.
+        record.duration_ms = match (trigger_ms, timestamp_millis(&item)) {
+            (Some(start), Some(end)) => session_duration_ms(start, end),
+            _ => None,
+        };
         record.metadata.granularity = SessionUsageGranularity::Request;
         record.metadata.call_count = Some(1);
         record.credits = credits_of(message);

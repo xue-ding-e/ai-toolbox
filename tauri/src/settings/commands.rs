@@ -1,5 +1,7 @@
 use super::store;
-use super::types::{AppSettings, BackupFileFilterPathOption, SessionDetailFilters};
+use super::types::{
+    AppSettings, BackupFileFilterPathOption, GatewayUsageRangeSelection, SessionDetailFilters,
+};
 use crate::auto_launch;
 use crate::db::SqliteDbState;
 use crate::tray;
@@ -44,6 +46,29 @@ pub async fn save_session_detail_filters(
     filters: SessionDetailFilters,
 ) -> Result<(), String> {
     store::save_session_detail_filters_to_sqlite_state(&sqlite_state, &filters)
+}
+
+/// Read the gateway statistics page's persisted time range.
+#[tauri::command]
+pub async fn get_gateway_usage_range(
+    sqlite_state: tauri::State<'_, SqliteDbState>,
+) -> Result<GatewayUsageRangeSelection, String> {
+    Ok(store::load_settings_from_sqlite_state(&sqlite_state)?.gateway_usage_range)
+}
+
+/// Persist the gateway statistics page's time range and rebuild the tray menu
+/// so the usage block immediately reflects the new window.
+#[tauri::command]
+pub async fn save_gateway_usage_range(
+    sqlite_state: tauri::State<'_, SqliteDbState>,
+    app: tauri::AppHandle,
+    range: GatewayUsageRangeSelection,
+) -> Result<(), String> {
+    store::save_gateway_usage_range_to_sqlite_state(&sqlite_state, &range)?;
+    if let Err(err) = tray::refresh_tray_menus(&app).await {
+        log::warn!("Failed to refresh tray after saving gateway usage range: {err}");
+    }
+    Ok(())
 }
 
 /// Read the provider list UI state: per-module sort modes + last-used map.

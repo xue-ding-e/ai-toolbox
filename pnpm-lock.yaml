@@ -47,6 +47,9 @@ importers:
       antd:
         specifier: 6.4.3
         version: 6.4.3(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
+      dayjs:
+        specifier: 1.11.23
+        version: 1.11.23
       github-markdown-css:
         specifier: 5.8.1
         version: 5.8.1

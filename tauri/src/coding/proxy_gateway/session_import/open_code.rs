@@ -163,6 +163,8 @@ fn session_difference_record(
         reported_cost_usd: None,
         project_path: session.project_path.clone(),
         credits: None,
+        // A session aggregate describes no single call, so it has no duration.
+        duration_ms: None,
     })
 }
 

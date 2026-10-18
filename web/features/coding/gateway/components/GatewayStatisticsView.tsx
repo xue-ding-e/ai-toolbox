@@ -1,5 +1,6 @@
 import React from 'react';
 import { DatePicker, Empty, Select, Table } from 'antd';
+import dayjs from 'dayjs';
 import type { ColumnsType } from 'antd/es/table';
 import {
   AlertCircle,
@@ -27,11 +28,14 @@ import {
 } from 'recharts';
 import { ManagementSegmented } from '../../shared/management';
 import {
+  getGatewayUsageRange,
   getProxyGatewayModelStats,
   getProxyGatewayProjectStats,
   getProxyGatewayProviderStats,
   getProxyGatewayUsageSummary,
   getProxyGatewayUsageTrends,
+  saveGatewayUsageRange,
+  type GatewayUsageRangeValue,
   type GatewayUsageTool,
   GATEWAY_USAGE_TOOLS,
   type GatewayModelStats,
@@ -49,8 +53,11 @@ import {
   formatInteger,
   gatewayProjectName,
   formatUsd,
+  gatewayUsageRangeKey,
+  gatewayUsageRangeToStored,
   getGatewayRequestsPerMinute,
   GATEWAY_USAGE_RANGE_PRESETS,
+  isGatewayUsageRangePreset,
   resolveGatewayUsageRange,
   unpricedModelIds,
   type GatewayUsageRangePreset,
@@ -63,6 +70,27 @@ import { resolveGatewayHeatmapRange } from '../utils/gatewayHeatmap';
 import styles from './GatewayStatisticsView.module.less';
 
 const { RangePicker } = DatePicker;
+
+type GatewayCustomRange = [ReturnType<typeof dayjs>, ReturnType<typeof dayjs>];
+
+/**
+ * Restore a persisted range into the picker's value type. Relative presets
+ * need no bounds; `custom` rebuilds dayjs objects from the stored unix seconds.
+ */
+const restoreRangeSelection = (stored: GatewayUsageRangeValue): GatewayUsageRangeSelection => {
+  const preset: GatewayUsageRangePreset = isGatewayUsageRangePreset(stored.preset)
+    ? stored.preset
+    : 'today';
+  if (preset !== 'custom') {
+    return { preset };
+  }
+  const start = stored.start_date ? dayjs(stored.start_date * 1000) : null;
+  const end = stored.end_date ? dayjs(stored.end_date * 1000) : null;
+  return {
+    preset: 'custom',
+    customRange: (start || end ? [start, end] : null) as GatewayCustomRange | null,
+  };
+};
 
 type GatewayCliFilter = 'all' | GatewayUsageTool;
 type StatsTabKey = 'providers' | 'models' | 'projects';
@@ -194,6 +222,11 @@ const GatewayStatisticsView: React.FC<GatewayStatisticsViewProps> = ({ refreshKe
   const { t } = useTranslation();
   const [cliFilter, setCliFilter] = React.useState<GatewayCliFilter>('all');
   const [range, setRange] = React.useState<GatewayUsageRangeSelection>({ preset: 'today' });
+  // The saved range is restored before the first query so the page never
+  // briefly loads "today" and then jumps to the user's actual window (and the
+  // tray never sees that intermediate range written back).
+  const [rangeRestored, setRangeRestored] = React.useState(false);
+  const lastSavedRangeKeyRef = React.useRef<string | null>(null);
   const [activeStatsTab, setActiveStatsTab] = React.useState<StatsTabKey>('providers');
   const [refreshIntervalMs, setRefreshIntervalMs] = React.useState(30_000);
   const [showPricingModal, setShowPricingModal] = React.useState(false);
@@ -279,6 +312,46 @@ const GatewayStatisticsView: React.FC<GatewayStatisticsViewProps> = ({ refreshKe
     }
   }, [effectiveCliKey]);
 
+  // Restore the persisted range once, before the first statistics query. The
+  // effect below only saves ranges the user actually picked, so this read-back
+  // can never echo a default value over the stored one.
+  React.useEffect(() => {
+    let disposed = false;
+    void (async () => {
+      try {
+        const stored = await getGatewayUsageRange();
+        if (disposed) return;
+        const restored = restoreRangeSelection(stored);
+        lastSavedRangeKeyRef.current = gatewayUsageRangeKey(restored);
+        setRange(restored);
+      } catch {
+        // Keeping the page default (`today`) is safe: the tray already falls
+        // back to "today" for a missing field, so both stay consistent. Treat
+        // it as already saved so this failed read alone never writes a row.
+        if (!disposed) {
+          lastSavedRangeKeyRef.current = gatewayUsageRangeKey({ preset: 'today' });
+        }
+      } finally {
+        if (!disposed) setRangeRestored(true);
+      }
+    })();
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
+  // Mirror the user's range into settings so the tray usage block follows it.
+  // The tray rebuild is triggered by the backend command.
+  React.useEffect(() => {
+    if (!rangeRestored) return;
+    const key = gatewayUsageRangeKey(range);
+    if (key === lastSavedRangeKeyRef.current) return;
+    lastSavedRangeKeyRef.current = key;
+    void saveGatewayUsageRange(gatewayUsageRangeToStored(range)).catch((saveError) => {
+      console.error('Failed to save gateway usage range:', saveError);
+    });
+  }, [range, rangeRestored]);
+
   React.useEffect(() => {
     // A new filter must not display the previous filter's totals while loading.
     setState(emptyState);
@@ -289,11 +362,14 @@ const GatewayStatisticsView: React.FC<GatewayStatisticsViewProps> = ({ refreshKe
   }, [effectiveCliKey]);
 
   React.useEffect(() => {
+    // Wait for the restore so the first query already uses the saved window;
+    // otherwise the page flashes today's totals before the read-back lands.
+    if (!rangeRestored) return undefined;
     void loadStatistics();
     return () => {
       statisticsRequestIdRef.current += 1;
     };
-  }, [loadStatistics, refreshKey]);
+  }, [loadStatistics, refreshKey, rangeRestored]);
 
   React.useEffect(() => {
     void loadHeatmap();
@@ -386,7 +462,7 @@ const GatewayStatisticsView: React.FC<GatewayStatisticsViewProps> = ({ refreshKe
       ),
     },
     {
-      title: t('gateway.page.statistics.columns.latency'),
+      title: <span title={t('gateway.page.statistics.avgLatencyHint')}>{t('gateway.page.statistics.columns.latency')}</span>,
       dataIndex: 'avg_latency_ms',
       width: 110,
       align: 'right',
@@ -450,7 +526,7 @@ const GatewayStatisticsView: React.FC<GatewayStatisticsViewProps> = ({ refreshKe
       ),
     },
     {
-      title: t('gateway.page.statistics.columns.latency'),
+      title: <span title={t('gateway.page.statistics.avgLatencyHint')}>{t('gateway.page.statistics.columns.latency')}</span>,
       dataIndex: 'avg_latency_ms',
       width: 110,
       align: 'right',
@@ -583,7 +659,9 @@ const GatewayStatisticsView: React.FC<GatewayStatisticsViewProps> = ({ refreshKe
               size="small"
               className={styles.customRangePicker}
               value={range.customRange as never}
-              onChange={(dates) => setRange({ preset: 'custom', customRange: dates as never })}
+              onChange={(dates) =>
+                setRange({ preset: 'custom', customRange: dates as GatewayCustomRange | null })
+              }
             />
           ) : null}
         </div>

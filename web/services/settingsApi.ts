@@ -175,6 +175,11 @@ export interface AppSettings {
   provider_last_used: Record<string, string>;
   /** Provider list layout per coding module ("list" | "card"). */
   provider_view_modes: Record<string, string>;
+  /**
+   * Gateway statistics page time range, mirrored into the tray usage block.
+   * Optional here because older rows predate it; the backend fills in `today`.
+   */
+  gateway_usage_range?: GatewayUsageRangeValue;
 }
 
 // Default settings
@@ -321,6 +326,41 @@ export const getSessionDetailFilters = async (): Promise<SessionDetailFilters | 
  */
 export const saveSessionDetailFilters = async (filters: SessionDetailFilters): Promise<void> => {
   await invoke('save_session_detail_filters', { filters });
+};
+
+/** Unix-second bounds for a `custom` gateway statistics range. */
+export interface GatewayUsageRangeValue {
+  preset: string;
+  start_date?: number | null;
+  end_date?: number | null;
+}
+
+/**
+ * Read the gateway statistics page's persisted time range. Mirrors
+ * `gateway_usage_range` in the Rust `AppSettings`; the tray usage block reads
+ * the same field, so the two always describe one window.
+ */
+export const getGatewayUsageRange = async (): Promise<GatewayUsageRangeValue> => {
+  return invoke<GatewayUsageRangeValue>('get_gateway_usage_range');
+};
+
+/** Persist the statistics range without rewriting the rest of the settings row. */
+export const saveGatewayUsageRange = async (range: GatewayUsageRangeValue): Promise<void> => {
+  await invoke('save_gateway_usage_range', { range });
+};
+
+/**
+ * Take a "open gateway statistics" request left by the tray while the window
+ * was being rebuilt (lightweight mode), so the freshly mounted page can act on
+ * it even though the live event fired before its listener existed.
+ */
+export const takePendingGatewayStatisticsNavigation = async (): Promise<boolean> => {
+  try {
+    return await invoke<boolean>('take_pending_gateway_statistics_navigation');
+  } catch (error) {
+    console.error('Failed to take pending gateway statistics navigation:', error);
+    return false;
+  }
 };
 
 /**

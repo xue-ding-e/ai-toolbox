@@ -95,6 +95,11 @@ pub(super) fn parse(path: &Path, fallback: i64) -> Result<ParsedSession, String>
             }
             record.metadata.granularity = SessionUsageGranularity::Turn;
             record.metadata.call_count = value.get("modelCalls").and_then(Value::as_u64);
+            // The SDK reports each turn's own elapsed time.
+            record.duration_ms = value
+                .get("duration_ms")
+                .and_then(Value::as_u64)
+                .and_then(super::parsers::bounded_session_duration_ms);
             record.reported_cost_usd = reported_cost(value.get("total_cost_usd"));
             if record.reported_cost_usd.is_some() {
                 record.metadata.cost_source = Some("reported".into());

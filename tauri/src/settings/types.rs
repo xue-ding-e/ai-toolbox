@@ -114,6 +114,35 @@ impl Default for BackupFileFilterRule {
     }
 }
 
+/// The gateway statistics page's time-range selection, persisted so the tray
+/// usage block can follow the same window.
+///
+/// `preset` is one of the frontend `GATEWAY_USAGE_RANGE_PRESETS` values. Only
+/// `custom` carries absolute bounds (`start_date` / `end_date`, unix seconds);
+/// relative presets are re-resolved from the current local clock every time the
+/// tray menu is built, so "today"/"this week" never freeze at save time.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GatewayUsageRangeSelection {
+    pub preset: String,
+    /// Unix seconds; only meaningful when `preset == "custom"`.
+    #[serde(default)]
+    pub start_date: Option<i64>,
+    /// Unix seconds; only meaningful when `preset == "custom"`.
+    #[serde(default)]
+    pub end_date: Option<i64>,
+}
+
+impl Default for GatewayUsageRangeSelection {
+    fn default() -> Self {
+        // Matches the statistics page's own default (`{ preset: 'today' }`).
+        Self {
+            preset: "today".to_string(),
+            start_date: None,
+            end_date: None,
+        }
+    }
+}
+
 /// Session-detail filter chip visibility persisted across app restarts.
 ///
 /// Mirrors the frontend `SessionDetailWorkbench` role/content filters. All
@@ -275,6 +304,9 @@ pub struct AppSettings {
     /// Provider list layout per coding module (e.g. "claudecode" -> "card").
     /// Values: "list" (default) or "card" (compact grid view).
     pub provider_view_modes: HashMap<String, String>,
+    /// Gateway statistics page time range, mirrored into the tray usage block.
+    #[serde(default)]
+    pub gateway_usage_range: GatewayUsageRangeSelection,
 }
 
 /// Combined read model for the provider list UI: per-module sort preference,
@@ -355,6 +387,7 @@ impl Default for AppSettings {
             provider_sort_modes: HashMap::new(),
             provider_last_used: HashMap::new(),
             provider_view_modes: HashMap::new(),
+            gateway_usage_range: GatewayUsageRangeSelection::default(),
         }
     }
 }

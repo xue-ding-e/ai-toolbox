@@ -2,7 +2,7 @@ use serde_json::Value;
 
 use super::{
     adapter,
-    types::{AppSettings, SessionDetailFilters},
+    types::{AppSettings, GatewayUsageRangeSelection, SessionDetailFilters},
 };
 use crate::db::helpers::{db_get, db_patch_fields, db_put};
 use crate::db::schema::DbTable;
@@ -96,6 +96,24 @@ pub fn save_session_detail_filters_to_sqlite_state(
     })
 }
 
+/// Persist the gateway statistics page's time range, patching only its own key.
+///
+/// The statistics page writes this on every filter change and the tray reads it
+/// when rebuilding the usage block. A full-settings write would race with the
+/// settings panel's debounced save and could revert unrelated fields.
+pub fn save_gateway_usage_range_to_sqlite_state(
+    sqlite_state: &SqliteDbState,
+    range: &GatewayUsageRangeSelection,
+) -> Result<(), String> {
+    let value = serde_json::to_value(range)
+        .map_err(|error| format!("serialize gateway usage range: {error}"))?;
+    super::provider_list_state::patch_or_create_settings_field(
+        sqlite_state,
+        "gateway_usage_range",
+        value,
+    )
+}
+
 pub fn load_settings_from_sqlite_conn(conn: &rusqlite::Connection) -> Result<AppSettings, String> {
     let record = db_get(conn, DbTable::Settings, SETTINGS_ID)?;
     let settings = record.map(adapter::from_db_value).unwrap_or_default();
@@ -152,6 +170,54 @@ mod tests {
         assert_eq!(loaded.language, "en-US");
         assert_eq!(loaded.theme, "dark");
         assert!(!loaded.backup_image_assets_enabled);
+    }
+
+    #[test]
+    fn gateway_usage_range_round_trips_and_legacy_rows_read_as_today() {
+        let sqlite_state = SqliteDbState::in_memory_for_test().expect("sqlite");
+
+        // A row written before the field existed: the adapter must hand back
+        // the statistics page's own default instead of an empty preset.
+        sqlite_state
+            .with_conn(|conn| {
+                db_put(
+                    conn,
+                    DbTable::Settings,
+                    SETTINGS_ID,
+                    &serde_json::json!({ "theme": "dark" }),
+                )
+            })
+            .expect("insert legacy row");
+        let legacy = load_settings_from_sqlite_state(&sqlite_state).expect("load legacy");
+        assert_eq!(legacy.gateway_usage_range, GatewayUsageRangeSelection::default());
+        assert_eq!(legacy.gateway_usage_range.preset, "today");
+
+        save_gateway_usage_range_to_sqlite_state(
+            &sqlite_state,
+            &GatewayUsageRangeSelection {
+                preset: "custom".to_string(),
+                start_date: Some(1_700_000_000),
+                end_date: Some(1_700_086_400),
+            },
+        )
+        .expect("save custom range");
+        let loaded = load_settings_from_sqlite_state(&sqlite_state).expect("reload");
+        assert_eq!(loaded.gateway_usage_range.preset, "custom");
+        assert_eq!(loaded.gateway_usage_range.start_date, Some(1_700_000_000));
+        assert_eq!(loaded.gateway_usage_range.end_date, Some(1_700_086_400));
+        // The single-key patch leaves the rest of the row alone.
+        assert_eq!(loaded.theme, "dark");
+
+        // Switching back to a relative preset clears the absolute bounds.
+        save_gateway_usage_range_to_sqlite_state(
+            &sqlite_state,
+            &GatewayUsageRangeSelection::default(),
+        )
+        .expect("save today");
+        let reset = load_settings_from_sqlite_state(&sqlite_state).expect("reload today");
+        assert_eq!(reset.gateway_usage_range.preset, "today");
+        assert_eq!(reset.gateway_usage_range.start_date, None);
+        assert_eq!(reset.gateway_usage_range.end_date, None);
     }
 
     #[test]
