@@ -46,23 +46,60 @@ pub const DSH_CREDENTIALS_RECORDS_KEY: &str = "records";
 /// record keys), mirroring `RECORD_SCOPE` in upstream `llm-pi-ai/src/auth.ts`.
 pub const DSH_CREDENTIAL_RECORD_SCOPE: &str = DSH_LLM_PI_AI_SECTION;
 
-/// Known dsh provider routes with official display names.
+/// Installed pi-ai catalog routes the `llm-pi-ai` adapter serves, with display
+/// names.
 ///
-/// Aligned with the dsh runtime's built-in/known providers plus the common
-/// aggregators users configure. This list is only used for display and built-in
-/// tagging; the authoritative provider fact source is `settings.yaml`'s
-/// `llm-pi-ai.providers.<route>` entries.
-pub const DSH_BUILTIN_PROVIDERS: [(&str, &str); 10] = [
-    ("deepseek", "DeepSeek"),
+/// Mirrors `catalogProviderIds()` in upstream `llm-pi-ai/src/catalog.ts` for
+/// `@earendil-works/pi-ai@1.1.0`: every provider that ships a chat model, plus
+/// catalog entries that list no models. `typesafe` is excluded because its
+/// catalog holds only a non-chat model, so the adapter does not offer it.
+///
+/// The list drives display names and the built-in tag only. A built-in route is
+/// not removable: upstream hides the remove action for a catalog provider the
+/// user layer does not own. The authoritative provider fact source remains the
+/// `llm-pi-ai.providers.<route>` configuration.
+pub const DSH_BUILTIN_PROVIDERS: [(&str, &str); 41] = [
+    ("amazon-bedrock", "Amazon Bedrock"),
+    ("ant-ling", "Ant Ling"),
     ("anthropic", "Anthropic"),
-    ("openai", "OpenAI"),
+    ("azure", "Azure OpenAI"),
+    ("baseten", "Baseten"),
+    ("cerebras", "Cerebras"),
+    ("cloudflare-ai-gateway", "Cloudflare AI Gateway"),
+    ("cloudflare-workers-ai", "Cloudflare Workers AI"),
+    ("deepseek", "DeepSeek"),
+    ("fireworks", "Fireworks"),
+    ("github-copilot", "GitHub Copilot"),
     ("google", "Google"),
-    ("openrouter", "OpenRouter"),
+    ("google-vertex", "Google Vertex"),
     ("groq", "Groq"),
+    ("huggingface", "Hugging Face"),
+    ("kimi-coding", "Kimi Coding"),
+    ("meta", "Meta"),
+    ("minimax", "MiniMax"),
+    ("minimax-cn", "MiniMax (CN)"),
     ("mistral", "Mistral"),
+    ("moonshotai", "Moonshot AI"),
+    ("moonshotai-cn", "Moonshot AI (CN)"),
+    ("nvidia", "NVIDIA"),
+    ("openai", "OpenAI"),
+    ("openai-codex", "OpenAI Codex"),
+    ("opencode", "OpenCode"),
+    ("opencode-go", "OpenCode Go"),
+    ("openrouter", "OpenRouter"),
+    ("qwen-token-plan", "Qwen Token Plan"),
+    ("qwen-token-plan-cn", "Qwen Token Plan (CN)"),
+    ("qwen-token-plan-individual", "Qwen Token Plan (Individual)"),
+    ("radius", "Radius"),
+    ("together", "Together"),
+    ("vercel-ai-gateway", "Vercel AI Gateway"),
     ("xai", "xAI"),
-    ("qwen", "Qwen"),
-    ("glm", "Zhipu GLM"),
+    ("xiaomi", "Xiaomi"),
+    ("xiaomi-token-plan-ams", "Xiaomi Token Plan (AMS)"),
+    ("xiaomi-token-plan-cn", "Xiaomi Token Plan (CN)"),
+    ("xiaomi-token-plan-sgp", "Xiaomi Token Plan (SGP)"),
+    ("zai", "Z.ai"),
+    ("zai-coding-cn", "Z.ai Coding (CN)"),
 ];
 
 pub fn is_builtin_provider(provider_key: &str) -> bool {

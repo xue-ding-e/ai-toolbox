@@ -10,6 +10,8 @@
 - **唯一例外是 Codex 的选文件**：`<codex_home>/state_<N>.sqlite` 的 `threads.rollout_path` 被当作「哪个 rollout 文件代表这个 thread」的**选择提示**，用来定夺列表胜者与详情读取对象。它只是提示，不是事实源——DB 不可用（不存在/被 Codex 持有写锁/schema 漂移/`sqlite_home` 指向别处）时必须静默回退到文件系统启发式，不能隐藏磁盘上真实存在的会话；`threads` 之外的列一律不读，标题/摘要/项目目录仍由 rollout 文件解析。
 - `source_path` 是会话操作的关键标识；对 OpenCode 这种特殊格式，还要经过专门的同源判断逻辑，不能简单字符串比较。
 - dsh 的会话目录会**并存多个格式代际**产物（`session.jsonl` 是 v0，`session.v<N>.jsonl` 是第 N 代，各自可带 `.zstd`），迁移只新增文件不改写旧的，**数值最大的一代才是活跃产物**。发现时必须按目录选最高代，否则会显示旧快照、甚至整会话不可见；命名与代际规则唯一来源是 `crate::coding::dsh::session_artifact`，不要在 session_manager 里另写白名单。删除任一产物等于删除整个会话目录（所有代际一起消失），是正确语义。
+- dsh 的 `tool/result` 有两代形态，解析必须同时支持：**V3**（`session.v3` 及更早）是 released wrapper——`message.role == "user"`，`content[]` 里装 `type:"tool-result"` 的包装块，`toolCallId` 与可选 `isError` 在包装块上；**V4**（dsh >= 0.1.7 的当前格式，`SESSION_FORMAT_VERSION = 4`）是 first-class tool-role message——`message.role == "tool"`，`toolCallId` 在 message 上，`content[]` 直接是 `text` / `image` 原生块，`isError` 也在 message 上。错误判定优先 `isError`（V4 message 或 V3 wrapper），只有缺失时才回退到 `data.error`：上游会写出 `isError: true` 但没有 `data.error` 的结果（本地 226 个错误块里 89 个如此），只认 `data.error` 会把错误显示成成功。`image` 块是附件存储里的引用，列表/详情只展示 `[Image: <mediaType>]` 占位。
+- dsh 会话列表的可见性对齐上游 Web：header `origin == "subagent"` 的子会话与尚无 `turn/start` 的 blank 会话不进列表（`ui-workspace/src/client/tree.ts` 的 `sessionVisible`）；隐藏只发生在列表扫描，详情读取不受影响。`turn/start` 总是出现在会话开头几个事件内（本机 36 个会话实测最大索引 13，上游 594 个快照实测最大索引 9），因此 `HEAD_LINES = 40` 的窗口足够判定；若将来某个组合把 `turn/start` 推后，需同步评估这个窗口。
 - 当前工具的会话上下文路径必须先经 `runtime_location` 决议，再派生 sessions/projects/agents/data_root 等目录。
 
 ## 核心设计决策（Why）

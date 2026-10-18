@@ -244,15 +244,73 @@ fn parse_tool_arguments(arguments: &Value) -> Option<Value> {
     }
 }
 
-/// Extract `(callId, output)` from a `tool/result` event's payload. A multipart
-/// `content` array contributes every `tool-result` entry's text in order
-/// (joined by a blank line); entries of other types are ignored.
-fn tool_result_fields(event: &Value) -> Option<(String, Value)> {
+/// A parsed `tool/result` payload, shared by both on-disk generations.
+struct ToolResultFields {
+    call_id: String,
+    output: Value,
+    is_error: bool,
+}
+
+/// One text fragment of a V4 tool-role content block. `image` blocks are
+/// content-addressed attachments in a sibling store, so only their media type
+/// surfaces (the same `[Image: …]` convention as the pi readers).
+fn tool_result_content_text(block: &Value) -> Option<String> {
+    match block.get("type").and_then(Value::as_str).unwrap_or("") {
+        "text" => block
+            .get("text")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        "image" => {
+            let media_type = block
+                .pointer("/attachment/mediaType")
+                .and_then(Value::as_str)
+                .unwrap_or("image");
+            Some(format!("[Image: {media_type}]"))
+        }
+        _ => None,
+    }
+}
+
+/// Extract the `tool/result` fields from either generation:
+///
+/// - V4 (`SESSION_FORMAT_VERSION` >= 4, dsh >= 0.1.7): a first-class tool-role
+///   message with `toolCallId` on the message and native `text` / `image`
+///   content blocks. `isError` is a message field; `data.error` is only
+///   present for some failures.
+/// - V3 (released wrapper): `message.role == "user"`, `tool-result` wrappers
+///   inside `content`, and an optional `isError` on each wrapper.
+///
+/// `data.error` remains the fallback for a missing error flag, but it must not
+/// be the primary signal: upstream writes error results without it.
+fn tool_result_fields(event: &Value) -> Option<ToolResultFields> {
     let data = append_event_data(event, "tool/result")?;
     let message = data.get("message")?;
     let content = message.get("content")?.as_array()?;
+    let has_data_error = data.get("error").is_some();
+
+    if message.get("role").and_then(Value::as_str) == Some("tool") {
+        let call_id = message
+            .get("toolCallId")
+            .and_then(Value::as_str)?
+            .to_string();
+        let parts: Vec<String> = content
+            .iter()
+            .filter_map(tool_result_content_text)
+            .collect();
+        let is_error = message
+            .get("isError")
+            .and_then(Value::as_bool)
+            .unwrap_or(has_data_error);
+        return Some(ToolResultFields {
+            call_id,
+            output: Value::String(parts.join("\n\n")),
+            is_error,
+        });
+    }
+
     let mut call_id: Option<String> = None;
     let mut parts: Vec<String> = Vec::new();
+    let mut wrapper_error: Option<bool> = None;
     for part in content {
         if part.get("type").and_then(Value::as_str) != Some("tool-result") {
             continue;
@@ -263,10 +321,16 @@ fn tool_result_fields(event: &Value) -> Option<(String, Value)> {
                 .and_then(Value::as_str)
                 .map(str::to_string);
         }
+        if let Some(flag) = part.get("isError").and_then(Value::as_bool) {
+            wrapper_error = Some(flag);
+        }
         parts.push(part.get("content").map(extract_text).unwrap_or_default());
     }
-    let call_id = call_id?;
-    Some((call_id, Value::String(parts.join("\n\n"))))
+    Some(ToolResultFields {
+        call_id: call_id?,
+        output: Value::String(parts.join("\n\n")),
+        is_error: wrapper_error.unwrap_or(has_data_error),
+    })
 }
 
 /// Build one tool-execution message by pairing a `tool/result` with its
@@ -357,25 +421,30 @@ fn load_transcript(path: &Path) -> Result<Vec<SessionMessage>, String> {
                 }
             }
             "tool/result" => {
-                let Some((call_id, output)) = tool_result_fields(&value) else {
+                let Some(result) = tool_result_fields(&value) else {
                     continue;
                 };
-                let is_error = value.pointer("/data/error").is_some();
                 let ts = event_time_ms(&value);
-                match pending_calls.remove(&call_id) {
+                match pending_calls.remove(&result.call_id) {
                     Some(index) => {
                         let existing = &mut messages[index];
                         let mut blocks = std::mem::take(&mut existing.blocks);
                         blocks.push(tool_result_block(
-                            Some(call_id),
+                            Some(result.call_id),
                             None,
-                            Some(output),
-                            Some(is_error),
+                            Some(result.output),
+                            Some(result.is_error),
                         ));
                         *existing = message_from_blocks("tool", ts, blocks);
                     }
                     None => {
-                        messages.push(tool_execution_message(None, call_id, output, is_error, ts));
+                        messages.push(tool_execution_message(
+                            None,
+                            result.call_id,
+                            result.output,
+                            result.is_error,
+                            ts,
+                        ));
                     }
                 }
             }
@@ -397,6 +466,8 @@ fn parse_session_artifact(path: &Path) -> Option<SessionMeta> {
     let mut cwd: Option<String> = None;
     let mut first_user: Option<String> = None;
     let mut title_event: Option<String> = None;
+    let mut is_subagent = false;
+    let mut has_turn = false;
 
     for raw_line in &head {
         let line = raw_line.trim();
@@ -423,6 +494,12 @@ fn parse_session_artifact(path: &Path) -> Option<SessionMeta> {
                     .filter(|text| !text.trim().is_empty())
                     .map(str::to_string);
             }
+            // Subagent children share their parent workspace. Upstream's
+            // session tree hides them; surface only top-level sessions here.
+            is_subagent = value.get("origin").and_then(Value::as_str) == Some("subagent");
+        }
+        if event_type == "turn/start" {
+            has_turn = true;
         }
         if event_type == "session/title" {
             // The last title event wins, mirroring upstream's `findLast`. An
@@ -442,6 +519,11 @@ fn parse_session_artifact(path: &Path) -> Option<SessionMeta> {
     }
 
     let session_id = session_id?;
+    // Mirror upstream's visibility rules: subagent children live under the
+    // parent's tree, and a blank session (no `turn/start` yet) is not listed.
+    if is_subagent || !has_turn {
+        return None;
+    }
     let created_at = created_at.unwrap_or_else(|| file_modified_ms(path).unwrap_or(0));
     let last_active_at = file_modified_ms(path)
         .filter(|ts| *ts >= created_at)
@@ -571,7 +653,7 @@ pub fn scan_messages_for_query(source: &str, query_lower: &str) -> Result<bool, 
                 })
                 .unwrap_or_default(),
             "tool/result" => tool_result_fields(&value)
-                .map(|(_, output)| vec![output.to_string()])
+                .map(|result| vec![result.output.to_string()])
                 .unwrap_or_default(),
             _ => Vec::new(),
         };
@@ -653,11 +735,12 @@ mod tests {
     fn sample_events(created: i64) -> String {
         format!(
             r##"{{"type":"session","version":0,"id":"s1","createdAt":{created},"cwd":"/home/user/proj","delegationDepth":0}}
+{{"type":"turn/start","seq":6,"time":4,"data":{{"turn":1}}}}
 {{"type":"user/message","seq":7,"time":5,"data":{{"content":[{{"type":"text","text":"Hello there"}}],"source":{{"kind":"user"}},"role":"user","id":"u1"}},"surfaceOp":"append"}}
 {{"type":"user/message","seq":8,"time":6,"data":{{"content":[{{"type":"text","text":"# AGENTS.md instructions"}}],"source":{{"kind":"agent-instructions"}},"role":"user","id":"u2"}},"surfaceOp":"append"}}
 {{"type":"assistant/message","seq":9,"time":9,"data":{{"turn":1,"step":1,"message":{{"role":"assistant","content":[{{"type":"reasoning","text":"thinking hard"}},{{"type":"text","text":"Hi back"}},{{"type":"tool-call","id":"call-1","name":"glob","arguments":"{{\"pattern\":\"*.rs\"}}"}}],"source":{{"kind":"model","provider":"p","model":"test-model"}},"id":"a1"}},"usage":{{"inputTokens":10,"outputTokens":2,"cacheReadTokens":4}}}},"surfaceOp":"append"}}
 {{"type":"tool/call","seq":10,"time":10,"data":{{"turn":1,"step":1,"callId":"call-1","name":"glob","arguments":"{{\"pattern\":\"*.rs\"}}"}}}}
-{{"type":"tool/result","seq":11,"time":11,"data":{{"turn":1,"step":1,"message":{{"role":"tool","content":[{{"type":"tool-result","toolCallId":"call-1","content":[{{"type":"text","text":"src/main.rs"}}]}}]}}}},"surfaceOp":"append"}}
+{{"type":"tool/result","seq":11,"time":11,"data":{{"turn":1,"step":1,"message":{{"role":"user","content":[{{"type":"tool-result","toolCallId":"call-1","content":[{{"type":"text","text":"src/main.rs"}}]}}]}}}},"surfaceOp":"append"}}
 {{"type":"user/message","seq":12,"time":12,"data":{{"content":[{{"type":"text","text":"compaction summary"}}],"source":{{"kind":"plugin","plugin":"dsh-compaction"}},"role":"user","id":"u3"}},"surfaceOp":{{"op":"replace","start":7,"end":11}}}}
 "##
         )
@@ -724,6 +807,35 @@ mod tests {
         assert!(!rendered.contains("compaction summary"));
     }
 
+    /// Subagent children and blank sessions stay out of the list, mirroring
+    /// upstream's session tree, while their artifacts remain readable.
+    #[test]
+    fn scan_hides_subagent_and_blank_sessions() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // `write_artifact` treats its third argument as the session directory,
+        // so each role gets its own directory to keep the generations apart.
+        write_artifact(dir.path(), "top", false, &sample_events(1_700_000_000_000));
+        let subagent = r#"{"type":"session","version":4,"id":"sub1","createdAt":1,"cwd":"/p","isSeeded":false,"delegationDepth":1,"origin":"subagent"}
+{"type":"turn/start","data":{"turn":1}}
+{"type":"user/message","data":{"source":{"kind":"user"},"content":"child task"},"surfaceOp":"append"}
+"#;
+        write_artifact_named(dir.path(), "child", "session.v4.jsonl", false, subagent);
+        // A blank session: no turn has started yet.
+        let blank = r#"{"type":"session","version":4,"id":"blank1","createdAt":2,"cwd":"/p","isSeeded":false,"delegationDepth":0}
+"#;
+        write_artifact_named(dir.path(), "blank", "session.v4.jsonl", false, blank);
+
+        let sessions = scan_sessions(dir.path());
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].session_id, "s1");
+
+        // Hiding is a list concern only; the detail reader still loads either.
+        let subagent_path = dir.path().join("child").join("session.v4.jsonl");
+        let messages = load_messages(&subagent_path.to_string_lossy()).expect("load subagent");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].content, "child task");
+    }
+
     #[test]
     fn orphan_tool_call_surfaces_as_pending() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -784,6 +896,100 @@ mod tests {
         assert!(rendered.contains("first part"));
         assert!(rendered.contains("second part"));
         assert!(!rendered.contains("annotation ignored"));
+    }
+
+    /// Session format v4 (dsh >= 0.1.7) turns `tool/result` into a first-class
+    /// tool-role message: the call id sits on the message and the content is a
+    /// native block array. The transcript must still pair it with its call.
+    #[test]
+    fn v4_tool_result_pairs_with_its_call() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let events = r#"{"type":"session","version":4,"id":"s1","createdAt":1,"cwd":"/p","isSeeded":false,"delegationDepth":0}
+{"type":"tool/call","data":{"turn":1,"step":1,"callId":"call-v4","name":"bash","arguments":"{\"command\":\"echo hi\"}"}}
+{"type":"tool/result","data":{"turn":1,"step":1,"message":{"role":"tool","source":{"kind":"tool","callId":"call-v4"},"toolCallId":"call-v4","content":[{"type":"text","text":"hi\n"}],"isError":false,"id":"m5"}},"surfaceOp":"append"}
+"#;
+        write_artifact_named(dir.path(), "proj-a", "session.v4.jsonl", false, events);
+        let path = collect_session_artifacts(dir.path())[0].clone();
+        let messages = load_messages(&path.to_string_lossy()).expect("load");
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, "tool");
+        assert_eq!(messages[0].blocks.len(), 1);
+        assert_eq!(messages[0].blocks[0].kind, "tool_execution");
+        assert_eq!(messages[0].blocks[0].tool_name.as_deref(), Some("bash"));
+        assert_eq!(messages[0].blocks[0].status.as_deref(), Some("success"));
+        // Paired executions carry the result on the block's output.
+        let rendered = serde_json::to_string(&messages).expect("render");
+        assert!(rendered.contains("hi"));
+    }
+
+    /// An error result without `data.error` must still surface as an error:
+    /// upstream writes such results (e.g. a rejected escalation), so the old
+    /// `data.error`-only check silently reported them as successes.
+    #[test]
+    fn v4_tool_result_reads_is_error_from_the_message() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let events = r#"{"type":"session","version":4,"id":"s1","createdAt":1,"cwd":"/p","isSeeded":false,"delegationDepth":0}
+{"type":"tool/result","data":{"message":{"role":"tool","source":{"kind":"tool","callId":"call-e"},"toolCallId":"call-e","content":[{"type":"text","text":"Error: rejected"}],"isError":true,"id":"m6"}},"surfaceOp":"append"}
+"#;
+        write_artifact_named(dir.path(), "proj-a", "session.v4.jsonl", false, events);
+        let path = collect_session_artifacts(dir.path())[0].clone();
+        let messages = load_messages(&path.to_string_lossy()).expect("load");
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].blocks[0].kind, "tool_result");
+        assert_eq!(messages[0].blocks[0].is_error, Some(true));
+        assert_eq!(messages[0].blocks[0].status.as_deref(), Some("error"));
+    }
+
+    /// V3 wrapper results carry the flag on each `tool-result` wrapper; no
+    /// `data.error` is written for most tool failures.
+    #[test]
+    fn v3_tool_result_reads_is_error_from_the_wrapper() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let events = r#"{"type":"session","version":0,"id":"s1","createdAt":1,"cwd":"/p","delegationDepth":0}
+{"type":"tool/call","seq":1,"time":2,"data":{"turn":1,"step":1,"callId":"call-w","name":"read","arguments":"null"}}
+{"type":"tool/result","seq":2,"time":3,"data":{"message":{"role":"user","content":[{"type":"tool-result","toolCallId":"call-w","content":[{"type":"text","text":"denied"}],"isError":true}]}},"surfaceOp":"append"}
+"#;
+        write_artifact(dir.path(), "proj-a", false, events);
+        let path = collect_session_artifacts(dir.path())[0].clone();
+        let messages = load_messages(&path.to_string_lossy()).expect("load");
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].blocks[0].kind, "tool_execution");
+        assert_eq!(messages[0].blocks[0].is_error, Some(true));
+        assert_eq!(messages[0].blocks[0].status.as_deref(), Some("error"));
+    }
+
+    /// V4 renders non-text tool content as a media placeholder instead of
+    /// dropping the block, matching the pi readers' `[Image: …]` convention.
+    #[test]
+    fn v4_tool_result_keeps_image_blocks_as_placeholders() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let events = r#"{"type":"session","version":4,"id":"s1","createdAt":1,"cwd":"/p","isSeeded":false,"delegationDepth":0}
+{"type":"tool/result","data":{"message":{"role":"tool","source":{"kind":"tool","callId":"call-i"},"toolCallId":"call-i","content":[{"type":"text","text":"Chromium page"},{"type":"image","attachment":{"attachmentId":"sha256:x","mediaType":"image/png","width":1,"height":1,"bytes":90}}],"isError":false,"id":"m7"}},"surfaceOp":"append"}
+"#;
+        write_artifact_named(dir.path(), "proj-a", "session.v4.jsonl", false, events);
+        let path = collect_session_artifacts(dir.path())[0].clone();
+        let messages = load_messages(&path.to_string_lossy()).expect("load");
+
+        assert!(messages[0].content.contains("Chromium page"));
+        assert!(messages[0].content.contains("[Image: image/png]"));
+    }
+
+    /// Query search must see v4 tool output as well.
+    #[test]
+    fn v4_query_scan_matches_tool_output() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let events = r#"{"type":"session","version":4,"id":"s1","createdAt":1,"cwd":"/p","isSeeded":false,"delegationDepth":0}
+{"type":"tool/call","data":{"turn":1,"step":1,"callId":"call-s","name":"bash","arguments":"null"}}
+{"type":"tool/result","data":{"message":{"role":"tool","source":{"kind":"tool","callId":"call-s"},"toolCallId":"call-s","content":[{"type":"text","text":"dsh-sdk-proof-7391"}],"isError":false,"id":"m8"}},"surfaceOp":"append"}
+"#;
+        write_artifact_named(dir.path(), "proj-a", "session.v4.jsonl", false, events);
+        let path = collect_session_artifacts(dir.path())[0].clone();
+        let source = path.to_string_lossy();
+
+        assert!(scan_messages_for_query(&source, "dsh-sdk-proof-7391").expect("scan"));
     }
 
     #[test]
@@ -990,7 +1196,9 @@ mod tests {
     ///
     /// The count assertion is the one that matters: a session directory whose
     /// selected artifact fails to parse would silently vanish from the list,
-    /// and only comparing against the directory count catches that.
+    /// and only comparing against the directory count catches that. Hiding is
+    /// applied on top, so the ground truth splits each directory into visible
+    /// and deliberately hidden (subagent or blank) before comparing.
     #[test]
     #[ignore]
     fn real_sessions_root_smoke() {
@@ -1001,7 +1209,7 @@ mod tests {
 
         // Ground truth: every session directory that holds an accepted
         // artifact, counted without the parser under test.
-        let mut expected_dirs: Vec<PathBuf> = Vec::new();
+        let mut all_dirs: Vec<(PathBuf, PathBuf)> = Vec::new();
         let mut pending = vec![root.clone()];
         while let Some(dir) = pending.pop() {
             let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -1012,27 +1220,62 @@ mod tests {
                 if path.is_dir() {
                     pending.push(path);
                 } else if session_artifact::is_session_artifact(&path) {
-                    expected_dirs.push(path.parent().unwrap_or(Path::new(".")).to_path_buf());
+                    all_dirs.push((path.parent().unwrap_or(Path::new(".")).to_path_buf(), path));
                 }
             }
         }
-        expected_dirs.sort();
-        expected_dirs.dedup();
+        let selected = session_artifact::select_generations(
+            all_dirs.iter().map(|(_, path)| path.clone()).collect(),
+        );
+
+        // Mirror the parser's visibility rule independently so a hidden
+        // session is expected rather than silently missing.
+        let mut expected_visible: Vec<PathBuf> = Vec::new();
+        let mut hidden = 0usize;
+        for artifact in selected {
+            let Ok(head) = read_head_lines(&artifact, HEAD_LINES) else {
+                continue;
+            };
+            let mut is_subagent = false;
+            let mut has_turn = false;
+            for raw_line in &head {
+                let Ok(value) = serde_json::from_str::<Value>(raw_line.trim()) else {
+                    continue;
+                };
+                match value.get("type").and_then(Value::as_str).unwrap_or("") {
+                    "session" => {
+                        is_subagent =
+                            value.get("origin").and_then(Value::as_str) == Some("subagent");
+                    }
+                    "turn/start" => has_turn = true,
+                    _ => {}
+                }
+            }
+            if is_subagent || !has_turn {
+                hidden += 1;
+            } else {
+                expected_visible.push(artifact.parent().unwrap_or(Path::new(".")).to_path_buf());
+            }
+        }
+        expected_visible.sort();
+        expected_visible.dedup();
 
         let sessions = scan_sessions(&root);
         for meta in &sessions {
             println!("{} -> {}", meta.session_id, meta.source_path);
         }
         println!(
-            "session dirs on disk: {}, sessions parsed: {}",
-            expected_dirs.len(),
+            "session dirs on disk: {}, visible: {}, hidden: {}, sessions parsed: {}",
+            expected_visible.len() + hidden,
+            expected_visible.len(),
+            hidden,
             sessions.len()
         );
 
         assert_eq!(
             sessions.len(),
-            expected_dirs.len(),
-            "every session directory must yield exactly one parsed session"
+            expected_visible.len(),
+            "every visible session directory must yield exactly one parsed session"
         );
         let mut source_dirs: Vec<&str> = sessions
             .iter()

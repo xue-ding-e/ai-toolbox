@@ -1852,7 +1852,7 @@ mod tests {
                     "deepseek": { "apiKeyEnv": "DEEPSEEK_API_KEY" }
                 }
             },
-            "agent-default-model": { "provider": "deepseek", "model": "deepseek-v4-flash" }
+            "agent-default-model": { "provider": "deepseek", "model": "deepseek-flash" }
         });
         let views = build_provider_views(&config, &credentials_document(json!({})));
         assert_eq!(views.len(), 1);
@@ -1863,7 +1863,7 @@ mod tests {
             .as_ref()
             .map(|models| !models.is_empty())
             .unwrap_or(false));
-        assert!(view.model_ids.iter().any(|id| id == "deepseek-v4-flash"));
+        assert!(view.model_ids.iter().any(|id| id == "deepseek-flash"));
         assert!(view.model_ids.iter().any(|id| id == "deepseek-v4-pro"));
         assert!(view.warnings.is_empty());
     }
@@ -1876,7 +1876,7 @@ mod tests {
                     "deepseek-official": { "apiKeyEnv": "DEEPSEEK_API_KEY" }
                 }
             },
-            "agent-default-model": { "provider": "deepseek-official", "model": "deepseek-v4-flash" }
+            "agent-default-model": { "provider": "deepseek-official", "model": "deepseek-flash" }
         });
         let views = build_provider_views(&config, &credentials_document(json!({})));
         let view = &views[0];

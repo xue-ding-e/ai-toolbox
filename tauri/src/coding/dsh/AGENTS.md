@@ -25,6 +25,8 @@
 ## 核心设计决策
 
 - provider 写入时只 upsert `llm-pi-ai.providers.<route>` 的 exact route；`models` 保持数组（`[{ id, contextWindow?, maxTokens? }]`）。
+- 模型条目的合法字段由上游 `packages/llm/llm-pi-ai/src/config.ts` 的 `modelFields` 决定：`id`（必填）、`name`、`contextWindow`、`maxTokens`、`input`（`text`/`image`）、`reasoningEfforts`、`compat`。`input` 与 `compat` 是上游 schema 字段，前端白名单必须包含；`reasoning` / `cost` 不是上游字段，仅因 schemastery 对未知键透传而保留为展示层数据。
+- `DSH_BUILTIN_PROVIDERS` 必须与已安装 pi-ai 的 `catalogProviderIds()` 对齐（`llm-pi-ai/src/catalog.ts` 的 `servesChat`：至少有 chat 模型，或 catalog 完全不列模型）。`@earendil-works/pi-ai@1.1.0` 下共 41 条，`typesafe` 因为只有非 chat 模型而被排除。名单只负责显示名与“内置不可删除”标记，不决定配置是否存在。
 - 默认模型 `agent-default-model` 采用字符串字段「空串=删除键」语义（同 pi/hermes）；`provider` 与 `model` 任一为空时整节删除（profile 层即删除该 patch row）。
 - Other Settings 编辑器隐藏并保留托管键：`llm-pi-ai`、`agent-default-model`。**profile 层上该编辑器整体冻结**（`read_dsh_runtime_config` 返回 `otherSettings: {}`，`save_dsh_other_settings` 直接拒绝）：patch 里是 dsh 全部插件的行，自由 JSON 编辑会破坏无关插件，这些配置归 dsh 自己的设置页所有。
 - 凭据读写集中在 `commands.rs` 的 `CredentialsDocument`：写入**统一输出版本化布局**（盖 `version: 1` 戳、只改 `refs:` 节点、整体重写保留 `records:` 与键序）；读到旧扁平文档时按 dsh 官方迁移规则把既有条目原样收编进 `refs:` 再改写（等价于 dsh 的 boot migration，避免覆盖丢密钥）。`records:` 归 dsh 登录流所有，本模块永不写入或删除。
@@ -49,6 +51,9 @@
 - legacy `settings.yaml` 允许未知 top-level 与 provider 未知字段；读写必须 preserve unknown fields。profile 层同理：patch 的其它行、未知字段一律原样保留。
 - 保存 Other Settings 时不要把托管键（`llm-pi-ai`、`agent-default-model`）带回文件；profile 层根本不允许保存（见上）。
 - 内置 provider 即使没有写进 `llm-pi-ai.providers`（凭 env/默认可用）也不应显示为 missing；凭据缺失显示为未配置而非 missing。
+- 内置模型目录（`resources/dsh_builtin_models.json`）来自 **pi-ai 1.1.0** 的 `dist/providers/data/deepseek.json`：`deepseek-flash`（V4.1 Flash，text+image）与 `deepseek-v4-pro`（text）。`deepseek-v4-flash` 与 `deepseek-v4-flash-vision-exp` 在 0.87.1 起已不存在于 catalog；`deepseek-v4-flash-vision-exp` 的能力被并入 `deepseek-flash`。compat 新增 `supportsStrictMode`（两条）与 `supportsMidConvoSystemMessages`（仅 pro）。升级 pi-ai 时按 `tauri/resources/AGENTS.md` 的提取规则刷新，不要凭记忆补字段。
+- 上游 0.2.1 起 `webserver.host` 拒绝通配符地址（`isWildcardHost`：`0.0.0.0`、`::` 等），只接受具体 IPv4/IPv6 字面量；`webRuntime` 服务已被 `webStartup` 取代。这两条属于用户 profile 配置，本模块不代为改写，但排障时要能指出原因。
+- agent-instructions 在 0.2.1-alpha.2 移除了 `dshHome` 配置字段，用户全局指令根为 `$DSH_HOME/AGENTS.md` 与 `$DSH_AGENTS_HOME`（默认 `~/.agents`）/AGENTS.md。本模块的启用开关仍只写 home 级 patch 的 `disabled` 与 `maxBytes`，不写 `dshHome`。
 - dsh MCP 由 `mcp::cordis_patch` 适配器管理 **home 级** `~/.dsh/cordis.patch.yml`（Cordis patch DSL，format `cordis`）。0.1.7+ 的 live 配置在 profile 补丁里，本模块只在 `llm-pi-ai` / `agent-default-model` 两行上写 profile 补丁，MCP 行仍留在 home 级（home patch 在 profile patch 之后叠加，见 `readProfilePatches` 的 layer 顺序）。每个 MCP server 是一行 `insert`，包名固定 `@deepseek-ai/dsh-mcp-client`，`config.serverName` 作 key，且该 key 受上游约束 `^[A-Za-z0-9_-]{1,32}$`（写入前在 `sync_server_to_cordis` 校验，详见 `mcp/AGENTS.md`）。本模块（dsh）仍管 `settings.yaml`/`.credentials.yaml`/`AGENTS.md`，不直接写 MCP 配置。dsh 是 developer preview，cordis patch 格式可能迭代；adapter 隔离在 `cordis_patch.rs` 便于后续更新。
 - `read_dsh_runtime_config` 返回的 `credentialsContent` 是 `.credentials.yaml` 原始内容，包含真实密钥；前端仅用于只读文件预览，不得把该字段当作可编辑数据回写。
 - 启用 agent-instructions（`enable_dsh_agent_instructions`）会同时往 home 级 `cordis.patch.yml` 写 `disabled: false` 和 `config.maxBytes: 262144`（256 KiB），覆盖 base bundle 默认的 64 KiB 预算，避免项目根 `AGENTS.md` 一超 64 KiB 就把 `~/.dsh/AGENTS.md` 整文件挤出 baseline。`check_dsh_agent_instructions` 仍只按 `disabled` 判定启用；重复启用会幂等覆盖 maxBytes。cordis patch 写字段走 `mcp::cordis_patch::set_plugin_config_field`（合并 config、保留其它字段与行）。

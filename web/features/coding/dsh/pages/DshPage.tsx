@@ -254,10 +254,60 @@ const setOptionalStringField = (
 
 const isRecordEmpty = (value: Record<string, unknown>): boolean => Object.keys(value).length === 0;
 
-/** 模型字段中由弹窗专用控件管理的键；其余字段视为额外参数原样保留。 */
+/**
+ * 模型字段中由弹窗专用控件管理的键；其余字段视为额外参数原样保留。
+ *
+ * `input` / `compat` / `reasoningEfforts` 是上游 llm-pi-ai 的模型字段
+ * （`packages/llm/llm-pi-ai/src/config.ts` 的 modelFields）。`reasoning` 与
+ * `cost` 不是上游 schema 字段：schemastery 对未知键透传，它们只是本页展示层
+ * 的兼容字段，保留以免保存时洗掉历史数据。
+ */
 const DSH_KNOWN_MODEL_FIELDS = new Set([
-  'id', 'name', 'contextWindow', 'maxTokens', 'reasoning', 'cost', 'reasoningEfforts',
+  'id', 'name', 'contextWindow', 'maxTokens', 'input', 'reasoningEfforts', 'compat',
+  'reasoning', 'cost',
 ]);
+
+/** 解析模型弹窗的输入类型字符串（JSON 数组）。 */
+const parseDshInputTypes = (value: string | undefined): string[] => {
+  if (!value) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed)
+      ? parsed.filter((entry): entry is string => typeof entry === 'string')
+      : [];
+  } catch {
+    return [];
+  }
+};
+
+/** 解析模型弹窗的 compat JSON 字符串。 */
+const parseDshCompat = (value: string | undefined): Record<string, unknown> => {
+  if (!value) {
+    return {};
+  }
+  try {
+    return asRecord(JSON.parse(value));
+  } catch {
+    return {};
+  }
+};
+
+/** 把字符串数组序列化成模型弹窗的输入类型字段。 */
+const stringifyDshInputTypes = (value: unknown): string | undefined => {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const values = value.filter((entry): entry is string => typeof entry === 'string');
+  return values.length > 0 ? JSON.stringify(values) : undefined;
+};
+
+/** 把对象序列化成模型弹窗的 compat 字段。 */
+const stringifyDshRecord = (value: unknown): string | undefined => {
+  const record = asRecord(value);
+  return isRecordEmpty(record) ? undefined : JSON.stringify(record, null, 2);
+};
 
 /** 提取模型已知字段之外的额外参数（与 OpenClaw extraParams 一致）。 */
 const extractDshExtraParams = (model: unknown): Record<string, unknown> | undefined => {
@@ -960,6 +1010,20 @@ const DshPage: React.FC = () => {
       }
     } else {
       delete nextModel.reasoningEfforts;
+    }
+    // 输入类型与 compat 是上游模型字段；空值必须删除键，而不是写空数组/空对象
+    // （空数组表示“未声明”，空 compat 还会被上游当成一次无效配置）。
+    const inputTypes = parseDshInputTypes(values.inputTypes);
+    if (inputTypes.length > 0) {
+      nextModel.input = inputTypes;
+    } else {
+      delete nextModel.input;
+    }
+    const compat = parseDshCompat(values.compat);
+    if (!isRecordEmpty(compat)) {
+      nextModel.compat = compat;
+    } else {
+      delete nextModel.compat;
     }
 
     // 额外参数：以编辑器内容为准，移除旧的未知字段后再合并（与 OpenClaw 一致）。
@@ -2443,6 +2507,8 @@ const DshPage: React.FC = () => {
             outputLimit: typeof dshModelModal.model?.maxTokens === 'number'
               ? dshModelModal.model.maxTokens
               : undefined,
+            inputTypes: stringifyDshInputTypes(dshModelModal.model?.input),
+            compat: stringifyDshRecord(dshModelModal.model?.compat),
             costInput: getNumberField(asRecord(dshModelModal.model?.cost), 'input'),
             costOutput: getNumberField(asRecord(dshModelModal.model?.cost), 'output'),
             costCacheRead: getNumberField(asRecord(dshModelModal.model?.cost), 'cacheRead'),
@@ -2468,9 +2534,11 @@ const DshPage: React.FC = () => {
           showOptions={false}
           showVariants={false}
           showModalities={false}
+          showInputTypes
           showReasoning={false}
           showCost={false}
           showThinkingLevelMap={true}
+          showCompat
           showExtraParams
           limitRequired={false}
           nameRequired={false}

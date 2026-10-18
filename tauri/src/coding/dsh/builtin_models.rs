@@ -71,8 +71,7 @@ mod tests {
         let models = builtin_models_for("deepseek").expect("deepseek catalog");
         assert!(!models.is_empty());
         let ids = builtin_model_ids(models);
-        assert!(ids.iter().any(|id| id == "deepseek-v4-flash"));
-        assert!(ids.iter().any(|id| id == "deepseek-v4-pro"));
+        assert_eq!(ids, vec!["deepseek-flash", "deepseek-v4-pro"]);
     }
 
     /// The catalog mirrors the installed pi-ai adapter, so the facts most
@@ -88,19 +87,27 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing model {id}"))
         };
 
-        let flash = find("deepseek-v4-flash");
+        // pi-ai 1.1.0 renamed the flash model and folded the vision variant
+        // into it; the old `deepseek-v4-flash-vision-exp` entry is gone.
+        let flash = find("deepseek-flash");
+        assert_eq!(flash["name"], "DeepSeek V4.1 Flash");
         assert_eq!(flash["reasoningEfforts"]["low"], "low");
         assert_eq!(flash["compat"]["maxTokensField"], "max_tokens");
-
-        let vision = find("deepseek-v4-flash-vision-exp");
-        let input: Vec<&str> = vision["input"]
+        assert_eq!(flash["compat"]["supportsStrictMode"], true);
+        let input: Vec<&str> = flash["input"]
             .as_array()
-            .expect("vision input modalities")
+            .expect("flash input modalities")
             .iter()
             .filter_map(Value::as_str)
             .collect();
         assert!(input.contains(&"image"));
-        assert_eq!(vision["compat"]["maxTokensField"], "max_tokens");
+
+        let pro = find("deepseek-v4-pro");
+        assert_eq!(pro["compat"]["supportsMidConvoSystemMessages"], true);
+        assert!(models
+            .iter()
+            .all(|model| model.get("id").and_then(Value::as_str)
+                != Some("deepseek-v4-flash-vision-exp")));
     }
 
     #[test]
