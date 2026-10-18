@@ -2,6 +2,7 @@
 //!
 //! Provides system tray icon and menu with flat structure:
 //! - Open Main Window
+//! - Current usage (statistics page's selected range)
 //! - ─── OpenCode ────
 //! - 主模型 / 小模型 (with submenus for model selection)
 //! - ─── OpenCode 插件 ────
@@ -1995,6 +1996,13 @@ async fn refresh_tray_menus_inner<R: Runtime>(app: &AppHandle<R>) -> Result<(), 
     menu.append(&show_item).map_err(|e| e.to_string())?;
     append_separator(&menu)?;
 
+    // Usage of the statistics page's selected range, directly below the
+    // "open main window" entry so it is the first number the user sees.
+    if let Some(usage_item) = usage_item {
+        menu.append(&usage_item).map_err(|e| e.to_string())?;
+        append_separator(&menu)?;
+    }
+
     // Add Skills section if enabled
     if append_skills_submenu(&menu, skills_submenu.as_ref())? {
         append_separator(&menu)?;
@@ -2241,12 +2249,6 @@ async fn refresh_tray_menus_inner<R: Runtime>(app: &AppHandle<R>) -> Result<(), 
         if let Some(ref submenu) = openclaw_submenu {
             menu.append(submenu).map_err(|e| e.to_string())?;
         }
-        append_separator(&menu)?;
-    }
-    // Usage of the statistics page's selected range, shown just above the
-    // bottom group so it is visible without opening the window.
-    if let Some(usage_item) = usage_item {
-        menu.append(&usage_item).map_err(|e| e.to_string())?;
         append_separator(&menu)?;
     }
     // Lightweight mode and quit form the bottom group (cc-switch style),
