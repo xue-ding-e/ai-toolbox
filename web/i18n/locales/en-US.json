@@ -2672,7 +2672,8 @@
       "noModels": "No official models",
       "contextLimit": "Context Limit",
       "outputLimit": "Output Limit",
-      "openConfigHint": "View and edit auth.json in the app"
+      "openConfigHint": "View and edit auth.json in the app",
+      "v2AuthHint": "OpenCode V2 moved credentials into opencode.db; the channel list here reads both stores. Run opencode auth login in a terminal to add or change credentials — editing auth.json alone does not affect the V2 runtime."
     },
     "agentSettings": {
       "title": "Agent Models",

@@ -2669,7 +2669,8 @@
       "noModels": "暂无官方模型",
       "contextLimit": "上下文限制",
       "outputLimit": "输出限制",
-      "openConfigHint": "在应用内查看并编辑 auth.json"
+      "openConfigHint": "在应用内查看并编辑 auth.json",
+      "v2AuthHint": "OpenCode V2 已把凭据迁移到 opencode.db；这里的渠道列表会同时读取数据库。新增或修改凭据请在终端执行 opencode auth login，仅编辑上面的 auth.json 不会影响 V2 运行时。"
     },
     "agentSettings": {
       "title": "Agent 模型",

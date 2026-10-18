@@ -16,6 +16,13 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 use tauri::{AppHandle, Manager, Runtime};
 
+/// `provider/model#variant` → `provider/model`; other values pass through.
+fn strip_model_variant(reference: &str) -> &str {
+    reference
+        .find('#')
+        .map_or(reference, |hash| &reference[..hash])
+}
+
 /// Helper to extract OpenCodeConfig from ReadConfigResult, returning default config for non-success cases
 fn extract_config_or_default(result: ReadConfigResult) -> OpenCodeConfig {
     match result {
@@ -63,15 +70,17 @@ pub async fn get_opencode_tray_model_data<R: Runtime>(
     let result = read_opencode_config(app.state()).await?;
     let config = extract_config_or_default(result);
 
+    // V2 keeps a default variant as `provider/model#variant`; the tray lists
+    // plain model ids, so compare and display the reference without it.
     let current_main = config
         .model
-        .as_ref()
-        .map(|s: &String| s.as_str())
+        .as_deref()
+        .map(strip_model_variant)
         .unwrap_or("");
     let current_small = config
         .small_model
-        .as_ref()
-        .map(|s: &String| s.as_str())
+        .as_deref()
+        .map(strip_model_variant)
         .unwrap_or("");
 
     // Read auth.json to get official provider ids
@@ -494,7 +503,7 @@ pub async fn apply_opencode_plugin<R: Runtime>(
 mod tests {
     use super::{
         parse_model_item_id, remember_plugin_entry, remembered_plugin_entries,
-        remembered_plugin_entry,
+        remembered_plugin_entry, strip_model_variant,
     };
     use crate::coding::open_code::types::OpenCodePluginEntry;
     use serde_json::json;
@@ -503,6 +512,12 @@ mod tests {
         if let Ok(mut remembered_entries) = remembered_plugin_entries().lock() {
             remembered_entries.clear();
         }
+    }
+
+    #[test]
+    fn tray_selection_ignores_the_v2_variant_suffix() {
+        assert_eq!(strip_model_variant("relay/gpt-x#high"), "relay/gpt-x");
+        assert_eq!(strip_model_variant("relay/org/gpt-x"), "relay/org/gpt-x");
     }
 
     #[test]

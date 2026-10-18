@@ -1,5 +1,5 @@
 import React from 'react';
-import { Button, Empty, Space, Typography, message, Spin, Select, Collapse, Form, Tooltip, Modal } from 'antd';
+import { Alert, Button, Empty, Space, Typography, message, Spin, Select, Collapse, Form, Tooltip, Modal } from 'antd';
 import {
   PlusOutlined,
   FolderOpenOutlined,
@@ -136,6 +136,10 @@ import {
   overwriteOpenCodeProvider,
   sanitizeOpenCodeModelReferences,
 } from '@/features/coding/opencode/utils/providerMutations';
+import {
+  parseOpenCodeModelReference,
+  stripOpenCodeModelVariant,
+} from '@/features/coding/opencode/utils/modelReference';
 import { SessionManagerPanel } from '@/features/coding/shared/sessionManager';
 import {
   PROVIDER_SORT_MODES_BASIC,
@@ -1392,7 +1396,7 @@ const OpenCodePage: React.FC = () => {
     if (!provider) return;
 
     const unifiedModelId = buildUnifiedModelId(providerId, modelId);
-    if (config.model === unifiedModelId) {
+    if (config.model && stripOpenCodeModelVariant(config.model) === unifiedModelId) {
       return;
     }
 
@@ -1943,8 +1947,15 @@ const OpenCodePage: React.FC = () => {
   // OMO settings should keep all models available (including those from disabled providers),
   // but we still group options by provider for easier scanning/search.
 
-  const selectedMainModel = config?.model;
-  const selectedSmallModel = config?.small_model;
+  // V2 keeps a default variant as `provider/model#variant`; the pickers only
+  // offer plain model ids, so match and display the reference without it while
+  // leaving the stored value (and its variant) untouched until the user picks.
+  const selectedMainModel = config?.model ? stripOpenCodeModelVariant(config.model) : undefined;
+  const selectedSmallModel = config?.small_model ? stripOpenCodeModelVariant(config.small_model) : undefined;
+  const defaultModelReference = React.useMemo(
+    () => parseOpenCodeModelReference(config?.model),
+    [config?.model],
+  );
   const selectedAgentModels = React.useMemo(
     () => new Set(getConfiguredOpenCodeAgentModelIds(config)),
     [config],
@@ -2294,7 +2305,7 @@ const OpenCodePage: React.FC = () => {
                         <Text strong>{t('opencode.modelSettings.modelLabel')}</Text>
                       </div>
                       <Select
-                        value={config?.model}
+                        value={selectedMainModel}
                         onChange={(value) => handleModelChange('model', value)}
                         placeholder={t('opencode.modelSettings.modelPlaceholder')}
                         allowClear
@@ -2315,7 +2326,7 @@ const OpenCodePage: React.FC = () => {
                         </Text>
                       </div>
                       <Select
-                        value={config?.small_model}
+                        value={selectedSmallModel}
                         onChange={(value) => handleModelChange('small_model', value)}
                         placeholder={t('opencode.modelSettings.smallModelPlaceholder')}
                         allowClear
@@ -2595,10 +2606,10 @@ const OpenCodePage: React.FC = () => {
                                   : '';
                                 const providerModels = provider.models ? Object.entries(provider.models).map(([modelId, model]) => ({
                                   ...toModelDisplayData(modelId, model),
-                                  isPrimary: buildUnifiedModelId(providerId, modelId) === config?.model,
+                                  isPrimary: buildUnifiedModelId(providerId, modelId) === selectedMainModel,
                                 })) : [];
                                 // 该渠道承载着全局默认模型(config.model 形如 providerId/modelId)时，禁止删除整条渠道，但保留按钮并置灰提示。
-                                const isDefaultProviderChannel = !!config?.model && config.model.split('/')[0] === providerId;
+                                const isDefaultProviderChannel = selectedMainModel?.split('/')[0] === providerId;
                                 const deleteDisabledReason = isDefaultProviderChannel
                                   ? t('opencode.provider.deleteDisabledDefault', { defaultValue: '该渠道已设为默认，不可删除' })
                                   : undefined;
@@ -2622,7 +2633,7 @@ const OpenCodePage: React.FC = () => {
                                     onShare={() => shareProvider({
                                       id: providerId, name: provider.name || providerId, category: 'custom',
                                       settingsConfig: JSON.stringify(provider),
-                                      defaultModel: config?.model?.startsWith(providerId + '/') ? config.model.slice(providerId.length + 1) : undefined,
+                                      defaultModel: defaultModelReference?.providerId === providerId ? defaultModelReference.modelId : undefined,
                                     })}
                                     onDelete={() => handleDeleteProvider(providerId)}
                                     deleteDisabledReason={deleteDisabledReason}
@@ -2810,6 +2821,14 @@ const OpenCodePage: React.FC = () => {
                             {t('opencode.official.description')}
                           </Text>
                         </div>
+                        {v2MigrationEnabled && (
+                          <Alert
+                            type="info"
+                            showIcon
+                            style={{ marginBottom: 12 }}
+                            title={t('opencode.official.v2AuthHint')}
+                          />
+                        )}
                         {authProvidersData ? (
                           authProvidersData.standaloneProviders.length > 0 ? (
                             authProvidersData.standaloneProviders.map((provider) => (
@@ -2822,7 +2841,7 @@ const OpenCodePage: React.FC = () => {
                                 onToggleDisabled={() => handleToggleProviderDisabled(provider.id)}
                                 onShare={() => shareProvider({
                                   id: provider.id, name: provider.name, category: 'official', settingsConfig: '{}',
-                                  defaultModel: config?.model?.startsWith(provider.id + '/') ? config.model.slice(provider.id.length + 1) : undefined,
+                                  defaultModel: defaultModelReference?.providerId === provider.id ? defaultModelReference.modelId : undefined,
                                 })}
                               />
                             ))

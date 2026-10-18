@@ -5,6 +5,7 @@ import {
   canDeleteOpenCodeProvider,
   overwriteOpenCodeProvider,
   replaceOpenCodeProvider,
+  sanitizeOpenCodeModelReferences,
 } from '../../../../../features/coding/opencode/utils/providerMutations.ts';
 
 const makeConfig = (): OpenCodeConfig => ({
@@ -30,6 +31,17 @@ test('default provider protection uses the provider prefix even when model IDs c
   assert.equal(canDeleteOpenCodeProvider(config, 'relay'), false);
   assert.equal(canDeleteOpenCodeProvider(config, 'other'), true);
   assert.equal(canDeleteOpenCodeProvider(config, 'missing'), false);
+});
+
+test('removing a model clears a default reference carrying a variant', () => {
+  const config = makeConfig();
+  const saved = sanitizeOpenCodeModelReferences({
+    ...config,
+    model: 'relay/org/remove#high',
+    small_model: 'relay/org/keep#low',
+  }, ['relay/org/remove']);
+  assert.equal(saved.model, undefined);
+  assert.equal(saved.small_model, 'relay/org/keep#low');
 });
 
 test('overwriting only connection fields preserves default and Agent model references', () => {

@@ -1,5 +1,13 @@
 import type { OpenCodeConfig, OpenCodeProvider } from '@/types/opencode';
 import { sanitizeOpenCodeAgentModelReferences } from './openCodeAgentConfig';
+import { stripOpenCodeModelVariant } from './modelReference';
+
+const modelReferenceIsRemoved = (
+  reference: string | undefined,
+  removedModelIds: Set<string>,
+): boolean => (
+  typeof reference === 'string' && removedModelIds.has(stripOpenCodeModelVariant(reference))
+);
 
 export function canDeleteOpenCodeProvider(config: OpenCodeConfig, providerId: string): boolean {
   return Boolean(config.provider[providerId]) && config.model?.split('/')[0] !== providerId;
@@ -13,8 +21,8 @@ export function sanitizeOpenCodeModelReferences(
   const removedModelIds = new Set(removedUnifiedModelIds);
   return sanitizeOpenCodeAgentModelReferences({
     ...config,
-    model: config.model && removedModelIds.has(config.model) ? undefined : config.model,
-    small_model: config.small_model && removedModelIds.has(config.small_model) ? undefined : config.small_model,
+    model: modelReferenceIsRemoved(config.model, removedModelIds) ? undefined : config.model,
+    small_model: modelReferenceIsRemoved(config.small_model, removedModelIds) ? undefined : config.small_model,
   }, removedModelIds);
 }
 

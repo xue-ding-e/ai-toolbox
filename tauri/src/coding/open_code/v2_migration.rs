@@ -108,6 +108,32 @@ fn string_value(value: Option<&Value>) -> Option<String> {
         .map(str::to_string)
 }
 
+/// OpenCode 2.x stores package specifiers with an `aisdk:` routing prefix and
+/// may still carry the pre-rename `@opencode-ai/` scope. The V1 editor holds the
+/// bare npm package name, which is also what the V1 runtime accepts.
+fn normalize_package_name(package: &str) -> String {
+    let package = package.strip_prefix("aisdk:").unwrap_or(package);
+    package
+        .strip_prefix("@opencode-ai/")
+        .map(|rest| format!("@opencode/{rest}"))
+        .unwrap_or_else(|| package.to_string())
+}
+
+/// The V2 write-side spelling of a package specifier. Only `@opencode/ai/*`
+/// built-ins stay bare; every npm package goes through the AI SDK bridge with
+/// the `aisdk:` prefix, exactly like the official `packageSpecifier`. The
+/// released runtime treats an unprefixed package as a native package and
+/// requires it to export `model(modelID, settings)`, which third-party AI SDK
+/// providers do not.
+fn package_specifier(package: &str) -> String {
+    let name = normalize_package_name(package);
+    if name.starts_with("@opencode/ai/") {
+        name
+    } else {
+        format!("aisdk:{name}")
+    }
+}
+
 fn string_array(value: Option<&Value>) -> Vec<String> {
     value
         .and_then(Value::as_array)
@@ -162,39 +188,6 @@ fn canonicalize_provider_list(value: &mut Value) {
     }
 }
 
-fn snake_key(key: &str) -> String {
-    let mut result = String::with_capacity(key.len());
-    for character in key.chars() {
-        if character.is_ascii_uppercase() {
-            result.push('_');
-            result.push(character.to_ascii_lowercase());
-        } else {
-            result.push(character);
-        }
-    }
-    result
-}
-
-fn snake_value(value: &Value) -> Value {
-    match value {
-        Value::Array(items) => Value::Array(items.iter().map(snake_value).collect()),
-        Value::Object(object) => Value::Object(
-            object
-                .iter()
-                .map(|(key, value)| (snake_key(key), snake_value(value)))
-                .collect(),
-        ),
-        other => other.clone(),
-    }
-}
-
-fn snake_object(object: &Map<String, Value>) -> Map<String, Value> {
-    object
-        .iter()
-        .map(|(key, value)| (snake_key(key), snake_value(value)))
-        .collect()
-}
-
 /// Provider-level option lowering, mirroring the released OpenCode 2.0
 /// `packages/core/src/v1/config/provider-options.ts` `provider()` lowerer.
 ///
@@ -241,119 +234,174 @@ fn render_provider_options(
     }
 }
 
-fn openai_request(options: &Map<String, Value>) -> Map<String, Value> {
-    let mut result = snake_object(options);
-    if options.get("reasoningEffort").is_some() || options.get("reasoningSummary").is_some() {
-        let mut reasoning = result
-            .remove("reasoning")
-            .and_then(|value| value.as_object().cloned())
-            .unwrap_or_default();
-        if let Some(effort) = options.get("reasoningEffort") {
-            reasoning.insert("effort".to_string(), effort.clone());
-        }
-        if let Some(summary) = options.get("reasoningSummary") {
-            reasoning.insert("summary".to_string(), summary.clone());
-        }
-        result.remove("reasoning_effort");
-        result.remove("reasoning_summary");
-        result.insert("reasoning".to_string(), Value::Object(reasoning));
-    }
-    if let Some(verbosity) = options.get("textVerbosity") {
-        let mut text = result
-            .remove("text")
-            .and_then(|value| value.as_object().cloned())
-            .unwrap_or_default();
-        text.insert("verbosity".to_string(), verbosity.clone());
-        result.remove("text_verbosity");
-        result.insert("text".to_string(), Value::Object(text));
-    }
-    result
-}
+/// V1 model options `@ai-sdk/openai-compatible` reads as provider settings.
+/// Every other option was sent verbatim in the request body, which is why the
+/// official migration splits them (`compatibleModel`, 2.0.28, #54694).
+const COMPATIBLE_MODEL_KEYS: &[&str] = &[
+    "apiKey",
+    "baseURL",
+    "headers",
+    "body",
+    "extraBody",
+    "timeout",
+    "chunkTimeout",
+    "headerTimeout",
+    "disabled",
+    "reasoningEffort",
+    "textVerbosity",
+    "user",
+    "strictJsonSchema",
+];
 
-fn anthropic_request(options: &Map<String, Value>) -> Map<String, Value> {
-    let mut result = snake_object(options);
-    if options.get("effort").is_some() || options.get("taskBudget").is_some() {
-        let mut output_config = Map::new();
-        if let Some(effort) = options.get("effort") {
-            output_config.insert("effort".to_string(), effort.clone());
-        }
-        if let Some(task_budget) = options.get("taskBudget") {
-            output_config.insert("task_budget".to_string(), task_budget.clone());
-        }
-        result.remove("effort");
-        result.remove("task_budget");
-        result.insert("output_config".to_string(), Value::Object(output_config));
-    }
-    result
-}
-
-fn google_request(options: &Map<String, Value>) -> Map<String, Value> {
-    const GENERATION_CONFIG_KEYS: [&str; 4] = [
-        "thinkingConfig",
-        "responseModalities",
-        "mediaResolution",
-        "imageConfig",
-    ];
-    let mut result = options.clone();
-    let mut generation_config = Map::new();
-    for key in GENERATION_CONFIG_KEYS {
-        if let Some(value) = result.remove(key) {
-            generation_config.insert(key.to_string(), value);
-        }
-    }
-    if !generation_config.is_empty() {
-        result.insert(
-            "generationConfig".to_string(),
-            Value::Object(generation_config),
-        );
-    }
-    result
-}
-
-fn compatible_request(options: &Map<String, Value>) -> Map<String, Value> {
-    let mut result = options.clone();
-    if let Some(effort) = result.remove("reasoningEffort") {
-        result.insert("reasoning_effort".to_string(), effort);
-    }
-    result
-}
-
-fn render_model_request(
+fn split_model_options(
     package_name: Option<&str>,
     options: &Map<String, Value>,
-) -> Map<String, Value> {
-    match package_name.unwrap_or("") {
-        "@ai-sdk/openai" | "@ai-sdk/azure" => openai_request(options),
-        "@ai-sdk/anthropic" | "@ai-sdk/google-vertex/anthropic" => anthropic_request(options),
-        "@ai-sdk/google" | "@ai-sdk/google-vertex" => google_request(options),
-        "@ai-sdk/amazon-bedrock" => {
-            let mut result = Map::new();
-            result.insert(
-                "additionalModelRequestFields".to_string(),
-                Value::Object(options.clone()),
-            );
-            result
-        }
-        "@ai-sdk/openai-compatible"
-        | "@ai-sdk/cerebras"
-        | "@ai-sdk/deepinfra"
-        | "@ai-sdk/groq"
-        | "@ai-sdk/mistral"
-        | "@ai-sdk/togetherai"
-        | "@ai-sdk/xai"
-        | "@openrouter/ai-sdk-provider"
-        | "ai-gateway-provider"
-        | "venice-ai-sdk-provider" => compatible_request(options),
-        _ => options.clone(),
+) -> (Map<String, Value>, Map<String, Value>) {
+    if package_name != Some("@ai-sdk/openai-compatible") {
+        return (options.clone(), Map::new());
     }
+    let mut settings = Map::new();
+    let mut body = Map::new();
+    for (key, value) in options {
+        if COMPATIBLE_MODEL_KEYS.contains(&key.as_str()) {
+            settings.insert(key.clone(), value.clone());
+        } else {
+            body.insert(key.clone(), value.clone());
+        }
+    }
+    (settings, body)
+}
+
+fn is_hex_color(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 7 && bytes[0] == b'#' && bytes[1..].iter().all(u8::is_ascii_hexdigit)
+}
+
+/// Extract the legacy `interleaved` field name for V2
+/// `compatibility.reasoningField`, mirroring the official
+/// `Model.compatibility` migration. A boolean `true` carried no field name, so
+/// it is dropped like the official migration does.
+fn interleaved_reasoning_field(value: Option<&Value>) -> Option<String> {
+    let field = match value? {
+        Value::String(field) => field.clone(),
+        Value::Object(object) => object.get("field").and_then(Value::as_str)?.to_string(),
+        _ => return None,
+    };
+    let field = field.trim();
+    (!field.is_empty()).then(|| field.to_string())
+}
+
+/// V1 agents and commands carry `model` and `variant` as separate fields; V2
+/// folds the variant into the model selection (`provider/model#variant` or an
+/// object). An invalid reference produces no selection, like the official
+/// `modelSelection`.
+fn compose_model_selection(model: Value, variant: Option<Value>) -> Option<Value> {
+    let reference = model.as_str()?;
+    let (provider_id, rest) = reference.split_once('/')?;
+    // V2 rejects `#` inside either ID (`^[^/#]+$` / `^[^#]+$`); writing one
+    // would make the whole config fail to decode.
+    if provider_id.is_empty() || provider_id.contains('#') || rest.is_empty() {
+        return None;
+    }
+    let (model_id, embedded_variant) = match rest.split_once('#') {
+        Some((model_id, embedded)) if !model_id.is_empty() => (model_id, Some(embedded)),
+        _ => (rest, None),
+    };
+    if model_id.is_empty() {
+        return None;
+    }
+    let variant = variant
+        .as_ref()
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty() && !value.contains('#'))
+        .or_else(|| {
+            embedded_variant
+                .filter(|value| !value.is_empty() && !value.contains('#'))
+        });
+    let mut selection = Map::new();
+    selection.insert(
+        "providerID".to_string(),
+        Value::String(canonical_provider_id(provider_id).to_string()),
+    );
+    selection.insert("model".to_string(), Value::String(model_id.to_string()));
+    if let Some(variant) = variant {
+        selection.insert("variant".to_string(), Value::String(variant.to_string()));
+    }
+    Some(Value::Object(selection))
+}
+
+/// Collapse a V2 model selection back into the V1 `(model, variant)` pair.
+fn selection_to_v1(selection: &Value) -> Option<(String, Option<String>)> {
+    match selection {
+        Value::String(reference) => {
+            let (model, variant) = reference
+                .split_once('#')
+                .map(|(model, variant)| (model.to_string(), Some(variant.to_string())))
+                .unwrap_or_else(|| (reference.clone(), None));
+            Some((model, variant))
+        }
+        Value::Object(selection) => {
+            let provider_id = string_value(selection.get("providerID"))?;
+            let model_id = string_value(selection.get("model"))?;
+            let variant = string_value(selection.get("variant"));
+            Some((
+                format!(
+                    "{}/{}",
+                    canonical_provider_id(&provider_id),
+                    model_id
+                ),
+                variant,
+            ))
+        }
+        _ => None,
+    }
+}
+
+/// The V2 short selection form: `provider/model` or `provider/model#variant`
+/// with no `#` inside either id. Invalid references stay untouched so the
+/// failure stays visible instead of being silently rewritten.
+fn is_valid_model_selection(reference: &str) -> bool {
+    let Some((provider_id, rest)) = reference.split_once('/') else {
+        return false;
+    };
+    if provider_id.is_empty() || provider_id.contains('#') {
+        return false;
+    }
+    let (model_id, variant) = match rest.split_once('#') {
+        Some((model_id, variant)) => (model_id, Some(variant)),
+        None => (rest, None),
+    };
+    !model_id.is_empty()
+        && !model_id.contains('#')
+        && variant.is_none_or(|variant| !variant.is_empty() && !variant.contains('#'))
+}
+
+/// `small_model` is still a V1 reference. V2's selection schema rejects a
+/// reference containing `#` or missing a model part, so an invalid value is
+/// dropped instead of making `agents.title.model` fail the whole decode.
+fn is_valid_model_reference(reference: &str) -> bool {
+    let Some((provider_id, model_id)) = reference.split_once('/') else {
+        return false;
+    };
+    !provider_id.is_empty()
+        && !provider_id.contains('#')
+        && !model_id.is_empty()
+        && !model_id.contains('#')
 }
 
 fn permission_map_to_rules(value: &Value) -> Vec<Value> {
     let mut rules = Vec::new();
+    // A whole-config permission string (`"allow"`/`"ask"`/`"deny"`) applies to
+    // every action and resource.
+    if let Some(effect) = value.as_str() {
+        rules.push(json!({ "action": "*", "resource": "*", "effect": effect }));
+        return rules;
+    }
     let Some(permissions) = value.as_object() else {
         return rules;
     };
     for (action, rule) in permissions {
+        let action = normalize_tool_action(action);
         match rule {
             Value::String(effect) => rules.push(json!({
                 "action": action,
@@ -375,6 +423,16 @@ fn permission_map_to_rules(value: &Value) -> Vec<Value> {
     rules
 }
 
+/// Reverse of [`normalize_tool_action`] for the V1 editor view. `edit` stays
+/// `edit` because V1 accepts it directly; only the renamed runtime tools map.
+fn restore_tool_action(action: &str) -> &str {
+    match action {
+        "shell" => "bash",
+        "subagent" => "task",
+        _ => action,
+    }
+}
+
 fn permission_rules_to_map(rules: &[Value]) -> Value {
     let mut grouped: std::collections::BTreeMap<String, Map<String, Value>> =
         std::collections::BTreeMap::new();
@@ -389,6 +447,7 @@ fn permission_rules_to_map(rules: &[Value]) -> Value {
         ) else {
             continue;
         };
+        let action = restore_tool_action(action);
         grouped
             .entry(action.to_string())
             .or_default()
@@ -424,12 +483,17 @@ fn migrate_agent(value: Value) -> Result<Value, String> {
         .cloned()
         .ok_or_else(|| "Expected OpenCode agent entries to be objects".to_string())?;
     let mut out = Map::new();
-    if let Some(model) = agent.remove("model") {
-        out.insert("model".to_string(), model);
+    let model = agent.remove("model");
+    let variant = agent.remove("variant");
+    if let Some(model) = model {
+        // V2 has no agent `variant`; the official migrate folds it into the
+        // model selection and drops an invalid reference.
+        if let Some(selection) = compose_model_selection(model, variant) {
+            out.insert("model".to_string(), selection);
+        }
     }
-    if let Some(variant) = agent.remove("variant") {
-        out.insert("variant".to_string(), variant);
-    }
+    // A variant without a model never applies (the official `modelSelection`
+    // yields undefined), so it is dropped rather than written as an unknown key.
     let mut body = take_object(&mut agent, "options")?;
     if let Some(temperature) = agent.remove("temperature") {
         body.insert("temperature".to_string(), temperature);
@@ -443,24 +507,53 @@ fn migrate_agent(value: Value) -> Result<Value, String> {
     if let Some(prompt) = agent.remove("prompt") {
         out.insert("system".to_string(), prompt);
     }
-    for key in ["description", "mode", "hidden", "color", "steps"] {
+    for key in ["description", "mode", "hidden", "steps"] {
         if let Some(value) = agent.remove(key) {
             out.insert(key.to_string(), value);
         }
     }
+    // V2 only accepts `#RRGGBB`; a theme color would make the whole agent
+    // entry fail to decode, so the official migration falls back to grey.
+    if let Some(color) = agent.remove("color") {
+        let color = match color.as_str() {
+            Some(value) if is_hex_color(value) => Value::String(value.to_string()),
+            _ => Value::String("#aaaaaa".to_string()),
+        };
+        out.insert("color".to_string(), color);
+    }
+    // Official migrateAgent reads `steps ?? maxSteps`; the deprecated alias
+    // must not be dropped while `steps` is unset.
+    if !out.contains_key("steps") {
+        if let Some(max_steps) = agent.remove("maxSteps") {
+            out.insert("steps".to_string(), max_steps);
+        }
+    } else {
+        agent.remove("maxSteps");
+    }
     if let Some(disable) = agent.remove("disable") {
         out.insert("disabled".to_string(), disable);
     }
-    if let Some(permission) = agent.remove("permission") {
-        let rules = permission_map_to_rules(&permission);
-        if !rules.is_empty() {
-            out.insert("permissions".to_string(), Value::Array(rules));
+    // Official order is tools first, then permission, because rules are
+    // last-match-wins and `permission` overrides the deprecated boolean map.
+    let mut rules = Vec::new();
+    if let Some(tools) = agent
+        .remove("tools")
+        .and_then(|value| value.as_object().cloned())
+    {
+        for (action, enabled) in tools {
+            rules.push(json!({
+                "action": normalize_tool_action(&action),
+                "resource": "*",
+                "effect": if enabled.as_bool().unwrap_or(false) { "allow" } else { "deny" },
+            }));
         }
     }
-    // Official v2 migration does not port the legacy boolean tool map or
-    // `maxSteps`; permissions and `steps` are the v2 surfaces.
-    agent.remove("tools");
-    agent.remove("maxSteps");
+    if let Some(permission) = agent.remove("permission") {
+        rules.extend(permission_map_to_rules(&permission));
+    }
+    if !rules.is_empty() {
+        out.insert("permissions".to_string(), Value::Array(rules));
+    }
     // Preserve unknown fields so an editor round trip does not drop provider
     // specific agent keys the V1 model itself cannot express.
     for (key, value) in agent {
@@ -509,22 +602,66 @@ fn migrate_agents(root: &mut Map<String, Value>) -> Result<(), String> {
         merge_object_value(root, "agents", agents)?;
     }
 
+    // V2 has no `small_model`; the title agent owns that selection. The editor
+    // exposes only `small_model`, so when both exist `small_model` is the newer
+    // value and wins instead of failing the whole save (the V2 read view always
+    // carries both, which used to make any small-model edit unsavable).
+    //
+    // The value must be a plain `provider/model`: writing an invalid reference
+    // into `agents.title.model` would make the whole V2 config fail to decode.
     if let Some(mut small_model) = root.remove("small_model") {
         canonicalize_model_reference(&mut small_model);
-        let agents = object_at_mut(root, "agents")?;
-        let title_agent = object_at_mut(agents, "title")?;
-        if let Some(existing) = title_agent.get("model") {
-            if existing != &small_model {
-                return Err(
-                    "Conflicting model selections in `small_model` and `agents.title.model`"
-                        .to_string(),
-                );
+        if let Some(reference) = small_model.as_str().filter(|value| is_valid_model_reference(value)) {
+            let agents = object_at_mut(root, "agents")?;
+            let title_agent = object_at_mut(agents, "title")?;
+            // The V2 read view mirrors the title model into `small_model`, so an
+            // unchanged value must not replace a richer title selection (which
+            // may carry a variant) with the bare reference.
+            let unchanged = title_agent
+                .get("model")
+                .and_then(selection_to_v1)
+                .is_some_and(|(current, _)| current == reference);
+            if !unchanged {
+                // The official normalize writes the selection object, not the
+                // `provider/model` string.
+                if let Some(selection) = compose_model_selection(small_model.clone(), None) {
+                    title_agent.insert("model".to_string(), selection);
+                }
             }
-        } else {
-            title_agent.insert("model".to_string(), small_model);
         }
     }
     Ok(())
+}
+
+/// V1 had one MCP timeout; V2 bounds three phases independently. The official
+/// `migrateMcpTimeout` applies the bare number to every phase. The editor's
+/// older `{ request }` shape is folded onto catalog/execution so files written
+/// before the fix keep their bound.
+fn migrate_mcp_timeout(value: Value) -> Value {
+    match value {
+        Value::Number(number) => json!({
+            "startup": number.clone(),
+            "catalog": number.clone(),
+            "execution": number,
+        }),
+        Value::Object(mut object) => {
+            if let Some(request) = object.remove("request") {
+                object.entry("catalog").or_insert(request.clone());
+                object.entry("execution").or_insert(request);
+            }
+            Value::Object(object)
+        }
+        other => other,
+    }
+}
+
+/// The global `experimental.mcp_timeout` never bound connecting in V1, so the
+/// official normalize only maps it onto catalog and execution.
+fn migrate_global_mcp_timeout(value: Value) -> Value {
+    match value {
+        Value::Number(number) => json!({ "catalog": number.clone(), "execution": number }),
+        other => migrate_mcp_timeout(other),
+    }
 }
 
 fn migrate_mcp_server(value: Value) -> Result<Value, String> {
@@ -539,15 +676,13 @@ fn migrate_mcp_server(value: Value) -> Result<Value, String> {
         server.insert("disabled".to_string(), Value::Bool(disabled));
     }
     if let Some(timeout) = server.remove("timeout") {
-        if let Some(timeout) = timeout.as_u64() {
-            server.insert("timeout".to_string(), json!({ "request": timeout }));
-        } else {
-            server.insert("timeout".to_string(), timeout);
-        }
+        server.insert("timeout".to_string(), migrate_mcp_timeout(timeout));
     }
     if let Some(oauth) = server.remove("oauth") {
         if let Some(oauth) = oauth.as_object() {
-            let mut converted = Map::new();
+            // Rename the V1 fields in place so newer V2-only keys (for example
+            // `auth_server_metadata_url`) survive the conversion.
+            let mut converted = oauth.clone();
             for (legacy, native) in [
                 ("clientId", "client_id"),
                 ("clientSecret", "client_secret"),
@@ -555,8 +690,8 @@ fn migrate_mcp_server(value: Value) -> Result<Value, String> {
                 ("callbackPort", "callback_port"),
                 ("redirectUri", "redirect_uri"),
             ] {
-                if let Some(value) = oauth.get(legacy) {
-                    converted.insert(native.to_string(), value.clone());
+                if let Some(value) = converted.remove(legacy) {
+                    converted.insert(native.to_string(), value);
                 }
             }
             server.insert("oauth".to_string(), Value::Object(converted));
@@ -577,6 +712,22 @@ fn migrate_mcp(root: &mut Map<String, Value>) -> Result<(), String> {
         .ok_or_else(|| "Expected V1 `mcp` to be an object".to_string())?;
     let mut servers = take_object(&mut mcp, "servers")?;
     let global_timeout = mcp.remove("timeout");
+    // A V2 `mcp.servers` entry may still carry the V1 bare-number timeout (the
+    // official normalize expands it in place). Expanding it here keeps this
+    // editor from writing V1 timeouts into an already-V2 server.
+    for server in servers.values_mut() {
+        let Some(server) = server.as_object_mut() else {
+            continue;
+        };
+        let Some(timeout) = server
+            .get("timeout")
+            .filter(|timeout| timeout.is_number())
+            .cloned()
+        else {
+            continue;
+        };
+        server.insert("timeout".to_string(), migrate_mcp_timeout(timeout));
+    }
     for (name, server) in std::mem::take(&mut mcp) {
         if servers.contains_key(&name) {
             return Err(format!(
@@ -588,22 +739,19 @@ fn migrate_mcp(root: &mut Map<String, Value>) -> Result<(), String> {
     let mut out = Map::new();
     if let Some(experimental) = root.get_mut("experimental").and_then(Value::as_object_mut) {
         if let Some(timeout) = experimental.remove("mcp_timeout") {
-            if let Some(timeout) = timeout.as_u64() {
-                out.insert("timeout".to_string(), json!({ "request": timeout }));
-            } else {
-                out.insert("timeout".to_string(), timeout);
-            }
+            out.insert("timeout".to_string(), migrate_global_mcp_timeout(timeout));
         }
         if experimental.is_empty() {
             root.remove("experimental");
         }
     }
+    // The official normalize overlays `mcp.timeout` onto the values seeded by
+    // `experimental.mcp_timeout`, so the direct field wins when both exist. A
+    // direct bare number bounds every phase (including startup), unlike the
+    // global experimental value.
     if let Some(timeout) = global_timeout {
-        if let Some(timeout) = timeout.as_u64() {
-            out.insert("timeout".to_string(), json!({ "request": timeout }));
-        } else {
-            out.entry("timeout".to_string()).or_insert(timeout);
-        }
+        let timeout = migrate_mcp_timeout(timeout);
+        out.insert("timeout".to_string(), timeout);
     }
     if !servers.is_empty() {
         out.insert("servers".to_string(), Value::Object(servers));
@@ -624,10 +772,11 @@ fn migrate_model(value: Value, parent_package: Option<&str>) -> Result<Value, St
         .and_then(|value| value.as_object().cloned());
     let model_package = model_provider
         .as_ref()
-        .and_then(|provider| string_value(provider.get("npm")));
+        .and_then(|provider| string_value(provider.get("npm")))
+        .map(|package| normalize_package_name(&package));
     let package_name = model_package
         .clone()
-        .or_else(|| parent_package.map(str::to_string));
+        .or_else(|| parent_package.map(normalize_package_name));
 
     let id = string_value(model.get("id"));
     let family = model.remove("family");
@@ -638,10 +787,16 @@ fn migrate_model(value: Value, parent_package: Option<&str>) -> Result<Value, St
     let reasoning = model.remove("reasoning");
     let temperature = model.remove("temperature");
     let cost = model.remove("cost");
-    let options = take_object(&mut model, "options")?;
+    let mut options = take_object(&mut model, "options")?;
     let headers = model.remove("headers");
     let variants = model.remove("variants");
     let status = string_value(model.get("status"));
+    // Compatibility keys the V1 editor cannot express round-trip through its
+    // `extra` fields; only `interleaved` has a V1 counterpart.
+    let mut compatibility = model
+        .remove("compatibility")
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
 
     let mut out = Map::new();
     if let Some(family) = family {
@@ -649,6 +804,36 @@ fn migrate_model(value: Value, parent_package: Option<&str>) -> Result<Value, St
     }
     if let Some(name) = name {
         out.insert("name".to_string(), name);
+    }
+    // V1 `interleaved` becomes V2 `compatibility.reasoningField` (2.0.0+);
+    // other compatibility keys survive from the editor's `extra` fields.
+    if let Some(field) = interleaved_reasoning_field(model.get("interleaved")) {
+        compatibility.insert("reasoningField".to_string(), Value::String(field));
+    }
+    // The deprecated thinking `blockBinding: false` opt-out moves onto model
+    // compatibility; leaving the key in the settings would reach the package
+    // as an unknown option (official migrateModel, 2.0.28).
+    let mut disable_thinking_block_binding = false;
+    for key in ["thinking", "reasoningConfig"] {
+        let Some(setting) = options.get_mut(key).and_then(Value::as_object_mut) else {
+            continue;
+        };
+        if setting.remove("blockBinding") != Some(Value::Bool(false)) {
+            continue;
+        }
+        disable_thinking_block_binding = true;
+        if setting.is_empty() {
+            options.remove(key);
+        }
+    }
+    if disable_thinking_block_binding {
+        compatibility.insert(
+            "supportsThinkingBlockBinding".to_string(),
+            Value::Bool(false),
+        );
+    }
+    if !compatibility.is_empty() {
+        out.insert("compatibility".to_string(), Value::Object(compatibility));
     }
     // The released 2.0 shape names these flat: `modelID` is the API model id
     // (`api.id` in the preview shape), `package` overrides the provider package
@@ -658,10 +843,29 @@ fn migrate_model(value: Value, parent_package: Option<&str>) -> Result<Value, St
         out.insert("modelID".to_string(), Value::String(id));
     }
     if let Some(package) = model_package.as_ref() {
-        out.insert("package".to_string(), Value::String(package.clone()));
+        out.insert(
+            "package".to_string(),
+            Value::String(package_specifier(package)),
+        );
     }
-    if !options.is_empty() {
-        out.insert("settings".to_string(), Value::Object(options.clone()));
+    // Match the official `migrateModel`: non-compatible packages keep every
+    // option in `settings`; `@ai-sdk/openai-compatible` splits the options the
+    // package reads as settings from those V1 sent verbatim in the body. A
+    // model-level `provider.api` endpoint lands in the flat `settings.baseURL`
+    // (the released runtime ignores the preview `api` key), overriding any
+    // `options.baseURL` the way the official migration does.
+    let (mut settings, body) = split_model_options(package_name.as_deref(), &options);
+    if let Some(api_url) = model_provider
+        .as_ref()
+        .and_then(|provider| string_value(provider.get("api")))
+    {
+        settings.insert("baseURL".to_string(), Value::String(api_url));
+    }
+    if !settings.is_empty() {
+        out.insert("settings".to_string(), Value::Object(settings));
+    }
+    if !body.is_empty() {
+        out.insert("body".to_string(), Value::Object(body));
     }
     if let Some(headers) = headers
         .as_ref()
@@ -675,7 +879,10 @@ fn migrate_model(value: Value, parent_package: Option<&str>) -> Result<Value, St
             api.insert("id".to_string(), Value::String(id));
         }
         api.insert("type".to_string(), Value::String("aisdk".to_string()));
-        api.insert("package".to_string(), Value::String(package.clone()));
+        api.insert(
+            "package".to_string(),
+            Value::String(package_specifier(package)),
+        );
         if let Some(url) = model_provider
             .as_ref()
             .and_then(|provider| string_value(provider.get("api")))
@@ -732,30 +939,25 @@ fn migrate_model(value: Value, parent_package: Option<&str>) -> Result<Value, St
         out.insert("capabilities".to_string(), Value::Object(capabilities));
     }
 
-    let rendered_request = package_name
-        .as_deref()
-        .map(|package| render_model_request(Some(package), &options))
-        .unwrap_or_else(|| render_model_request(None, &options));
-    let mut request = Map::new();
-    if let Some(headers) = headers.and_then(|value| value.as_object().cloned()) {
-        request.insert("headers".to_string(), Value::Object(headers));
-    }
-    if !options.is_empty() {
-        request.insert("body".to_string(), Value::Object(rendered_request));
-    }
-    if !request.is_empty() {
-        out.insert("request".to_string(), Value::Object(request));
-    }
-
+    // The released 2.0 model overlay has no `request`; headers and body are
+    // flat. Model-level options already went through `split_model_options`
+    // above, so no protocol-specific re-rendering is needed here: the official
+    // migration treats the options as settings (or a compatible body split).
     if let Some(variants) = variants.and_then(|value| value.as_object().cloned()) {
         let converted = variants
             .into_iter()
             .map(|(id, options)| {
-                let body = options
-                    .as_object()
-                    .map(|options| render_model_request(package_name.as_deref(), options))
-                    .unwrap_or_default();
-                json!({ "id": id, "body": body })
+                let options = options.as_object().cloned().unwrap_or_default();
+                let (settings, body) = split_model_options(package_name.as_deref(), &options);
+                let mut variant = Map::new();
+                variant.insert("id".to_string(), Value::String(id));
+                if !settings.is_empty() {
+                    variant.insert("settings".to_string(), Value::Object(settings));
+                }
+                if !body.is_empty() {
+                    variant.insert("body".to_string(), Value::Object(body));
+                }
+                Value::Object(variant)
             })
             .collect::<Vec<_>>();
         out.insert("variants".to_string(), Value::Array(converted));
@@ -813,9 +1015,9 @@ fn migrate_model(value: Value, parent_package: Option<&str>) -> Result<Value, St
 
     // Preserve unknown model fields that are not part of the V1 schema this
     // converter understands. `reasoning` and `temperature` are lifted into
-    // `capabilities` above, while flags 2.0 has no home for
-    // (`release_date`/`attachment`/`experimental`/`interleaved`) are dropped as
-    // the official migrate does.
+    // `capabilities` above, `interleaved` is folded into `compatibility`, and
+    // flags 2.0 has no home for (`release_date`/`attachment`/`experimental`)
+    // are dropped as the official migrate does.
     for key in [
         "release_date",
         "attachment",
@@ -837,12 +1039,23 @@ fn migrate_provider(value: Value) -> Result<Value, String> {
         .as_object()
         .cloned()
         .ok_or_else(|| "Expected OpenCode provider entries to be objects".to_string())?;
-    let package_name = string_value(provider.remove("npm").as_ref());
+    let package_name = string_value(provider.remove("npm").as_ref())
+        .map(|package| normalize_package_name(&package));
     let explicit_api = string_value(provider.remove("api").as_ref());
     let options = take_object(&mut provider, "options")?;
     let models = provider.remove("models");
     let name = provider.remove("name");
     let env = provider.remove("env");
+    // V2 `setCacheKey` is provider compatibility, not a package setting.
+    let supports_prompt_cache_key = options.get("setCacheKey").and_then(Value::as_bool);
+    let mut options = options;
+    options.remove("setCacheKey");
+    // Provider compatibility keys the V1 editor cannot express ride along in
+    // its `extra` fields; `setCacheKey` is folded back into them here.
+    let mut compatibility = provider
+        .remove("compatibility")
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
     let rendered = render_provider_options(&options, explicit_api.as_deref());
 
     let mut out = Map::new();
@@ -852,10 +1065,22 @@ fn migrate_provider(value: Value) -> Result<Value, String> {
     if let Some(env) = env {
         out.insert("env".to_string(), env);
     }
+    if let Some(supports) = supports_prompt_cache_key {
+        compatibility.insert(
+            "supportsPromptCacheKey".to_string(),
+            Value::Bool(supports),
+        );
+    }
+    if !compatibility.is_empty() {
+        out.insert("compatibility".to_string(), Value::Object(compatibility));
+    }
     if let Some(package) = package_name.clone() {
         let mut api = Map::new();
         api.insert("type".to_string(), Value::String("aisdk".to_string()));
-        api.insert("package".to_string(), Value::String(package.clone()));
+        api.insert(
+            "package".to_string(),
+            Value::String(package_specifier(&package)),
+        );
         if let Some(url) = rendered.url.clone() {
             api.insert("url".to_string(), url);
         }
@@ -871,7 +1096,10 @@ fn migrate_provider(value: Value) -> Result<Value, String> {
         // rejects a provider whose package it cannot resolve, so both shapes are
         // written: the preview shape keeps the URL at `api.url`, the released
         // shape needs `settings.baseURL`. Each decoder ignores the other's keys.
-        out.insert("package".to_string(), Value::String(package));
+        out.insert(
+            "package".to_string(),
+            Value::String(package_specifier(&package)),
+        );
         let mut settings = rendered.settings.clone();
         if let Some(url) = rendered.url.clone() {
             settings.insert("baseURL".to_string(), url);
@@ -961,18 +1189,21 @@ fn migrate_plugin_list(value: Value) -> Result<Value, String> {
     Ok(Value::Array(converted))
 }
 
+/// Map V1 tool names onto the V2 runtime actions so migrated rules keep
+/// matching (`normalizeAction` in the official migration).
 fn normalize_tool_action(action: &str) -> &str {
     match action {
         "write" | "patch" => "edit",
+        "task" => "subagent",
+        "bash" => "shell",
         _ => action,
     }
 }
 
 fn migrate_permissions(root: &mut Map<String, Value>) -> Result<(), String> {
+    // Official order: deprecated `tools` rules first, then `permission`, then
+    // native `permissions` (last-match-wins, so the newer fields override).
     let mut rules = Vec::new();
-    if let Some(permission) = root.remove("permission") {
-        rules.extend(permission_map_to_rules(&permission));
-    }
     if let Some(tools) = root
         .remove("tools")
         .and_then(|value| value.as_object().cloned())
@@ -985,52 +1216,102 @@ fn migrate_permissions(root: &mut Map<String, Value>) -> Result<(), String> {
             }));
         }
     }
+    if let Some(permission) = root.remove("permission") {
+        rules.extend(permission_map_to_rules(&permission));
+    }
     if rules.is_empty() {
         return Ok(());
     }
-    let mut permissions = match root.remove("permissions") {
+    let existing = match root.remove("permissions") {
         None => Vec::new(),
         Some(Value::Array(existing)) => existing,
         Some(_) => return Err("Expected V2 `permissions` to be an array".to_string()),
     };
-    permissions.extend(rules);
+    // Native `permissions` stay last so they override migrated rules.
+    let mut permissions = rules;
+    permissions.extend(existing);
     root.insert("permissions".to_string(), Value::Array(permissions));
     Ok(())
 }
 
+/// Write provider-selection rules to the stable top-level `policies` entry
+/// (2.0.29+). `experimental.policies` remains readable as a deprecated alias.
 fn append_policies(root: &mut Map<String, Value>, rules: Vec<Value>) -> Result<(), String> {
     if rules.is_empty() {
         return Ok(());
     }
-    let experimental = object_at_mut(root, "experimental")?;
-    let policies = match experimental.remove("policies") {
+    let policies = match root.remove("policies") {
         None => Vec::new(),
         Some(Value::Array(existing)) => existing,
-        Some(_) => return Err("Expected V2 `experimental.policies` to be an array".to_string()),
+        Some(_) => return Err("Expected V2 `policies` to be an array".to_string()),
     };
-    let mut policies = policies;
-    policies.extend(rules);
-    experimental.insert("policies".to_string(), Value::Array(policies));
+    // Official order is `[...generated, ...experimental, ...native]`: native
+    // policies stay last so they win under last-match-wins.
+    let mut generated = rules;
+    generated.extend(policies);
+    root.insert("policies".to_string(), Value::Array(generated));
     Ok(())
+}
+
+/// V1 `command` entries fold `model` + `variant` into the V2 selection and
+/// rename `subtask` to `subagent` (`migrateCommand` in the official migration).
+fn migrate_commands(root: &mut Map<String, Value>) -> Result<(), String> {
+    let Some(commands) = root.remove("command") else {
+        return Ok(());
+    };
+    let mut commands = commands
+        .as_object()
+        .cloned()
+        .ok_or_else(|| "Expected V1 `command` to be an object".to_string())?;
+    for command in commands.values_mut() {
+        let Some(command) = command.as_object_mut() else {
+            continue;
+        };
+        let model = command.remove("model");
+        let variant = command.remove("variant");
+        if let Some(model) = model {
+            if let Some(selection) = compose_model_selection(model, variant) {
+                command.insert("model".to_string(), selection);
+            }
+        }
+        if let Some(subtask) = command.remove("subtask") {
+            command.insert("subagent".to_string(), subtask);
+        }
+    }
+    merge_object_value(root, "commands", commands)
 }
 
 fn migrate_disabled_and_enabled_providers(root: &mut Map<String, Value>) -> Result<(), String> {
     let disabled = root.remove("disabled_providers");
     let enabled = root.remove("enabled_providers");
     let mut rules = Vec::new();
-    if let Some(disabled) = disabled {
-        let ids = string_array(Some(&disabled));
-        for id in ids {
-            rules.push(json!({ "effect": "deny", "action": "provider.use", "resource": id }));
-        }
-    }
+    // Official order: `enabled_providers` becomes deny-all + allow-list, then
+    // `disabled_providers` denies over it (rules are last-match-wins).
     if let Some(enabled) = enabled {
         let ids = string_array(Some(&enabled));
-        if !ids.is_empty() {
+        // An empty `enabled_providers` array still means "only these", so the
+        // official normalize emits deny-all without any allow-list entry.
+        if enabled
+            .as_array()
+            .is_some_and(|entries| entries.is_empty() || !ids.is_empty())
+        {
             rules.push(json!({ "effect": "deny", "action": "provider.use", "resource": "*" }));
             for id in ids {
-                rules.push(json!({ "effect": "allow", "action": "provider.use", "resource": id }));
+                rules.push(json!({
+                    "effect": "allow",
+                    "action": "provider.use",
+                    "resource": canonical_provider_id(&id),
+                }));
             }
+        }
+    }
+    if let Some(disabled) = disabled {
+        for id in string_array(Some(&disabled)) {
+            rules.push(json!({
+                "effect": "deny",
+                "action": "provider.use",
+                "resource": canonical_provider_id(&id),
+            }));
         }
     }
     append_policies(root, rules)
@@ -1063,9 +1344,44 @@ pub fn v1_to_v2_value(mut value: Value) -> Result<Value, String> {
     migrate_disabled_and_enabled_providers(root)?;
 
     move_key(root, "snapshot", "snapshots")?;
-    move_key(root, "attachment", "attachments")?;
-    move_key(root, "command", "commands")?;
+    // V1 `attachment` became V2 `media` (same `{ image: {...} }` shape).
+    move_key(root, "attachment", "media")?;
     move_key(root, "reference", "references")?;
+    migrate_commands(root)?;
+    // The official normalize decodes the top-level model selection and
+    // canonicalizes its provider ID, so the retired aliases must be renamed
+    // here too (2.0.17, #51901).
+    if let Some(mut model) = root.remove("model") {
+        match model.as_str() {
+            Some(_) => {
+                canonicalize_model_reference(&mut model);
+                // The top-level selection accepts the `provider/model#variant`
+                // short form (`ConfigModel.Selection`), unlike `small_model`.
+                let selection = is_valid_model_selection(model.as_str().unwrap_or_default())
+                    .then(|| compose_model_selection(model.clone(), None))
+                    .flatten();
+                match selection {
+                    Some(selection) => root.insert("model".to_string(), selection),
+                    None => root.insert("model".to_string(), model),
+                };
+            }
+            None => {
+                if let Some(selection) = model.as_object_mut() {
+                    if let Some(provider_id) = selection
+                        .get("providerID")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                    {
+                        selection.insert(
+                            "providerID".to_string(),
+                            Value::String(canonical_provider_id(&provider_id).to_string()),
+                        );
+                    }
+                }
+                root.insert("model".to_string(), model);
+            }
+        }
+    }
 
     if let Some(skills) = root.remove("skills") {
         if let Some(skills) = skills.as_object() {
@@ -1202,7 +1518,10 @@ fn convert_provider_v2_to_v1(value: Value) -> Result<Value, String> {
         .and_then(|value| value.as_object().cloned())
     {
         if let Some(package) = string_value(api.get("package")) {
-            out.insert("npm".to_string(), Value::String(package));
+            out.insert(
+                "npm".to_string(),
+                Value::String(normalize_package_name(&package)),
+            );
         }
         if let Some(url) = string_value(api.get("url")) {
             out.insert("api".to_string(), Value::String(url.clone()));
@@ -1234,7 +1553,10 @@ fn convert_provider_v2_to_v1(value: Value) -> Result<Value, String> {
     let flat_package = string_value(provider.remove("package").as_ref());
     if !out.contains_key("npm") {
         if let Some(package) = flat_package {
-            out.insert("npm".to_string(), Value::String(package));
+            out.insert(
+                "npm".to_string(),
+                Value::String(normalize_package_name(&package)),
+            );
         }
     }
     if let Some(url) = flat_settings
@@ -1263,6 +1585,23 @@ fn convert_provider_v2_to_v1(value: Value) -> Result<Value, String> {
     }
     let package_name = out.get("npm").and_then(Value::as_str).map(str::to_string);
     lift_auth_headers(&mut options, package_name.as_deref());
+    // V2 `compatibility.supportsPromptCacheKey` is the V1 `setCacheKey` option;
+    // the remaining provider compatibility keys stay on the V1 provider so a
+    // read/write round trip does not drop them.
+    if let Some(mut compatibility) = provider
+        .remove("compatibility")
+        .and_then(|value| value.as_object().cloned())
+    {
+        if let Some(supports) = compatibility
+            .remove("supportsPromptCacheKey")
+            .and_then(|value| value.as_bool())
+        {
+            options.insert("setCacheKey".to_string(), Value::Bool(supports));
+        }
+        if !compatibility.is_empty() {
+            out.insert("compatibility".to_string(), Value::Object(compatibility));
+        }
+    }
     if !options.is_empty() {
         out.insert("options".to_string(), Value::Object(options));
     }
@@ -1298,7 +1637,10 @@ fn convert_model_v2_to_v1(value: Value) -> Result<Value, String> {
         if let Some(package) = string_value(api.get("package")) {
             let url = string_value(api.get("url"));
             let mut provider = Map::new();
-            provider.insert("npm".to_string(), Value::String(package));
+            provider.insert(
+                "npm".to_string(),
+                Value::String(normalize_package_name(&package)),
+            );
             if let Some(url) = url {
                 provider.insert("api".to_string(), Value::String(url));
             }
@@ -1323,6 +1665,16 @@ fn convert_model_v2_to_v1(value: Value) -> Result<Value, String> {
             }
         }
     }
+    // Released 2.0 keeps model request overrides flat (`body` next to
+    // `settings`/`headers`); `request` belongs to agents only.
+    if let Some(body) = model
+        .remove("body")
+        .and_then(|value| value.as_object().cloned())
+    {
+        for (key, value) in body {
+            options.entry(key).or_insert(value);
+        }
+    }
     // Same dual-shape rule as providers: the flat keys are what OpenCode 2.0
     // writes, they only fill what the preview shape left unset, and they are
     // consumed here so a save cannot echo them back next to the preview fields.
@@ -1334,7 +1686,10 @@ fn convert_model_v2_to_v1(value: Value) -> Result<Value, String> {
     model.remove("modelID");
     if !model.contains_key("provider") {
         if let Some(package) = string_value(model.get("package")) {
-            model.insert("provider".to_string(), json!({ "npm": package }));
+            model.insert(
+                "provider".to_string(),
+                json!({ "npm": normalize_package_name(&package) }),
+            );
         }
     }
     model.remove("package");
@@ -1344,6 +1699,38 @@ fn convert_model_v2_to_v1(value: Value) -> Result<Value, String> {
     {
         for (key, value) in settings {
             options.entry(key).or_insert(value);
+        }
+    }
+    // `reasoningField` is the V1 `interleaved`; the other compatibility keys
+    // stay on the V1 model so a read/write round trip does not drop them.
+    if let Some(mut compatibility) = model
+        .remove("compatibility")
+        .and_then(|value| value.as_object().cloned())
+    {
+        if let Some(field) = compatibility
+            .remove("reasoningField")
+            .and_then(|value| value.as_str().map(str::to_string))
+        {
+            model.insert("interleaved".to_string(), Value::String(field));
+        }
+        // The editor still edits the deprecated option form; the forward
+        // migration folds it back into `compatibility`. Merge into an existing
+        // `thinking` object (which may come from flat `settings`) instead of
+        // replacing its other settings.
+        if compatibility
+            .remove("supportsThinkingBlockBinding")
+            .and_then(|value| value.as_bool())
+            == Some(false)
+        {
+            let thinking = options
+                .entry("thinking".to_string())
+                .or_insert_with(|| Value::Object(Map::new()));
+            if let Some(thinking) = thinking.as_object_mut() {
+                thinking.insert("blockBinding".to_string(), Value::Bool(false));
+            }
+        }
+        if !compatibility.is_empty() {
+            model.insert("compatibility".to_string(), Value::Object(compatibility));
         }
     }
     if !options.is_empty() {
@@ -1392,33 +1779,56 @@ fn convert_model_v2_to_v1(value: Value) -> Result<Value, String> {
             let Some(id) = string_value(variant.get("id")) else {
                 continue;
             };
+            // V1 variants are a flat option map. `body` wins over `settings`
+            // when the same key appears in both, because `body` is the value
+            // that actually reaches the request.
             let mut value = variant
-                .get("body")
+                .get("settings")
                 .and_then(Value::as_object)
                 .cloned()
                 .unwrap_or_default();
+            if let Some(body) = variant.get("body").and_then(Value::as_object) {
+                for (key, item) in body {
+                    value.insert(key.clone(), item.clone());
+                }
+            }
             for (key, item) in variant {
-                if key != "id" && key != "body" {
-                    value.entry(key.clone()).or_insert_with(|| item.clone());
+                if key != "id" && key != "body" && key != "settings" {
+                    value.insert(key.clone(), item.clone());
                 }
             }
             converted.insert(id, Value::Object(value));
         }
         model.insert("variants".to_string(), Value::Object(converted));
     }
-    if let Some(costs) = model
-        .remove("cost")
-        .and_then(|value| value.as_array().cloned())
-    {
-        if let Some(first) = costs.first().and_then(Value::as_object) {
+    // V2 accepts a single cost object as well as an array.
+    if let Some(costs) = model.remove("cost") {
+        let costs = match costs {
+            Value::Array(costs) => costs,
+            Value::Object(cost) => vec![Value::Object(cost)],
+            _ => Vec::new(),
+        };
+        // The V1 shape only has one tier (`context_over_200k`); identify it by
+        // its `tier` descriptor instead of trusting array position, and keep
+        // the base entry for models that list a tier first.
+        let tiered = costs.iter().find_map(|entry| {
+            let entry = entry.as_object()?;
+            let tier = entry.get("tier")?.as_object()?;
+            (tier.get("type").and_then(Value::as_str) == Some("context")).then_some(entry)
+        });
+        let base = costs.iter().find_map(|entry| {
+            let entry = entry.as_object()?;
+            (entry.get("tier").is_none()).then_some(entry)
+        });
+        if let Some(base) = base {
             let mut cost = Map::new();
-            if let Some(input) = first.get("input") {
+            if let Some(input) = base.get("input") {
                 cost.insert("input".to_string(), input.clone());
             }
-            if let Some(output) = first.get("output") {
+            if let Some(output) = base.get("output") {
                 cost.insert("output".to_string(), output.clone());
             }
-            if let Some(cache) = first.get("cache").and_then(Value::as_object) {
+            if let Some(cache) = base.get("cache").and_then(Value::as_object) {
                 if let Some(read) = cache.get("read") {
                     cost.insert("cache_read".to_string(), read.clone());
                 }
@@ -1426,11 +1836,13 @@ fn convert_model_v2_to_v1(value: Value) -> Result<Value, String> {
                     cost.insert("cache_write".to_string(), write.clone());
                 }
             }
-            if let Some(second) = costs.get(1).and_then(Value::as_object) {
-                cost.insert(
-                    "context_over_200k".to_string(),
-                    Value::Object(second.clone()),
-                );
+            if let Some(tiered) = tiered {
+                let strip_tier = |entry: &Map<String, Value>| {
+                    let mut stripped = entry.clone();
+                    stripped.remove("tier");
+                    Value::Object(stripped)
+                };
+                cost.insert("context_over_200k".to_string(), strip_tier(tiered));
             }
             model.insert("cost".to_string(), Value::Object(cost));
         }
@@ -1486,30 +1898,10 @@ fn convert_agent_v2_to_v1(value: Value) -> Result<Value, String> {
         .ok_or_else(|| "Expected V2 agent entries to be objects".to_string())?;
     let mut out = Map::new();
     if let Some(model) = agent.remove("model") {
-        match model {
-            Value::String(reference) => {
-                if let Some((model, variant)) = reference.split_once('#') {
-                    out.insert("model".to_string(), Value::String(model.to_string()));
-                    out.insert("variant".to_string(), Value::String(variant.to_string()));
-                } else {
-                    out.insert("model".to_string(), Value::String(reference));
-                }
-            }
-            Value::Object(selection) => {
-                let provider_id = string_value(selection.get("providerID"));
-                let model_id = string_value(selection.get("model"));
-                if let (Some(provider_id), Some(model_id)) = (provider_id, model_id) {
-                    out.insert(
-                        "model".to_string(),
-                        Value::String(format!("{provider_id}/{model_id}")),
-                    );
-                }
-                if let Some(variant) = selection.get("variant") {
-                    out.insert("variant".to_string(), variant.clone());
-                }
-            }
-            other => {
-                out.insert("model".to_string(), other);
+        if let Some((reference, variant)) = selection_to_v1(&model) {
+            out.insert("model".to_string(), Value::String(reference));
+            if let Some(variant) = variant {
+                out.insert("variant".to_string(), Value::String(variant));
             }
         }
     }
@@ -1566,23 +1958,30 @@ fn convert_agents_v2_to_v1(root: &mut Map<String, Value>) -> Result<(), String> 
     let small_model = converted
         .get("title")
         .and_then(Value::as_object)
+        // The title variant is runtime selection state, not part of the small
+        // model reference the editor edits; only the reference is mirrored.
         .and_then(|title| title.get("model"))
-        .and_then(|model| match model {
-            Value::String(reference) => {
-                Some(reference.split('#').next().unwrap_or(reference).to_string())
-            }
-            Value::Object(selection) => {
-                let provider_id = string_value(selection.get("providerID"))?;
-                let model_id = string_value(selection.get("model"))?;
-                Some(format!("{provider_id}/{model_id}"))
-            }
-            _ => None,
-        });
+        .and_then(|model| selection_to_v1(model).map(|(reference, _)| reference));
     root.insert("agent".to_string(), Value::Object(converted));
     if let Some(small_model) = small_model {
         root.insert("small_model".to_string(), Value::String(small_model));
     }
     Ok(())
+}
+
+/// Collapse a V2 `{startup, catalog, execution}` timeout back into the single
+/// V1 number. `execution` is the bound a tool call needs; older editor files
+/// that only carry `{request}` keep that value.
+fn collapse_mcp_timeout(value: &Value) -> Option<Value> {
+    let Some(timeout) = value.as_object() else {
+        return None;
+    };
+    timeout
+        .get("execution")
+        .or_else(|| timeout.get("catalog"))
+        .or_else(|| timeout.get("request"))
+        .or_else(|| timeout.get("startup"))
+        .cloned()
 }
 
 fn convert_mcp_server_v2_to_v1(value: Value) -> Result<Value, String> {
@@ -1596,37 +1995,37 @@ fn convert_mcp_server_v2_to_v1(value: Value) -> Result<Value, String> {
             Value::Bool(!disabled.as_bool().unwrap_or(false)),
         );
     }
-    if let Some(timeout) = server
-        .remove("timeout")
-        .and_then(|value| value.as_object().cloned())
-    {
-        if timeout.get("startup").is_none() {
-            if let Some(request) = timeout.get("request") {
-                server.insert("timeout".to_string(), request.clone());
-            } else {
-                server.insert("timeout".to_string(), Value::Object(timeout));
-            }
+    if let Some(timeout) = server.remove("timeout") {
+        if let Some(collapsed) =
+            collapse_mcp_timeout(&timeout).or_else(|| timeout.is_number().then_some(timeout.clone()))
+        {
+            server.insert("timeout".to_string(), collapsed);
         } else {
-            server.insert("timeout".to_string(), Value::Object(timeout));
+            server.insert("timeout".to_string(), timeout);
         }
     }
-    if let Some(oauth) = server
-        .remove("oauth")
-        .and_then(|value| value.as_object().cloned())
-    {
-        let mut converted = Map::new();
-        for (native, legacy) in [
-            ("client_id", "clientId"),
-            ("client_secret", "clientSecret"),
-            ("scope", "scope"),
-            ("callback_port", "callbackPort"),
-            ("redirect_uri", "redirectUri"),
-        ] {
-            if let Some(value) = oauth.get(native) {
-                converted.insert(legacy.to_string(), value.clone());
+    if let Some(oauth) = server.remove("oauth") {
+        if let Some(oauth) = oauth.as_object() {
+            // Keep V2-only keys (for example `auth_server_metadata_url`) in the
+            // editor view so the next save does not drop them.
+            let mut converted = oauth.clone();
+            for (native, legacy) in [
+                ("client_id", "clientId"),
+                ("client_secret", "clientSecret"),
+                ("scope", "scope"),
+                ("callback_port", "callbackPort"),
+                ("redirect_uri", "redirectUri"),
+            ] {
+                if let Some(value) = converted.remove(native) {
+                    converted.insert(legacy.to_string(), value);
+                }
             }
+            server.insert("oauth".to_string(), Value::Object(converted));
+        } else {
+            // V1 also accepts `oauth: false` to disable auto-detection; keep the
+            // literal instead of turning the opt-out into nothing.
+            server.insert("oauth".to_string(), oauth);
         }
-        server.insert("oauth".to_string(), Value::Object(converted));
     }
     Ok(Value::Object(server))
 }
@@ -1640,16 +2039,11 @@ fn convert_mcp_v2_to_v1(root: &mut Map<String, Value>) -> Result<(), String> {
         .cloned()
         .ok_or_else(|| "Expected V2 `mcp` to be an object".to_string())?;
     let mut servers = take_object(&mut mcp, "servers")?;
-    if let Some(timeout) = mcp
-        .remove("timeout")
-        .and_then(|value| value.as_object().cloned())
-    {
-        if timeout.get("startup").is_none() {
-            if let Some(request) = timeout.get("request") {
-                let experimental = object_at_mut(root, "experimental")?;
-                experimental.insert("mcp_timeout".to_string(), request.clone());
-            }
-        }
+    if let Some(collapsed) = mcp.remove("timeout").and_then(|timeout| {
+        collapse_mcp_timeout(&timeout).or_else(|| timeout.is_number().then_some(timeout))
+    }) {
+        let experimental = object_at_mut(root, "experimental")?;
+        experimental.insert("mcp_timeout".to_string(), collapsed);
     }
     for (name, server) in std::mem::take(&mut servers) {
         mcp.insert(name, convert_mcp_server_v2_to_v1(server)?);
@@ -1663,13 +2057,21 @@ fn convert_mcp_v2_to_v1(root: &mut Map<String, Value>) -> Result<(), String> {
 fn take_provider_selection_policies(
     root: &mut Map<String, Value>,
 ) -> (Option<Vec<String>>, Option<Vec<String>>) {
-    let Some(experimental) = root.get_mut("experimental").and_then(Value::as_object_mut) else {
-        return (None, None);
-    };
-    let Some(policies) = experimental
+    // Read the stable top-level entry first; `experimental.policies` is the
+    // deprecated alias and is only consulted when the top-level one is absent.
+    let (source, policies) = if let Some(policies) = root
         .remove("policies")
         .and_then(|value| value.as_array().cloned())
-    else {
+    {
+        ("policies", policies)
+    } else if let Some(policies) = root
+        .get_mut("experimental")
+        .and_then(Value::as_object_mut)
+        .and_then(|experimental| experimental.remove("policies"))
+        .and_then(|value| value.as_array().cloned())
+    {
+        ("experimental", policies)
+    } else {
         return (None, None);
     };
     let provider_rules = policies.iter().all(|rule| {
@@ -1677,7 +2079,11 @@ fn take_provider_selection_policies(
             .is_some_and(|rule| rule.get("action").and_then(Value::as_str) == Some("provider.use"))
     });
     if !provider_rules || policies.is_empty() {
-        experimental.insert("policies".to_string(), Value::Array(policies));
+        if source == "policies" {
+            root.insert("policies".to_string(), Value::Array(policies));
+        } else if let Some(experimental) = root.get_mut("experimental").and_then(Value::as_object_mut) {
+            experimental.insert("policies".to_string(), Value::Array(policies));
+        }
         return (None, None);
     }
     let every_deny = policies.iter().all(|rule| {
@@ -1729,11 +2135,20 @@ fn take_provider_selection_policies(
                 ),
             )
         } else {
-            experimental.insert("policies".to_string(), Value::Array(policies));
+            if source == "policies" {
+                root.insert("policies".to_string(), Value::Array(policies));
+            } else if let Some(experimental) = root.get_mut("experimental").and_then(Value::as_object_mut) {
+                experimental.insert("policies".to_string(), Value::Array(policies));
+            }
             return (None, None);
         }
     };
-    if experimental.get("policies").is_none() && experimental.is_empty() {
+    // Drop an `experimental` object the removal left empty.
+    if root
+        .get("experimental")
+        .and_then(Value::as_object)
+        .is_some_and(serde_json::Map::is_empty)
+    {
         root.remove("experimental");
     }
     (disabled, enabled)
@@ -1789,6 +2204,62 @@ pub fn v2_to_v1_value(mut value: Value) -> Result<Value, String> {
             canonicalize_provider_list(provider_ids);
         }
     }
+    // V2 `media` is the V1 `attachment` block; restore the editor's name so a
+    // read/write round trip does not move it into `other` under a new key.
+    if !root.contains_key("attachment") {
+        if let Some(media) = root.remove("media") {
+            root.insert("attachment".to_string(), media);
+        }
+    }
+    // V2 accepts both the string and the object form of a model selection; the
+    // V1 editor only understands strings. A `variant` is folded into the
+    // `provider/model#variant` spelling, which V2 accepts and the forward
+    // migration turns back into the object form, so the CLI's default thinking
+    // preference survives a save.
+    if matches!(root.get("model"), Some(Value::Object(_))) {
+        if let Some(selection) = root.remove("model") {
+            match selection_to_v1(&selection) {
+                Some((reference, variant)) => {
+                    let reference = match variant {
+                        Some(variant) => format!("{reference}#{variant}"),
+                        None => reference,
+                    };
+                    root.insert("model".to_string(), Value::String(reference));
+                }
+                None => {
+                    // Keep an undecodable selection untouched so the failure is
+                    // visible in the raw editor instead of silently discarded.
+                    root.insert("model".to_string(), selection);
+                }
+            }
+        }
+    }
+    // V2 commands are selected through `model`; fold it back into the V1
+    // `model` + `variant` pair and restore `subagent`'s V1 alias `subtask`.
+    if let Some(commands) = root
+        .remove("commands")
+        .and_then(|value| value.as_object().cloned())
+    {
+        let mut converted = Map::new();
+        for (name, command) in commands {
+            let Some(mut command) = command.as_object().cloned() else {
+                continue;
+            };
+            if let Some(model) = command.remove("model") {
+                if let Some((reference, variant)) = selection_to_v1(&model) {
+                    command.insert("model".to_string(), Value::String(reference));
+                    if let Some(variant) = variant {
+                        command.insert("variant".to_string(), Value::String(variant));
+                    }
+                }
+            }
+            if let Some(subagent) = command.remove("subagent") {
+                command.insert("subtask".to_string(), subagent);
+            }
+            converted.insert(name, Value::Object(command));
+        }
+        root.insert("command".to_string(), Value::Object(converted));
+    }
     Ok(value)
 }
 
@@ -1824,6 +2295,35 @@ fn unique_archived_v2_path(config_path: &Path) -> PathBuf {
         .map(|attempt| archived_v2_path(config_path, attempt))
         .find(|path| !path.exists())
         .unwrap_or_else(|| archived_v2_path(config_path, 1000))
+}
+
+/// OpenCode 2.x discovers only `opencode.json`/`opencode.jsonc` (the official
+/// suite has a `does not load legacy config.json files` test). A default-path
+/// `config.json` must be renamed before it becomes the V2 config, otherwise the
+/// migrated shape would sit in a file the CLI never reads. Explicit custom,
+/// env and shell paths are not renamed: the CLI loads those as given.
+pub fn rename_legacy_default_config(config_path: &Path) -> Result<PathBuf, String> {
+    if config_path.file_name().and_then(|name| name.to_str()) != Some("config.json") {
+        return Ok(config_path.to_path_buf());
+    }
+    let target = config_path.with_file_name("opencode.json");
+    for sibling in [target.clone(), config_path.with_file_name("opencode.jsonc")] {
+        if sibling.exists() {
+            return Err(format!(
+                "Cannot enable OpenCode V2: {} already exists next to {}; merge them first",
+                sibling.display(),
+                config_path.display()
+            ));
+        }
+    }
+    fs::rename(config_path, &target).map_err(|error| {
+        format!(
+            "Failed to rename legacy OpenCode config {} to {}: {error}",
+            config_path.display(),
+            target.display()
+        )
+    })?;
+    Ok(target)
 }
 
 pub fn set_mode(config_path: &Path, enabled: bool) -> Result<bool, String> {
@@ -1944,6 +2444,337 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// Compatibility keys the V1 editor has no field for must survive a read
+    /// and write, both at provider and model level (`setCacheKey`/`interleaved`
+    /// keep their dedicated V1 fields).
+    #[test]
+    fn provider_and_model_compatibility_survive_a_round_trip() {
+        let value = json!({
+            "providers": {
+                "relay": {
+                    "package": "@ai-sdk/openai-compatible",
+                    "compatibility": {
+                        "maxTokensField": "max_completion_tokens",
+                        "requireFinishReason": true,
+                        "supportsPromptCacheKey": false
+                    },
+                    "models": {
+                        "gpt-x": {
+                            "modelID": "gpt-x",
+                            "compatibility": {
+                                "reasoningField": "reasoning_content",
+                                "requireReasoning": true,
+                                "cacheFormat": "anthropic"
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        let restored = v2_to_v1_value(value).unwrap();
+        assert_eq!(
+            restored["provider"]["relay"]["compatibility"],
+            json!({
+                "maxTokensField": "max_completion_tokens",
+                "requireFinishReason": true
+            })
+        );
+        assert_eq!(restored["provider"]["relay"]["options"]["setCacheKey"], false);
+        assert_eq!(
+            restored["provider"]["relay"]["models"]["gpt-x"]["compatibility"],
+            json!({ "requireReasoning": true, "cacheFormat": "anthropic" })
+        );
+        assert_eq!(
+            restored["provider"]["relay"]["models"]["gpt-x"]["interleaved"],
+            "reasoning_content"
+        );
+
+        let written = v1_to_v2_value(restored).unwrap();
+        assert_eq!(
+            written["providers"]["relay"]["compatibility"],
+            json!({
+                "maxTokensField": "max_completion_tokens",
+                "requireFinishReason": true,
+                "supportsPromptCacheKey": false
+            })
+        );
+        assert_eq!(
+            written["providers"]["relay"]["models"]["gpt-x"]["compatibility"],
+            json!({
+                "reasoningField": "reasoning_content",
+                "requireReasoning": true,
+                "cacheFormat": "anthropic"
+            })
+        );
+    }
+
+    /// The deprecated thinking `blockBinding: false` opt-out moves onto model
+    /// compatibility; the read view restores the option form the editor knows.
+    #[test]
+    fn thinking_block_binding_folds_into_model_compatibility() {
+        let v1 = json!({
+            "provider": {
+                "relay": {
+                    "models": {
+                        "claude": {
+                            "options": {
+                                "thinking": { "type": "adaptive", "blockBinding": false },
+                                "effort": "high"
+                            }
+                        },
+                        "claude-empty": {
+                            "options": { "reasoningConfig": { "blockBinding": false } }
+                        },
+                        "untouched": { "options": { "thinking": { "type": "adaptive" } } }
+                    }
+                }
+            }
+        });
+        let migrated = v1_to_v2_value(v1).unwrap();
+        let models = &migrated["providers"]["relay"]["models"];
+        assert_eq!(
+            models["claude"]["settings"]["thinking"],
+            json!({ "type": "adaptive" })
+        );
+        assert_eq!(models["claude"]["settings"]["effort"], "high");
+        assert_eq!(
+            models["claude"]["compatibility"],
+            json!({ "supportsThinkingBlockBinding": false })
+        );
+        assert!(models["claude-empty"]["settings"]
+            .get("reasoningConfig")
+            .is_none());
+        assert_eq!(
+            models["claude-empty"]["compatibility"],
+            json!({ "supportsThinkingBlockBinding": false })
+        );
+        assert!(models["untouched"].get("compatibility").is_none());
+
+        let restored = v2_to_v1_value(migrated).unwrap();
+        let restored_models = &restored["provider"]["relay"]["models"];
+        assert_eq!(
+            restored_models["claude"]["options"]["thinking"],
+            json!({ "type": "adaptive", "blockBinding": false })
+        );
+        assert!(restored_models["claude"]["compatibility"].is_null());
+    }
+
+    /// V2 accepts the object form of the default model selection; the V1
+    /// editor only understands `provider/model`, so the read view folds it.
+    #[test]
+    fn object_model_selection_folds_into_the_v1_reference() {
+        let value = json!({
+            "model": { "providerID": "azure-cognitive-services", "model": "gpt-x", "variant": "high" }
+        });
+        // The object form is what the official normalize writes; the V1 string
+        // carries the variant in the `provider/model#variant` spelling so the
+        // CLI's default thinking preference survives an editor save.
+        let restored = v2_to_v1_value(value).unwrap();
+        assert_eq!(restored["model"], json!("azure/gpt-x#high"));
+
+        // The forward migration turns the reference back into the object form.
+        let rewritten = v1_to_v2_value(restored).unwrap();
+        assert_eq!(
+            rewritten["model"],
+            json!({ "providerID": "azure", "model": "gpt-x", "variant": "high" })
+        );
+    }
+
+    /// `oauth: false` disables OAuth auto-detection in both V1 and V2; the
+    /// converter must keep the literal instead of turning it into an empty
+    /// object (which would re-enable detection with empty credentials).
+    #[test]
+    fn mcp_oauth_false_round_trips() {
+        let v1 = json!({
+            "mcp": {
+                "remote": {
+                    "type": "remote",
+                    "url": "https://example.com/mcp",
+                    "oauth": false
+                }
+            }
+        });
+        let migrated = v1_to_v2_value(v1).unwrap();
+        assert_eq!(migrated["mcp"]["servers"]["remote"]["oauth"], json!(false));
+
+        let restored = v2_to_v1_value(migrated).unwrap();
+        assert_eq!(restored["mcp"]["remote"]["oauth"], json!(false));
+    }
+
+    /// The V1 editor keeps the bare npm package name. On write, built-in
+    /// routes stay bare and every npm package regains the `aisdk:` routing
+    /// prefix, matching the official `packageSpecifier`.
+    #[test]
+    fn package_specifier_writes_aisdk_for_npm_packages_only() {
+        let v1 = json!({
+            "provider": {
+                "builtin": {
+                    "npm": "@opencode-ai/ai/providers/openai",
+                    "models": { "gpt-x": { "id": "gpt-x" } }
+                },
+                "third-party": {
+                    "npm": "gitlab-ai-provider",
+                    "models": { "claude-x": { "id": "claude-x", "provider": { "npm": "gitlab-ai-provider" } } }
+                }
+            }
+        });
+        let migrated = v1_to_v2_value(v1).unwrap();
+        assert_eq!(
+            migrated["providers"]["builtin"]["package"],
+            "@opencode/ai/providers/openai"
+        );
+        assert_eq!(
+            migrated["providers"]["third-party"]["package"],
+            "aisdk:gitlab-ai-provider"
+        );
+        assert_eq!(
+            migrated["providers"]["third-party"]["models"]["claude-x"]["package"],
+            "aisdk:gitlab-ai-provider"
+        );
+
+        let restored = v2_to_v1_value(migrated).unwrap();
+        assert_eq!(
+            restored["provider"]["builtin"]["npm"],
+            "@opencode/ai/providers/openai"
+        );
+        assert_eq!(
+            restored["provider"]["third-party"]["npm"],
+            "gitlab-ai-provider"
+        );
+
+        let rewritten = v1_to_v2_value(restored).unwrap();
+        assert_eq!(
+            rewritten["providers"]["third-party"]["package"],
+            "aisdk:gitlab-ai-provider"
+        );
+    }
+
+    /// MCP OAuth keys V2 added after the first migration (`auth_server_metadata_url`)
+    /// must survive both directions instead of being dropped by the rename.
+    #[test]
+    fn mcp_oauth_unknown_keys_survive_the_conversion() {
+        let v1 = json!({
+            "mcp": {
+                "remote": {
+                    "type": "remote",
+                    "url": "https://example.com/mcp",
+                    "oauth": {
+                        "clientId": "client",
+                        "redirectUri": "http://127.0.0.1:19876/callback",
+                        "auth_server_metadata_url": "https://example.com/.well-known/oauth-authorization-server"
+                    }
+                }
+            }
+        });
+        let migrated = v1_to_v2_value(v1).unwrap();
+        let oauth = &migrated["mcp"]["servers"]["remote"]["oauth"];
+        assert_eq!(oauth["client_id"], "client");
+        assert_eq!(oauth["redirect_uri"], "http://127.0.0.1:19876/callback");
+        assert_eq!(
+            oauth["auth_server_metadata_url"],
+            "https://example.com/.well-known/oauth-authorization-server"
+        );
+
+        let restored = v2_to_v1_value(migrated).unwrap();
+        let oauth = &restored["mcp"]["remote"]["oauth"];
+        assert_eq!(oauth["clientId"], "client");
+        assert_eq!(oauth["redirectUri"], "http://127.0.0.1:19876/callback");
+        assert_eq!(
+            oauth["auth_server_metadata_url"],
+            "https://example.com/.well-known/oauth-authorization-server"
+        );
+    }
+
+    /// `enabled_providers: []` means "only these, i.e. none" in V1, so the
+    /// migration emits deny-all without an allow-list entry.
+    #[test]
+    fn empty_enabled_providers_denies_every_provider() {
+        let value = json!({ "enabled_providers": [] });
+        let migrated = v1_to_v2_value(value).unwrap();
+        assert_eq!(
+            migrated["policies"],
+            json!([{ "effect": "deny", "action": "provider.use", "resource": "*" }])
+        );
+    }
+
+    /// Native policies must stay last so they win under last-match-wins; the
+    /// generated provider rules come first (official `normalizePolicies` order).
+    #[test]
+    fn generated_policies_precede_native_policies() {
+        let value = json!({
+            "disabled_providers": ["provider-a"],
+            "policies": [
+                { "effect": "allow", "action": "provider.use", "resource": "provider-a" }
+            ]
+        });
+        let migrated = v1_to_v2_value(value).unwrap();
+        assert_eq!(
+            migrated["policies"],
+            json!([
+                { "effect": "deny", "action": "provider.use", "resource": "provider-a" },
+                { "effect": "allow", "action": "provider.use", "resource": "provider-a" }
+            ])
+        );
+    }
+
+    /// Command entries fold `model`+`variant` into a selection and rename
+    /// `subtask` to `subagent`; the read view restores the V1 fields.
+    #[test]
+    fn commands_round_trip_model_variant_and_subtask() {
+        let v1 = json!({
+            "command": {
+                "review": {
+                    "template": "Review this.",
+                    "model": "anthropic/claude-sonnet",
+                    "variant": "thinking",
+                    "subtask": true
+                }
+            }
+        });
+        let migrated = v1_to_v2_value(v1).unwrap();
+        assert_eq!(
+            migrated["commands"]["review"]["model"],
+            json!({ "providerID": "anthropic", "model": "claude-sonnet", "variant": "thinking" })
+        );
+        assert_eq!(migrated["commands"]["review"]["subagent"], json!(true));
+
+        let restored = v2_to_v1_value(migrated).unwrap();
+        assert_eq!(restored["command"]["review"]["model"], "anthropic/claude-sonnet");
+        assert_eq!(restored["command"]["review"]["variant"], "thinking");
+        assert_eq!(restored["command"]["review"]["subtask"], json!(true));
+    }
+
+    /// An unchanged `small_model` must not overwrite a title-agent selection
+    /// that carries a variant; an edited value still wins.
+    #[test]
+    fn unchanged_small_model_keeps_the_title_variant() {
+        let value = json!({
+            "agents": {
+                "title": { "model": { "providerID": "relay", "model": "gpt-x", "variant": "fast" } }
+            },
+            "small_model": "relay/gpt-x"
+        });
+        let migrated = v1_to_v2_value(value).unwrap();
+        assert_eq!(
+            migrated["agents"]["title"]["model"],
+            json!({ "providerID": "relay", "model": "gpt-x", "variant": "fast" })
+        );
+        assert!(migrated.get("small_model").is_none());
+
+        let edited = json!({
+            "agents": {
+                "title": { "model": { "providerID": "relay", "model": "gpt-x", "variant": "fast" } }
+            },
+            "small_model": "relay/gpt-y"
+        });
+        let migrated = v1_to_v2_value(edited).unwrap();
+        assert_eq!(
+            migrated["agents"]["title"]["model"],
+            json!({ "providerID": "relay", "model": "gpt-y" })
+        );
+    }
+
     #[test]
     fn v1_provider_migrates_to_official_v2_provider_and_model_shapes() {
         let value = json!({
@@ -1963,7 +2794,13 @@ mod tests {
                             "name": "GPT X",
                             "modalities": { "input": ["text"], "output": ["text"] },
                             "tool_call": true,
-                            "cost": { "input": 1, "output": 2, "cache_read": 0.1, "cache_write": 0.2 },
+                            "cost": {
+                                "input": 1,
+                                "output": 2,
+                                "cache_read": 0.1,
+                                "cache_write": 0.2,
+                                "context_over_200k": { "input": 3, "output": 4, "cache_read": 0.3, "cache_write": 0.4 }
+                            },
                             "limit": { "context": 1000.5, "output": 200 },
                             "options": { "reasoningEffort": "high" },
                             "variants": { "low": { "reasoningEffort": "low" } }
@@ -1983,7 +2820,7 @@ mod tests {
             provider["api"],
             json!({
                 "type": "aisdk",
-                "package": "@ai-sdk/openai-compatible",
+                "package": "aisdk:@ai-sdk/openai-compatible",
                 "url": "https://relay.example.com/v1",
                 "settings": { "apiKey": "sk-test" }
             })
@@ -1996,7 +2833,7 @@ mod tests {
         // and the base URL inside `settings` because that shape has no `api.url`.
         // OpenCode 2.0 rejects a provider whose package it cannot resolve, so a
         // file that only carried the preview shape would fail to load at all.
-        assert_eq!(provider["package"], "@ai-sdk/openai-compatible");
+        assert_eq!(provider["package"], "aisdk:@ai-sdk/openai-compatible");
         assert_eq!(
             provider["settings"],
             json!({ "apiKey": "sk-test", "baseURL": "https://relay.example.com/v1" })
@@ -2009,26 +2846,34 @@ mod tests {
         // enough because the provider catalog supplies the package.
         assert_eq!(model["api"], json!({ "id": "gpt-x-upstream" }));
         assert_eq!(model["modelID"], "gpt-x-upstream");
+        // `reasoningEffort` is a setting the compatible package reads itself,
+        // so it stays in `settings` and is not echoed into a flat body.
         assert_eq!(model["settings"], json!({ "reasoningEffort": "high" }));
+        assert!(model.get("body").is_none());
+        assert!(model.get("request").is_none());
         assert_eq!(
             model["capabilities"],
             json!({ "tools": true, "input": ["text"], "output": ["text"] })
         );
         assert_eq!(
-            model["request"]["body"],
-            json!({ "reasoning_effort": "high" })
-        );
-        assert_eq!(
             model["variants"],
-            json!([{ "id": "low", "body": { "reasoning_effort": "low" } }])
+            json!([{ "id": "low", "settings": { "reasoningEffort": "low" } }])
         );
         assert_eq!(
             model["cost"],
-            json!([{
-                "input": 1,
-                "output": 2,
-                "cache": { "read": 0.1, "write": 0.2 }
-            }])
+            json!([
+                {
+                    "input": 1,
+                    "output": 2,
+                    "cache": { "read": 0.1, "write": 0.2 }
+                },
+                {
+                    "tier": { "type": "context", "size": 200000 },
+                    "input": 3,
+                    "output": 4,
+                    "cache": { "read": 0.3, "write": 0.4 }
+                }
+            ])
         );
         assert_eq!(model["limit"], json!({ "context": 1000, "output": 200 }));
     }
@@ -2055,25 +2900,31 @@ mod tests {
         assert!(migrated.get("agent").is_none());
         assert!(migrated.get("mode").is_none());
         assert!(migrated.get("small_model").is_none());
-        assert_eq!(migrated["agents"]["title"]["model"], json!("relay/gpt-x"));
+        // `small_model` becomes the title agent's object-shaped selection, like
+        // the official `modelSelection` output.
+        assert_eq!(
+            migrated["agents"]["title"]["model"],
+            json!({ "providerID": "relay", "model": "gpt-x" })
+        );
         assert_eq!(migrated["agents"]["build"]["system"], json!("You build."));
         assert_eq!(
             migrated["agents"]["build"]["model"],
-            json!("anthropic/claude-sonnet")
+            json!({ "providerID": "anthropic", "model": "claude-sonnet" })
         );
         assert_eq!(
             migrated["agents"]["build"]["request"]["body"],
             json!({ "temperature": 0.2 })
         );
+        // `bash` is the V2 runtime action `shell`.
         assert_eq!(
             migrated["agents"]["build"]["permissions"],
-            json!([{ "action": "bash", "resource": "*", "effect": "ask" }])
+            json!([{ "action": "shell", "resource": "*", "effect": "ask" }])
         );
         assert_eq!(migrated["agents"]["plan"]["mode"], json!("primary"));
     }
 
     #[test]
-    fn v1_mcp_nests_oauth_and_uses_request_timeout() {
+    fn v1_mcp_nests_oauth_and_bounds_every_timeout_phase() {
         let value = json!({
             "mcp": {
                 "remote": {
@@ -2102,7 +2953,7 @@ mod tests {
         );
         assert_eq!(
             migrated["mcp"]["servers"]["remote"]["timeout"],
-            json!({ "request": 30 })
+            json!({ "startup": 30, "catalog": 30, "execution": 30 })
         );
         assert!(migrated["mcp"]["servers"]["remote"]
             .get("enabled")
@@ -2125,7 +2976,7 @@ mod tests {
         let migrated = v1_to_v2_value(value).unwrap();
 
         assert_eq!(migrated["snapshots"], json!(true));
-        assert_eq!(migrated["attachments"]["image"]["auto_resize"], json!(true));
+        assert_eq!(migrated["media"]["image"]["auto_resize"], json!(true));
         assert_eq!(migrated["commands"]["deploy"]["template"], json!("deploy"));
         assert_eq!(
             migrated["references"]["sdk"]["repository"],
@@ -2143,13 +2994,19 @@ mod tests {
         assert!(migrated.get("autoshare").is_none());
         assert!(migrated.get("permission").is_none());
         assert!(migrated.get("tools").is_none());
+        // The deprecated `tools` map comes first and `permission` overrides it,
+        // matching the official rule order.
         assert_eq!(
             migrated["permissions"],
             json!([
-                { "action": "bash", "resource": "git status", "effect": "allow" },
-                { "action": "edit", "resource": "*", "effect": "deny" }
+                { "action": "edit", "resource": "*", "effect": "deny" },
+                { "action": "shell", "resource": "git status", "effect": "allow" }
             ])
         );
+
+        let restored = v2_to_v1_value(migrated).unwrap();
+        assert_eq!(restored["attachment"]["image"]["auto_resize"], json!(true));
+        assert!(restored.get("media").is_none());
     }
 
     #[test]
@@ -2161,18 +3018,20 @@ mod tests {
 
         let migrated = v1_to_v2_value(value).unwrap();
         assert_eq!(
-            migrated["experimental"]["policies"],
+            migrated["policies"],
             json!([
                 { "effect": "deny", "action": "provider.use", "resource": "provider-a" },
                 { "effect": "deny", "action": "provider.use", "resource": "provider-b" }
             ])
         );
+        assert!(migrated.get("experimental").is_none());
 
         let restored = v2_to_v1_value(migrated).unwrap();
         assert_eq!(
             restored["disabled_providers"],
             json!(["provider-a", "provider-b"])
         );
+        assert!(restored.get("policies").is_none());
         assert!(restored.get("experimental").is_none());
     }
 
@@ -2193,7 +3052,7 @@ mod tests {
         });
         let written = v1_to_v2_value(v1).unwrap();
         let provider = &written["providers"]["anthropic-relay"];
-        assert_eq!(provider["package"], "@ai-sdk/anthropic");
+        assert_eq!(provider["package"], "aisdk:@ai-sdk/anthropic");
         assert_eq!(
             provider["settings"],
             json!({
@@ -2369,6 +3228,57 @@ mod tests {
         }
     }
 
+    /// A model-level `provider: { api }` endpoint must land in the flat
+    /// `settings.baseURL` the released runtime reads (the preview `api` key is
+    /// ignored by it), overriding `options.baseURL` like the official
+    /// `migrateModel` does.
+    #[test]
+    fn model_level_provider_api_becomes_flat_settings_base_url() {
+        let value = json!({
+            "provider": {
+                "relay": {
+                    "npm": "@ai-sdk/openai-compatible",
+                    "models": {
+                        "gpt-x": {
+                            "id": "gpt-x",
+                            "provider": { "npm": "@ai-sdk/openai", "api": "https://model.example.com/v1" },
+                            "options": { "baseURL": "https://option.example.com/v1" }
+                        }
+                    }
+                }
+            }
+        });
+
+        let migrated = v1_to_v2_value(value).unwrap();
+        let model = &migrated["providers"]["relay"]["models"]["gpt-x"];
+        // The endpoint override reaches the released flat shape...
+        assert_eq!(
+            model["settings"]["baseURL"],
+            "https://model.example.com/v1"
+        );
+        // ...and the preview shape keeps its own URL for the dev line.
+        assert_eq!(model["api"]["url"], "https://model.example.com/v1");
+        assert_eq!(model["api"]["package"], "aisdk:@ai-sdk/openai");
+        assert!(model.get("request").is_none());
+    }
+
+    /// `mcp.timeout` overlays the values seeded by `experimental.mcp_timeout`
+    /// (official normalize order), so the direct field wins when both exist.
+    #[test]
+    fn mcp_timeout_overrides_experimental_mcp_timeout() {
+        let value = json!({
+            "experimental": { "mcp_timeout": 15 },
+            "mcp": { "timeout": 45 }
+        });
+
+        let migrated = v1_to_v2_value(value).unwrap();
+        assert_eq!(
+            migrated["mcp"]["timeout"],
+            json!({ "startup": 45, "catalog": 45, "execution": 45 })
+        );
+        assert!(migrated.get("experimental").is_none());
+    }
+
     /// A file written by OpenCode 2.0 itself carries the flat shape only, so the
     /// editor has to restore it without the preview `api`/`request` keys.
     #[test]
@@ -2475,7 +3385,15 @@ mod tests {
                             "capabilities": { "tools": true, "input": ["text"], "output": ["text"] },
                             "request": { "body": { "reasoning_effort": "high" } },
                             "variants": [{ "id": "low", "body": { "reasoning_effort": "low" } }],
-                            "cost": [{ "input": 1, "output": 2, "cache": { "read": 0.1, "write": 0.2 } }],
+                            "cost": [
+                                {
+                                    "tier": { "type": "context", "size": 200000 },
+                                    "input": 3,
+                                    "output": 4,
+                                    "cache": { "read": 0.3, "write": 0.4 }
+                                },
+                                { "input": 1, "output": 2, "cache": { "read": 0.1, "write": 0.2 } }
+                            ],
                             "limit": { "context": 1000, "output": 200 }
                         }
                     }
@@ -2542,6 +3460,11 @@ mod tests {
             restored["provider"]["relay"]["models"]["gpt-x"]["cost"]["cache_read"],
             json!(0.1)
         );
+        // The context tier is found by its descriptor, not by array position.
+        assert_eq!(
+            restored["provider"]["relay"]["models"]["gpt-x"]["cost"]["context_over_200k"],
+            json!({ "input": 3, "output": 4, "cache": { "read": 0.3, "write": 0.4 } })
+        );
         assert_eq!(restored["small_model"], json!("relay/gpt-x"));
         assert_eq!(restored["agent"]["build"]["prompt"], json!("You build."));
         assert_eq!(
@@ -2572,6 +3495,43 @@ mod tests {
 
         assert!(!set_mode(&config_path, false).unwrap());
         assert_eq!(fs::read(&config_path).unwrap(), original);
+    }
+
+    /// V2 only discovers `opencode.json`/`opencode.jsonc`; a legacy default
+    /// `config.json` is renamed before it becomes the active V2 config.
+    #[test]
+    fn enabling_v2_renames_a_legacy_config_json() {
+        let directory = tempfile::tempdir().unwrap();
+        let legacy_path = directory.path().join("config.json");
+        let original = br#"{"provider":{"relay":{"npm":"@ai-sdk/openai-compatible","models":{}}}}"#;
+        fs::write(&legacy_path, original).unwrap();
+
+        let renamed = rename_legacy_default_config(&legacy_path).unwrap();
+        assert_eq!(renamed, directory.path().join("opencode.json"));
+        assert!(!legacy_path.exists());
+
+        assert!(set_mode(&renamed, true).unwrap());
+        assert!(v1_backup_path(&renamed).is_file());
+
+        assert!(!set_mode(&renamed, false).unwrap());
+        assert_eq!(fs::read(&renamed).unwrap(), original);
+    }
+
+    /// Renaming must not silently merge into an existing V2 filename.
+    #[test]
+    fn enabling_v2_refuses_to_overwrite_an_existing_opencode_json() {
+        let directory = tempfile::tempdir().unwrap();
+        let legacy_path = directory.path().join("config.json");
+        fs::write(&legacy_path, br#"{"provider":{}}"#).unwrap();
+        fs::write(
+            directory.path().join("opencode.json"),
+            br#"{"providers":{}}"#,
+        )
+        .unwrap();
+
+        let error = rename_legacy_default_config(&legacy_path).unwrap_err();
+        assert!(error.contains("already exists"));
+        assert!(legacy_path.exists());
     }
 
     #[test]

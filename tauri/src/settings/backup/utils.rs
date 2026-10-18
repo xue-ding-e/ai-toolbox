@@ -451,20 +451,18 @@ pub fn get_opencode_config_path() -> Result<Option<PathBuf>, String> {
         }
     }
 
-    // 3. Check default paths
-    let home_dir = get_home_dir()?;
-    let config_dir = home_dir.join(".config").join("opencode");
+    // 3. Check default paths (the global config dir honors OPENCODE_CONFIG_DIR)
+    let config_dir = get_default_opencode_config_dir()?;
 
-    let json_path = config_dir.join("opencode.json");
-    let jsonc_path = config_dir.join("opencode.jsonc");
-
-    if json_path.exists() {
-        Ok(Some(json_path))
-    } else if jsonc_path.exists() {
-        Ok(Some(jsonc_path))
-    } else {
-        Ok(None)
+    // Same candidate order as OpenCode: jsonc, json, then the V1 legacy name.
+    let candidates = ["opencode.jsonc", "opencode.json", "config.json"];
+    for candidate in candidates {
+        let path = config_dir.join(candidate);
+        if path.exists() {
+            return Ok(Some(path));
+        }
     }
+    Ok(None)
 }
 
 pub async fn get_opencode_config_path_from_db(
@@ -497,9 +495,14 @@ pub fn get_opencode_restore_dir() -> Result<PathBuf, String> {
         }
     }
 
-    // 3. Return default directory
-    let home_dir = get_home_dir()?;
-    Ok(home_dir.join(".config").join("opencode"))
+    // 3. Return default directory (honors OPENCODE_CONFIG_DIR)
+    get_default_opencode_config_dir()
+}
+
+fn get_default_opencode_config_dir() -> Result<PathBuf, String> {
+    // Same resolution as the config reader (OPENCODE_CONFIG_DIR, then
+    // $XDG_CONFIG_HOME/opencode, then ~/.config/opencode).
+    crate::coding::open_code::commands::default_config_dir()
 }
 
 pub async fn get_opencode_restore_dir_from_db(
@@ -653,8 +656,7 @@ pub fn get_opencode_prompt_path() -> Result<Option<PathBuf>, String> {
         }
     }
 
-    let home_dir = get_home_dir()?;
-    let prompt_path = home_dir.join(".config").join("opencode").join("AGENTS.md");
+    let prompt_path = get_default_opencode_config_dir()?.join("AGENTS.md");
 
     if prompt_path.exists() {
         Ok(Some(prompt_path))

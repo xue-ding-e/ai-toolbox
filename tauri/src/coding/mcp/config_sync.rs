@@ -2051,7 +2051,7 @@ mod tests {
             "V1-shaped entry leaked into a V2 file: {written}"
         );
         assert_eq!(
-            written["providers"]["relay"]["package"], "@ai-sdk/openai-compatible",
+            written["providers"]["relay"]["package"], "aisdk:@ai-sdk/openai-compatible",
             "the rest of the V2 file must survive the boundary conversion: {written}"
         );
 

@@ -10,7 +10,8 @@ use std::path::PathBuf;
 /// Priority:
 /// 1. Environment variable OPENCODE_CONFIG
 /// 2. Shell configuration files
-/// 3. Default path (~/.config/opencode/opencode.jsonc or .json)
+/// 3. Default path ($OPENCODE_CONFIG_DIR, then $XDG_CONFIG_HOME/opencode,
+///    then ~/.config/opencode; opencode.jsonc, opencode.json, config.json)
 ///
 /// Note: This is a simplified version that doesn't check the database
 /// for custom config path, since MCP sync typically runs without async context.
@@ -38,22 +39,18 @@ pub fn get_opencode_mcp_config_path_sync() -> Option<PathBuf> {
 /// Get the default OpenCode config path
 /// Checks for .jsonc first, then .json, then defaults to .jsonc for new files
 fn get_default_opencode_config_path() -> Option<PathBuf> {
-    let home_dir = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .ok()?;
+    // Same directory resolution as the config reader (`OPENCODE_CONFIG_DIR`,
+    // `XDG_CONFIG_HOME`, then `~/.config/opencode`).
+    let config_dir = crate::coding::open_code::commands::default_config_dir().ok()?;
 
-    let config_dir = PathBuf::from(&home_dir).join(".config").join("opencode");
-
-    // Check for .jsonc first, then .json
-    let jsonc_path = config_dir.join("opencode.jsonc");
-    let json_path = config_dir.join("opencode.json");
-
-    if jsonc_path.exists() {
-        Some(jsonc_path)
-    } else if json_path.exists() {
-        Some(json_path)
-    } else {
-        // Return default path for new file
-        Some(jsonc_path)
+    // V1 also accepted the legacy `config.json` name, in the same order.
+    let candidates = ["opencode.jsonc", "opencode.json", "config.json"];
+    for candidate in candidates {
+        let path = config_dir.join(candidate);
+        if path.exists() {
+            return Some(path);
+        }
     }
+    // Return default path for new file
+    Some(config_dir.join(candidates[0]))
 }

@@ -1,7 +1,7 @@
 use indexmap::IndexMap;
 use serde_json::Value;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tauri::Emitter;
 
 use super::adapter;
@@ -842,7 +842,7 @@ pub async fn get_opencode_config_path(
         }
     }
 
-    // 4. Return default path
+    // 4. Return default path (honors OPENCODE_CONFIG_DIR)
     get_default_config_path()
 }
 
@@ -862,8 +862,16 @@ pub async fn set_opencode_v2_config_mode<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     enabled: bool,
 ) -> Result<bool, String> {
-    let config_path = get_opencode_config_path(state).await?;
-    let config_path = Path::new(&config_path);
+    let path_info = get_opencode_config_path_info(state.clone()).await?;
+    // OpenCode 2.x only discovers `opencode.json`/`opencode.jsonc`. A legacy
+    // default `config.json` is renamed first; explicit paths stay untouched
+    // because the CLI loads them verbatim.
+    let resolved_path = if enabled && path_info.source == "default" {
+        v2_migration::rename_legacy_default_config(Path::new(&path_info.path))?
+    } else {
+        PathBuf::from(&path_info.path)
+    };
+    let config_path = resolved_path.as_path();
     let was_enabled = v2_migration::is_active(config_path);
     let is_enabled = v2_migration::set_mode(config_path, enabled)?;
 
@@ -913,7 +921,7 @@ pub async fn get_opencode_config_path_info(
         }
     }
 
-    // 4. Return default path
+    // 4. Return default path (honors OPENCODE_CONFIG_DIR)
     let default_path = get_default_config_path()?;
     Ok(ConfigPathInfo {
         path: default_path,
@@ -922,26 +930,45 @@ pub async fn get_opencode_config_path_info(
 }
 
 /// Helper function to get default config path
-/// Returns the actual config file path (checks .jsonc first, then .json)
+/// Returns the actual config file path (checks .jsonc first, then .json,
+/// then the legacy V1 `config.json`)
 pub fn get_default_config_path() -> Result<String, String> {
-    let home_dir = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .map_err(|_| "Failed to get home directory".to_string())?;
-
-    let config_dir = Path::new(&home_dir).join(".config").join("opencode");
-
-    // Check for .jsonc first, then .json
-    let jsonc_path = config_dir.join("opencode.jsonc");
-    let json_path = config_dir.join("opencode.json");
-
-    if jsonc_path.exists() {
-        Ok(jsonc_path.to_string_lossy().to_string())
-    } else if json_path.exists() {
-        Ok(json_path.to_string_lossy().to_string())
-    } else {
+    default_config_dir().map(|config_dir| {
+        // V1 also accepted the legacy `config.json` name, in the same order.
+        let candidates = ["opencode.jsonc", "opencode.json", "config.json"];
+        for candidate in candidates {
+            let path = config_dir.join(candidate);
+            if path.exists() {
+                return path.to_string_lossy().to_string();
+            }
+        }
         // Return default path for new file
-        Ok(jsonc_path.to_string_lossy().to_string())
+        config_dir.join(candidates[0]).to_string_lossy().to_string()
+    })
+}
+
+/// The directory holding the global OpenCode config, shared by the config
+/// reader and the MCP/backup path resolvers.
+///
+/// `OPENCODE_CONFIG_DIR` relocates the whole directory (official
+/// `Global.layer` override); otherwise OpenCode roots it at
+/// `$XDG_CONFIG_HOME/opencode`, defaulting to `~/.config/opencode`.
+pub(crate) fn default_config_dir() -> Result<PathBuf, String> {
+    if let Ok(config_dir) = std::env::var("OPENCODE_CONFIG_DIR") {
+        if !config_dir.trim().is_empty() {
+            return Ok(PathBuf::from(config_dir));
+        }
     }
+    let config_home = match std::env::var("XDG_CONFIG_HOME") {
+        Ok(config_home) if !config_home.trim().is_empty() => PathBuf::from(config_home),
+        _ => {
+            let home_dir = std::env::var("USERPROFILE")
+                .or_else(|_| std::env::var("HOME"))
+                .map_err(|_| "Failed to get home directory".to_string())?;
+            Path::new(&home_dir).join(".config")
+        }
+    };
+    Ok(config_home.join("opencode"))
 }
 
 /// Read OpenCode configuration file with detailed result

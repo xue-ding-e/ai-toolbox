@@ -464,6 +464,13 @@ pub fn get_opencode_runtime_location_sync(
     Ok(get_cached_or_fallback_runtime_location("opencode"))
 }
 
+/// The cached OpenCode location without a database handle, for callers that
+/// only have synchronous helpers (auth/config readers). Falls back to the
+/// env/default resolution when the startup cache has not been filled yet.
+pub fn get_opencode_runtime_location_cached() -> RuntimeLocationInfo {
+    get_cached_or_fallback_runtime_location("opencode")
+}
+
 pub async fn get_opencode_runtime_location_async(
     db: &crate::db::SqliteDbState,
 ) -> Result<RuntimeLocationInfo, String> {
@@ -2401,6 +2408,7 @@ fn resolve_opencode_path_without_db() -> (PathBuf, String) {
         }
     }
 
+    // `get_default_config_path` already honors `OPENCODE_CONFIG_DIR`.
     (
         PathBuf::from(
             open_code::get_default_config_path()
@@ -2606,6 +2614,7 @@ async fn resolve_opencode_config_path_async(
         }
     }
 
+    // `OPENCODE_CONFIG_DIR` is honored inside `get_default_config_path`.
     Ok((
         PathBuf::from(open_code::get_default_config_path()?),
         "default".to_string(),

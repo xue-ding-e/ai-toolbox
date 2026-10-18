@@ -592,9 +592,25 @@ struct AuthEntry {
     refresh: Option<String>,
 }
 
+/// One row of the V2 `credential` table (`opencode.db`). The secret payload is
+/// JSON: `{type:"key", key}` / `{type:"oauth", access, refresh}` /
+/// `{type:"external"}`.
+#[derive(Debug, Deserialize)]
+struct StoredCredentialValue {
+    #[serde(rename = "type")]
+    credential_type: String,
+    key: Option<String>,
+    access: Option<String>,
+    refresh: Option<String>,
+}
+
+fn get_opencode_data_root() -> Result<PathBuf, String> {
+    let location = crate::coding::runtime_location::get_opencode_runtime_location_cached();
+    crate::coding::session_manager::resolve_opencode_data_root(&location)
+}
+
 fn get_auth_json_path() -> Result<PathBuf, String> {
-    let home_dir = dirs::home_dir().ok_or_else(|| "Failed to get home directory".to_string())?;
-    Ok(home_dir.join(".local/share/opencode/auth.json"))
+    Ok(get_opencode_data_root()?.join("auth.json"))
 }
 
 #[tauri::command]
@@ -603,7 +619,7 @@ pub fn get_opencode_auth_config_path() -> Result<String, String> {
     Ok(path.to_string_lossy().to_string())
 }
 
-fn read_auth_map() -> Result<HashMap<String, AuthEntry>, String> {
+fn read_auth_json_map() -> Result<HashMap<String, AuthEntry>, String> {
     let auth_path = match get_auth_json_path() {
         Ok(path) => path,
         Err(err) => return Err(err),
@@ -617,6 +633,89 @@ fn read_auth_map() -> Result<HashMap<String, AuthEntry>, String> {
         fs::read_to_string(&auth_path).map_err(|e| format!("Failed to read auth.json: {}", e))?;
 
     serde_json::from_str(&content).map_err(|e| format!("Failed to parse auth.json: {}", e))
+}
+
+/// Read the active credential per integration from the V2 `credential` table.
+/// `auth.json` is only a one-shot import source for V2, so channel lists,
+/// connectivity fallbacks and sharing must also see the SQLite store. The
+/// first row per integration wins: `active` first, then newest, matching the
+/// CLI's `resolveConnections(...)[0]`.
+fn read_credential_table_entries() -> HashMap<String, AuthEntry> {
+    let Ok(data_root) = get_opencode_data_root() else {
+        return HashMap::new();
+    };
+    let database_path = data_root.join("opencode.db");
+    if !database_path.exists() {
+        return HashMap::new();
+    }
+
+    // Read-only: the CLI may hold the database while this runs, and this
+    // reader must never create a journal or touch the store.
+    let Ok(connection) = rusqlite::Connection::open_with_flags(
+        &database_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ) else {
+        log::warn!("[Auth] Failed to open OpenCode database for credentials");
+        return HashMap::new();
+    };
+    let Ok(mut statement) = connection.prepare(
+        "SELECT integration_id, value FROM credential \
+         WHERE integration_id IS NOT NULL \
+         ORDER BY active DESC, time_created DESC, id DESC",
+    ) else {
+        // Older databases have no credential table; that is not an error.
+        return HashMap::new();
+    };
+    let Ok(rows) = statement.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    }) else {
+        return HashMap::new();
+    };
+
+    let mut entries = HashMap::new();
+    for row in rows.flatten() {
+        let (integration_id, raw_value) = row;
+        if entries.contains_key(&integration_id) {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<StoredCredentialValue>(&raw_value) else {
+            continue;
+        };
+        let entry = match value.credential_type.as_str() {
+            "key" => AuthEntry {
+                auth_type: "api".to_string(),
+                key: value.key,
+                access: None,
+                refresh: None,
+            },
+            "oauth" => AuthEntry {
+                auth_type: "oauth".to_string(),
+                key: None,
+                access: value.access,
+                refresh: value.refresh,
+            },
+            "external" => AuthEntry {
+                auth_type: "external".to_string(),
+                key: None,
+                access: None,
+                refresh: None,
+            },
+            _ => continue,
+        };
+        entries.insert(integration_id, entry);
+    }
+    entries
+}
+
+/// `auth.json` entries merged with the V2 credential table. The credential
+/// table wins when both stores know an integration, because that is what the
+/// V2 runtime reads.
+fn read_auth_map() -> Result<HashMap<String, AuthEntry>, String> {
+    let mut auth_map = read_auth_json_map()?;
+    for (provider_id, entry) in read_credential_table_entries() {
+        auth_map.insert(provider_id, entry);
+    }
+    Ok(auth_map)
 }
 
 fn extract_auth_credential(entry: &AuthEntry) -> Option<String> {
@@ -1134,6 +1233,28 @@ mod tests {
         let oauth: AuthEntry = serde_json::from_value(json!({ "type": "oauth", "key": "not-an-api-key", "access": "access-secret", "refresh": "refresh-secret" })).unwrap();
         assert_eq!(shareable_auth_entry(Some(&oauth)), (None, true));
         assert_eq!(shareable_auth_entry(None), (None, false));
+    }
+
+    #[test]
+    fn credential_rows_map_to_the_same_auth_shapes_as_auth_json() {
+        let key: StoredCredentialValue =
+            serde_json::from_value(json!({ "type": "key", "key": "sk-db" })).unwrap();
+        assert_eq!(key.credential_type, "key");
+        assert_eq!(key.key.as_deref(), Some("sk-db"));
+
+        let oauth: StoredCredentialValue = serde_json::from_value(
+            json!({ "type": "oauth", "access": "access-secret", "refresh": "refresh-secret" }),
+        )
+        .unwrap();
+        assert_eq!(oauth.credential_type, "oauth");
+        assert_eq!(oauth.access.as_deref(), Some("access-secret"));
+        assert_eq!(oauth.refresh.as_deref(), Some("refresh-secret"));
+
+        // External credentials have no readable secret and must not look like API keys.
+        let external: StoredCredentialValue =
+            serde_json::from_value(json!({ "type": "external", "methodID": "device" })).unwrap();
+        assert!(external.key.is_none());
+        assert!(external.access.is_none());
     }
 
     fn collect_model_ids_and_names(provider_data: &serde_json::Value) -> Vec<(String, String)> {

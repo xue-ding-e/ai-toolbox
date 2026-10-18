@@ -98,7 +98,14 @@ fn global_config_dir_from_runtime(
         ));
     }
 
-    Ok(local_home_dir()?.join(".config").join("opencode"))
+    // The platform default global config directory. `OPENCODE_CONFIG_DIR` is
+    // added as a separate scan root below, so agent files in the default
+    // location stay visible after the override is introduced.
+    let config_home = match std::env::var("XDG_CONFIG_HOME") {
+        Ok(config_home) if !config_home.trim().is_empty() => PathBuf::from(config_home),
+        _ => local_home_dir()?.join(".config"),
+    };
+    Ok(config_home.join("opencode"))
 }
 
 async fn markdown_agent_config_dirs(db: &SqliteDbState) -> Result<Vec<PathBuf>, String> {
