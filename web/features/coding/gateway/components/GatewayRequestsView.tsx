@@ -320,7 +320,10 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
   const [activeDetailTab, setActiveDetailTab] = React.useState<RequestDetailTabKey>('record');
   const [loading, setLoading] = React.useState(false);
   const [detailLoading, setDetailLoading] = React.useState(false);
-  const [importing, setImporting] = React.useState(false);
+  // The toolbar refresh runs a session sync too, but it must not light up the
+  // overflow menu: that spinner belongs to the rebuild alone. A shared flag
+  // made the ellipsis spin on every refresh.
+  const [syncingForRefresh, setSyncingForRefresh] = React.useState(false);
   const [rebuilding, setRebuilding] = React.useState(false);
   const [rebuildProgress, setRebuildProgress] = React.useState<GatewaySessionRebuildProgress | null>(null);
   const [exportingDetail, setExportingDetail] = React.useState(false);
@@ -474,7 +477,7 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
    * else would surface them.
    */
   const handleRefreshWithSessionSync = async () => {
-    setImporting(true);
+    setSyncingForRefresh(true);
     setError(null);
     setNotice(null);
     try {
@@ -492,7 +495,7 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
       // reload them so the button always does what its icon promises.
       await loadRequests();
     } finally {
-      setImporting(false);
+      setSyncingForRefresh(false);
     }
   };
 
@@ -623,7 +626,7 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
   );
 
   const handleSessionUsageMenuClick: MenuProps['onClick'] = ({ key }) => {
-    if (importing || rebuilding) {
+    if (syncingForRefresh || rebuilding) {
       return;
     }
     if (key === 'rebuild') {
@@ -1276,21 +1279,21 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
           <button
             type="button"
             className={styles.iconButton}
-            disabled={loading || importing || rebuilding}
+            disabled={loading || syncingForRefresh || rebuilding}
             onClick={() => void handleRefreshWithSessionSync()}
             aria-label={t('gateway.page.requests.refreshWithSync')}
             title={t('gateway.page.requests.refreshWithSyncHint')}
           >
             <RefreshCw
               size={14}
-              className={loading || importing ? styles.spin : undefined}
+              className={loading || syncingForRefresh ? styles.spin : undefined}
               aria-hidden="true"
             />
           </button>
           <Dropdown
             trigger={['click']}
             placement="bottomRight"
-            disabled={importing || rebuilding}
+            disabled={syncingForRefresh || rebuilding}
             menu={{
               items: sessionUsageMenuItems,
               onClick: handleSessionUsageMenuClick,
@@ -1299,11 +1302,11 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
             <button
               type="button"
               className={styles.iconButton}
-              disabled={importing || rebuilding}
+              disabled={syncingForRefresh || rebuilding}
               aria-label={t('gateway.page.requests.sessionUsageActions')}
               title={t('gateway.page.requests.sessionUsageActions')}
             >
-              {importing || rebuilding ? (
+              {rebuilding ? (
                 <Loader2 size={14} className={styles.spin} aria-hidden="true" />
               ) : (
                 <Ellipsis size={14} aria-hidden="true" />
