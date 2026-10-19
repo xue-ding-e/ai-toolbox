@@ -1,12 +1,12 @@
 {
-    "version": "1.1.9",
+    "version": "1.2.0",
     "description": "Desktop toolbox for managing AI coding assistant configurations",
     "homepage": "https://github.com/coulsontl/ai-toolbox",
     "license": "AGPL-3.0-or-later",
     "architecture": {
         "64bit": {
-            "url": "https://github.com/coulsontl/ai-toolbox/releases/download/v1.1.9/AI.Toolbox_1.1.9_x64-setup.exe#/dl.exe",
-            "hash": "sha256:0879eafa92d9a5631060b9eda6ad329ba85ea3aa512748baa8e2d5224044afd2"
+            "url": "https://github.com/coulsontl/ai-toolbox/releases/download/v1.2.0/AI.Toolbox_1.2.0_x64-setup.exe#/dl.exe",
+            "hash": "sha256:76a3e8e1057c26a8a3ec759065831323c2636a9e14ff233219b80c2f02006d77"
         }
     },
     "installer": {
