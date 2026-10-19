@@ -2567,6 +2567,7 @@ async fn build_gateway_response(
             // overwrites `stream_outcome` once it has consumed the stream.
             source_protocol,
             stream_outcome: GatewayStreamOutcome::NotStreaming,
+            observations: Default::default(),
             note: format!(
                 "aggregated {} streaming response from provider id={} name={}",
                 aggregate_kind.label(),
@@ -2668,6 +2669,7 @@ async fn build_gateway_response(
             failover: false,
             source_protocol,
             stream_outcome: GatewayStreamOutcome::NotStreaming,
+            observations: Default::default(),
             note: format!(
                 "streaming forwarded to provider id={} name={}",
                 provider.id, provider.name
@@ -2876,6 +2878,7 @@ async fn build_gateway_response(
         failover: false,
         source_protocol: source_protocol_from_route(route),
         stream_outcome: GatewayStreamOutcome::NotStreaming,
+        observations: Default::default(),
         note: format!(
             "forwarded to provider id={} name={}",
             provider.id, provider.name
@@ -5019,6 +5022,7 @@ fn buffered_gateway_response(
         failover: false,
         source_protocol: source_protocol_from_route(route),
         stream_outcome: GatewayStreamOutcome::NotStreaming,
+        observations: Default::default(),
         note: format!(
             "forwarded to provider id={} name={}",
             provider.id, provider.name
@@ -15040,6 +15044,7 @@ data: {data}\r\n\r\n"
             source_protocol: None,
             target_protocol: None,
             stream_outcome: GatewayStreamOutcome::NotStreaming,
+            observations: Default::default(),
             note: String::new(),
         }
     }
@@ -17520,6 +17525,7 @@ data: {data}\r\n\r\n"
             source_protocol: None,
             target_protocol: None,
             stream_outcome: GatewayStreamOutcome::NotStreaming,
+            observations: Default::default(),
             note: String::new(),
         };
 
@@ -17886,6 +17892,7 @@ data: {data}\r\n\r\n"
             source_protocol: None,
             target_protocol: None,
             stream_outcome: GatewayStreamOutcome::NotStreaming,
+            observations: Default::default(),
             note: String::new(),
         };
 

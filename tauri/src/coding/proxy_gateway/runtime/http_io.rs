@@ -306,6 +306,9 @@ pub(super) struct DebugHttpResponse {
     /// for non-streaming responses. Drives `success` in observability instead of
     /// the (already-sent) HTTP status code.
     pub(super) stream_outcome: GatewayStreamOutcome,
+    /// Native-tool and rewrite markers for the detail dialog. Persisted only in
+    /// the JSONL detail, never in the SQLite summary.
+    pub(super) observations: super::observations::RequestObservations,
 }
 
 impl DebugHttpResponse {
@@ -497,6 +500,7 @@ pub(super) fn json_response(
         source_protocol: None,
         target_protocol: None,
         stream_outcome: GatewayStreamOutcome::NotStreaming,
+        observations: Default::default(),
     }
 }
 
@@ -545,6 +549,7 @@ pub(super) fn empty_response(
         source_protocol: None,
         target_protocol: None,
         stream_outcome: GatewayStreamOutcome::NotStreaming,
+        observations: Default::default(),
     }
 }
 
@@ -1136,6 +1141,7 @@ mod tests {
             source_protocol: Some(AiProtocol::OpenAiResponses),
             target_protocol: Some(AiProtocol::OpenAiResponses),
             stream_outcome: GatewayStreamOutcome::NotStreaming,
+            observations: Default::default(),
             note: "streaming forwarded to provider id=provider-1 name=Provider One".to_string(),
         }
     }

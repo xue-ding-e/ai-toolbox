@@ -208,6 +208,10 @@ pub(super) fn record_gateway_observability_with_transport(
         let mut detail = GatewayRequestLogDetail {
             privacy: response.privacy.as_ref().map(|privacy| privacy.detail()),
             websocket,
+            // Detail-only observation markers: they stay in the JSONL record and
+            // are deliberately absent from the compact SQLite summary.
+            native_tools: response.observations.native_tools.clone(),
+            rewrites: response.observations.rewrites.clone(),
             summary: GatewayRequestLogSummary {
                 transport,
                 request_kind,

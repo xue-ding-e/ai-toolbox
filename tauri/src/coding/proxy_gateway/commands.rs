@@ -1271,6 +1271,8 @@ mod tests {
         let detail = GatewayRequestLogDetail {
             privacy: None,
             websocket: None,
+            native_tools: Vec::new(),
+            rewrites: Vec::new(),
             summary: GatewayRequestLogSummary {
                 transport: Default::default(),
                 request_kind: Default::default(),

@@ -2838,6 +2838,10 @@ pub fn request_log_detail_from_summary(
                 Ok(GatewayRequestLogDetail {
                     privacy: None,
                     websocket: None,
+                    // Observation markers live only in the JSONL detail; a
+                    // summary-fallback detail has none to show.
+                    native_tools: Vec::new(),
+                    rewrites: Vec::new(),
                     summary: GatewayRequestLogSummary {
                         transport: super::types::GatewayRequestTransport::from_str(&row.get::<_, String>(34)?),
                         request_kind: super::types::GatewayRequestKind::from_str(&row.get::<_, String>(35)?),
@@ -3111,6 +3115,8 @@ mod tests {
         GatewayRequestLogDetail {
             privacy: None,
             websocket: None,
+            native_tools: Vec::new(),
+            rewrites: Vec::new(),
             summary: GatewayRequestLogSummary {
                 transport: Default::default(),
                 request_kind: Default::default(),

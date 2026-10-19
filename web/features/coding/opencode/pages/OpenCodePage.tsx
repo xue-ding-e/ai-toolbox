@@ -2705,7 +2705,11 @@ const OpenCodePage: React.FC = () => {
                           <Text type="secondary" style={{ fontSize: 12 }}>
                             {t('opencode.official.description')}
                           </Text>
-                          {v2MigrationEnabled && (
+                          {/* Same condition as the page-top V2 state line:
+                              the note is only meaningful while migration is
+                              on, and the loading guard keeps it from appearing
+                              mid-toggle before the mode is confirmed. */}
+                          {!v2MigrationLoading && v2MigrationEnabled && (
                             <div style={{ marginTop: 4 }}>
                               <Text type="secondary" style={{ fontSize: 12 }}>
                                 {t('opencode.official.v2AuthHint')}

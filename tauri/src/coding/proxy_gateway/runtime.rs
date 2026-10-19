@@ -6,6 +6,7 @@ mod header_preserving_client;
 mod http_io;
 mod middleware;
 mod observability;
+mod observations;
 mod pipeline;
 mod providers;
 mod routes;

@@ -661,6 +661,8 @@ mod tests {
         let record = new_request_log_record(GatewayRequestLogDetail {
             privacy: None,
             websocket: None,
+            native_tools: Vec::new(),
+            rewrites: Vec::new(),
             summary,
             request_headers: Some(BTreeMap::from([(
                 "Content-Type".to_string(),

@@ -1418,6 +1418,34 @@ pub struct GatewayProviderAttempt {
     pub total_attempt_count: u32,
 }
 
+/// One native/hosted tool seen on a request, recorded for the detail dialog.
+///
+/// Persisted only in the JSONL detail; see
+/// `runtime/observations.rs` for why this never enters `proxy_request_logs`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct GatewayNativeToolRecord {
+    /// Canonical kind shared by every protocol (`web_search`, `mcp`, …).
+    pub kind: String,
+    /// The client's request declared this tool.
+    pub declared: bool,
+    /// The tool declaration survived into the body sent upstream.
+    pub forwarded: bool,
+    /// The upstream's reply actually invoked this tool.
+    pub used: bool,
+}
+
+/// One gateway-side rewrite applied to a request on its way upstream.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct GatewayRequestRewrite {
+    /// Stable machine key (`prompt_cache_key`, `lossy_conversion`, …).
+    pub kind: String,
+    /// Human-readable specifics, already truncated by the runtime.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct GatewayRequestLogDetail {
@@ -1425,6 +1453,13 @@ pub struct GatewayRequestLogDetail {
     pub privacy: Option<super::privacy::PrivacyDetail>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub websocket: Option<GatewayWebSocketMetadata>,
+    /// Native/hosted tools this request declared, forwarded, or used. Detail
+    /// only (JSONL), never part of the SQLite summary.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub native_tools: Vec<GatewayNativeToolRecord>,
+    /// Gateway rewrites applied to the outbound request. Detail only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rewrites: Vec<GatewayRequestRewrite>,
     #[serde(flatten)]
     pub summary: GatewayRequestLogSummary,
     pub request_headers: Option<BTreeMap<String, String>>,
