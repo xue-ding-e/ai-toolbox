@@ -1001,7 +1001,22 @@ pub async fn read_opencode_config(
             if v2_active {
                 value = v2_migration::v2_to_v1_value(value)?;
             }
-            serde_json::from_value::<OpenCodeConfig>(value).map_err(|error| error.to_string())
+            // 语法合法但结构不匹配时，最常见的原因是 V2 配置缺少
+            // `openvode_v1.<ext>` 标记（例如从只备份了配置文件的机器恢复，
+            // 或手工替换了配置文件）。把判断依据写进错误里，避免用户被
+            // 引导去「修复 JSON」，那会写出 V1/V2 混合的文件。
+            let missing_v2_marker = !v2_active && v2_migration::looks_like_v2_config(&value);
+            serde_json::from_value::<OpenCodeConfig>(value).map_err(|error| {
+                if missing_v2_marker {
+                    format!(
+                        "{error}（该文件具有 OpenCode V2 结构，但旁边没有 V2 模式标记 \
+                         `{}`；请把源机器配置目录里的该标记文件一起复制过来）",
+                        v2_migration::v1_backup_path(config_path).display()
+                    )
+                } else {
+                    error.to_string()
+                }
+            })
         });
 
     match parsed_config {

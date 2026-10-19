@@ -29,6 +29,22 @@ pub fn is_active(config_path: &Path) -> bool {
     v1_backup_path(config_path).is_file()
 }
 
+/// Whether a parsed config carries the V2-only top-level shape.
+///
+/// Used only to explain a deserialization failure: the mode switch is still
+/// the marker file, never the content. `providers` / `plugins` / `agents` are
+/// V2 spellings of the V1 `provider` / `plugin` / `agent`, and a V2 `model`
+/// selection is an object while V1 requires a string.
+pub fn looks_like_v2_config(value: &Value) -> bool {
+    let Some(root) = value.as_object() else {
+        return false;
+    };
+    root.contains_key("providers")
+        || root.contains_key("plugins")
+        || root.contains_key("agents")
+        || matches!(root.get("model"), Some(Value::Object(_)))
+}
+
 fn object_from(value: Option<&Value>) -> Map<String, Value> {
     value
         .and_then(Value::as_object)

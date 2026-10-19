@@ -472,6 +472,31 @@ pub async fn get_opencode_config_path_from_db(
     Ok(location.host_path.exists().then_some(location.host_path))
 }
 
+/// The V2-mode marker that must travel with the OpenCode config, if any.
+///
+/// `set_mode` renames the V1 config to `openvode_v1.<ext>` before installing
+/// the migrated config, so the marker only exists while the active config is
+/// stored in the V2 shape. It is the **only** state source for that mode
+/// (`v2_migration::is_active`), so a backup that carries the V2 config without
+/// it restores to a machine that parses V2 keys as V1 and fails on `model`.
+///
+/// A filtered-out config takes its marker with it: packaging a marker whose
+/// config is absent would leave an orphaned mode switch on the target.
+pub fn opencode_v2_marker_backup_entry(
+    config_path: &Path,
+    config_excluded: bool,
+) -> Option<(PathBuf, String)> {
+    if config_excluded {
+        return None;
+    }
+    let marker_path = crate::coding::open_code::v2_migration::v1_backup_path(config_path);
+    if !marker_path.is_file() {
+        return None;
+    }
+    let marker_name = marker_path.file_name()?.to_string_lossy().into_owned();
+    Some((marker_path, marker_name))
+}
+
 /// Get the directory where OpenCode config should be restored to
 /// Uses the same priority logic but returns directory path
 pub fn get_opencode_restore_dir() -> Result<PathBuf, String> {
@@ -3090,6 +3115,8 @@ async fn write_external_configs_to_backup_zip<W: Write + Seek>(
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "opencode.json".to_string());
+        let config_excluded =
+            should_filter_external_config_entry(filter_rules, "opencode", &file_name);
         add_external_config_file_to_zip(
             zip,
             added_zip_directories,
@@ -3099,6 +3126,24 @@ async fn write_external_configs_to_backup_zip<W: Write + Seek>(
             filter_rules,
             options,
         )?;
+
+        // V2 模式的唯一状态源是配置文件旁的 `openvode_v1.<ext>` 标记（见
+        // `open_code::v2_migration::is_active`）。它不在配置 JSON 里，必须
+        // 单独随包带走：否则恢复到另一台机器后，读取端会按 V1 结构解析
+        // V2 配置（`model` 是对象而非字符串），整页报「配置文件解析失败」。
+        if let Some((marker_path, marker_name)) =
+            opencode_v2_marker_backup_entry(&opencode_path, config_excluded)
+        {
+            add_external_config_file_to_zip(
+                zip,
+                added_zip_directories,
+                &marker_path,
+                "opencode",
+                &marker_name,
+                filter_rules,
+                options,
+            )?;
+        }
     }
 
     // Backup OpenCode auth.json if exists (check filter rules)
@@ -4087,7 +4132,8 @@ mod tests {
         get_gemini_cli_prompt_backup_zip_path, is_always_backup_cli_tool,
         is_filesystem_root_directory, is_optional_backup_cli_tool, normalize_backup_custom_entry,
         normalize_backup_storage_path, normalize_restore_entry_name,
-        parse_post_restore_resync_wsl_modules, record_restored_external_config_wsl_module,
+        opencode_v2_marker_backup_entry, parse_post_restore_resync_wsl_modules,
+        record_restored_external_config_wsl_module,
         resolve_external_config_restore_output_path, restore_custom_backup_entries,
         should_exclude_from_backup, should_filter_external_config_entry,
         should_reapply_applied_runtime, should_skip_external_config_on_restore,
@@ -4553,6 +4599,29 @@ mod tests {
             .collect();
 
         assert_eq!(file_names, vec!["AGENTS.md", "AGENTS.override.md"]);
+    }
+
+    #[test]
+    fn opencode_v2_marker_is_packaged_next_to_its_config() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let config_path = temp_dir.path().join("opencode.jsonc");
+        fs::write(&config_path, "{\"providers\":{}}").expect("write v2 config");
+
+        // V1 mode: no marker, nothing extra to package.
+        assert_eq!(opencode_v2_marker_backup_entry(&config_path, false), None);
+
+        let marker_path = crate::coding::open_code::v2_migration::v1_backup_path(&config_path);
+        fs::write(&marker_path, "{\"provider\":{}}").expect("write marker");
+
+        let (path, name) =
+            opencode_v2_marker_backup_entry(&config_path, false).expect("marker entry");
+        assert_eq!(path, marker_path);
+        // The entry keeps the real sibling name so restore drops it next to the
+        // config, where `v2_migration::is_active` looks for it.
+        assert_eq!(name, "openvode_v1.jsonc");
+
+        // A filtered-out config must not leave an orphaned mode switch behind.
+        assert_eq!(opencode_v2_marker_backup_entry(&config_path, true), None);
     }
 
     #[test]

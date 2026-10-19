@@ -609,7 +609,13 @@ pub(crate) fn restore_from_archive<R: Read + Seek>(
                         })?;
                     }
 
-                    let outpath = opencode_restore_dir.join(relative_path);
+                    let Some(outpath) = resolve_external_config_restore_output_path(
+                        &opencode_restore_dir,
+                        relative_path,
+                    )?
+                    else {
+                        continue;
+                    };
 
                     // Just copy the file - MCP cmd /c normalization will be handled
                     // by mcp_sync_all during startup resync (triggered by .resync_required flag)

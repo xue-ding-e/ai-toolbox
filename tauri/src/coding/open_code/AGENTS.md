@@ -14,7 +14,7 @@
 - OpenCode Core 还会从全局配置目录下的 `agent/**/*.md`、`agents/**/*.md` 以及 `mode/*.md`、`modes/*.md` 读取 Markdown Agent（后两者是 V1 遗留，加载后按 `mode: primary` 处理）。规范的新目录是复数 `agents/`，新建与默认 WSL/SSH 映射只使用复数目录；为避免老用户文件升级后消失，读取、编辑和删除仍兼容旧单数 `agent/`，并写回原始来源路径。应用内自定义 `OPENCODE_CONFIG` 文件只改变主 JSON 文件，不改变默认全局 Agent 目录；不能从自定义 JSON 的父目录猜测 Markdown Agent 目录。设置 `OPENCODE_CONFIG_DIR` 时默认目录仍作为额外扫描根保留（避免已有 Markdown Agent 突然消失），但运行时只加载被覆盖后的目录。WSL Direct 时该目录必须从统一 runtime location 的 Linux 用户根解析。
 - models.dev 的 `experimental.modes.*` 在 OpenCode 语义中会展开成虚拟模型，ID 形如 `${base_model_id}-${mode}`，例如 `gpt-5.5-fast`；后端统一模型列表需要透出 `base_model_id` / `experimental_mode`，供前端继承 base variants。
 - `favorite provider` / `我使用过的供应商` 库不是当前配置镜像，而是独立的历史库和诊断缓存；真正的 OpenCode 运行时配置仍以当前配置文件内容为准。
-- V1/V2 模式开关以当前配置路径旁的 `openvode_v1.<ext>` 备份是否存在作为状态源。开启时先解析完整 JSONC，再写 V2 临时文件并通过同目录重命名替换；关闭时把 V2 当前文件保存为 `opencode_v2.<ext>` 后恢复 V1 原文。路径扩展名沿用当前配置，备份重名时保留旧 V2 副本并加时间戳。会话管理读 V1 还是 V2 库也看这同一个开关，不看 `opencode.db` 里有没有 `session_v2` 表；规则在 `session_manager/AGENTS.md`。
+- V1/V2 模式开关以当前配置路径旁的 `openvode_v1.<ext>` 备份是否存在作为状态源。开启时先解析完整 JSONC，再写 V2 临时文件并通过同目录重命名替换；关闭时把 V2 当前文件保存为 `opencode_v2.<ext>` 后恢复 V1 原文。路径扩展名沿用当前配置，备份重名时保留旧 V2 副本并加时间戳。会话管理读 V1 还是 V2 库也看这同一个开关，不看 `opencode.db` 里有没有 `session_v2` 表；规则在 `session_manager/AGENTS.md`。该标记不在配置 JSON 内，**任何**跨机搬运（备份/恢复、手工复制配置）都必须把它一起带走；否则 `read_opencode_config` 会按 V1 解析 V2 配置。读取失败时 `looks_like_v2_config` 只用于把「缺标记」写进错误提示，绝不反过来推断模式。
 
 ## 核心设计决策（Why）
 
