@@ -1865,7 +1865,9 @@
       "hint": "引擎凭据文件（含明文密钥）。保存后立即生效；删掉某个渠道的条目等于删除它的凭据。",
       "path": "文件位置：{{path}}",
       "openHint": "在应用内查看并编辑 auth.json",
-      "unparseableBlocked": "文件内容解析失败且编辑器为空，保存会清空凭据文件，已阻止保存"
+      "unparseableBlocked": "文件内容解析失败且编辑器为空，保存会清空凭据文件，已阻止保存",
+      "viewTitle": "查看 auth.json",
+      "viewHint": "引擎凭据文件（含明文密钥）。当前为只读模式，仅供查看。"
     },
     "jsonInvalid": "JSON 格式不正确",
     "cliExtensions": {
@@ -2660,7 +2662,9 @@
       "contextLimit": "上下文限制",
       "outputLimit": "输出限制",
       "openConfigHint": "在应用内查看并编辑 auth.json",
-      "v2AuthHint": "OpenCode V2 已把凭据迁移到 opencode.db；这里的渠道列表会同时读取数据库。新增或修改凭据请在终端执行 opencode auth login，仅编辑上面的 auth.json 不会影响 V2 运行时。"
+      "v2AuthHint": "OpenCode V2 已把凭据迁移到 opencode.db；这里的渠道列表会同时读取数据库。新增或修改凭据请在终端执行 opencode auth login，auth.json 在 V2 下仅可查看。",
+      "descriptionReadOnly": "以下渠道来自 OpenCode 官方 Auth 认证，模型列表只读；渠道凭据可点右上角 auth.json 在应用内查看（V2 模式下不可编辑）。",
+      "openConfigHintReadOnly": "在应用内查看 auth.json（V2 模式下只读）"
     },
     "agentSettings": {
       "title": "Agent 模型",

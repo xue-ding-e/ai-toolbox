@@ -1,5 +1,5 @@
 import React from 'react';
-import { App, Form, Modal, Typography } from 'antd';
+import { App, Button, Form, Modal, Typography } from 'antd';
 import { useTranslation } from 'react-i18next';
 import JsonEditor from '@/components/common/JsonEditor';
 
@@ -11,6 +11,12 @@ export interface AuthConfigModalProps {
   content: string | undefined;
   /** 文件在磁盘上的位置，只用于在弹窗底部显示。 */
   path?: string;
+  /**
+   * 只读模式：凭据由别的存储管理时（OpenCode V2 的 `opencode.db`），
+   * `auth.json` 只是查看入口，保存没有意义，也不该让用户以为改了会生效。
+   * 只读时隐藏保存按钮与 `onSave` 路径。
+   */
+  readOnly?: boolean;
   /**
    * 落盘。第二个参数是**打开瞬间解析出的原始对象**：后端靠它做条目级合并
    * ——用户没动过的条目保留磁盘现值（OpenCode CLI 在编辑期间刷新的 token
@@ -45,6 +51,7 @@ const AuthConfigModal: React.FC<AuthConfigModalProps> = ({
   open,
   content,
   path,
+  readOnly = false,
   onSave,
   onCancel,
   onSaved,
@@ -120,24 +127,32 @@ const AuthConfigModal: React.FC<AuthConfigModalProps> = ({
 
   return (
     <Modal
-      title={t('common.authConfig.title')}
+      title={t(readOnly ? 'common.authConfig.viewTitle' : 'common.authConfig.title')}
       open={open}
       width={720}
       onCancel={onCancel}
       confirmLoading={saving}
       okText={t('common.save')}
       cancelText={t('common.cancel')}
-      onOk={() => void handleSave()}
+      onOk={readOnly ? undefined : () => void handleSave()}
+      footer={readOnly ? (
+        <Button onClick={onCancel}>{t('common.close')}</Button>
+      ) : undefined}
       destroyOnHidden
     >
       <Form layout="vertical">
         <Form.Item
-          help={<span style={{ fontSize: 12 }}>{t('common.authConfig.hint')}</span>}
+          help={(
+            <span style={{ fontSize: 12 }}>
+              {t(readOnly ? 'common.authConfig.viewHint' : 'common.authConfig.hint')}
+            </span>
+          )}
           style={{ marginBottom: 0 }}
         >
           <JsonEditor
             value={value && Object.keys(value).length > 0 ? value : undefined}
             height={320}
+            readOnly={readOnly}
             onChange={(next, isValid) => {
               setValue(
                 next && typeof next === 'object' && !Array.isArray(next)

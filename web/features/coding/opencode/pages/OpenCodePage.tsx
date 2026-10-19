@@ -2159,6 +2159,14 @@ const OpenCodePage: React.FC = () => {
   const defaultProviderId = resolveOpenCodeDefaultProviderId(config?.model);
 
   /**
+   * V2 keeps credentials in `opencode.db`, so `auth.json` becomes a view-only
+   * copy: editing it would be silently ignored by the runtime. Hold the
+   * read-only state until the mode probe finishes, same as the page-top V2
+   * line, so the modal never opens editable for a V2 user.
+   */
+  const authConfigReadOnly = !v2MigrationLoading && v2MigrationEnabled;
+
+  /**
    * One provider's card props, for both layouts.
    *
    * The grid cell and the list card render the *same* object — the cell is a
@@ -2679,7 +2687,10 @@ const OpenCodePage: React.FC = () => {
                           <SafetyCertificateOutlined style={{ marginRight: 8 }} />
                           {t('opencode.official.title')}
                         </Text>
-                        <Tooltip title={t('opencode.official.openConfigHint')}>
+                        <Tooltip title={t(authConfigReadOnly
+                          ? 'opencode.official.openConfigHintReadOnly'
+                          : 'opencode.official.openConfigHint')}
+                        >
                           <Button
                             type="link"
                             size="small"
@@ -2703,13 +2714,15 @@ const OpenCodePage: React.FC = () => {
                             warning rather than a second sentence. */}
                         <div style={{ marginBottom: 12 }}>
                           <Text type="secondary" style={{ fontSize: 12 }}>
-                            {t('opencode.official.description')}
+                            {t(authConfigReadOnly
+                              ? 'opencode.official.descriptionReadOnly'
+                              : 'opencode.official.description')}
                           </Text>
                           {/* Same condition as the page-top V2 state line:
                               the note is only meaningful while migration is
                               on, and the loading guard keeps it from appearing
                               mid-toggle before the mode is confirmed. */}
-                          {!v2MigrationLoading && v2MigrationEnabled && (
+                          {authConfigReadOnly && (
                             <div style={{ marginTop: 4 }}>
                               <Text type="secondary" style={{ fontSize: 12 }}>
                                 {t('opencode.official.v2AuthHint')}
@@ -2925,6 +2938,7 @@ const OpenCodePage: React.FC = () => {
               open={authModalOpen}
               content={authContent}
               path={authConfigPath}
+              readOnly={authConfigReadOnly}
               onSave={async (submitted, original) => {
                 await saveOpenCodeAuthConfig(submitted, original);
               }}

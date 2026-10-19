@@ -1865,7 +1865,9 @@
       "hint": "Engine credential file (contains plaintext keys). Changes apply immediately; removing a channel entry deletes its credential.",
       "path": "File location: {{path}}",
       "openHint": "View and edit auth.json in the app",
-      "unparseableBlocked": "The file failed to parse and the editor is empty; saving would wipe the credentials file, so it was blocked"
+      "unparseableBlocked": "The file failed to parse and the editor is empty; saving would wipe the credentials file, so it was blocked",
+      "viewTitle": "View auth.json",
+      "viewHint": "Engine credential file (contains plaintext keys). Read-only mode; viewing only."
     },
     "jsonInvalid": "Invalid JSON",
     "cliExtensions": {
@@ -2663,7 +2665,9 @@
       "contextLimit": "Context Limit",
       "outputLimit": "Output Limit",
       "openConfigHint": "View and edit auth.json in the app",
-      "v2AuthHint": "OpenCode V2 moved credentials into opencode.db; the channel list here reads both stores. Run opencode auth login in a terminal to add or change credentials — editing auth.json alone does not affect the V2 runtime."
+      "v2AuthHint": "OpenCode V2 moved credentials into opencode.db; the channel list here reads both stores. Run opencode auth login in a terminal to add or change credentials — auth.json is view-only under V2.",
+      "descriptionReadOnly": "The following channels come from OpenCode official Auth authentication. The model list is read-only; view credentials via the auth.json button above (read-only in V2).",
+      "openConfigHintReadOnly": "View auth.json in the app (read-only in V2)"
     },
     "agentSettings": {
       "title": "Agent Models",

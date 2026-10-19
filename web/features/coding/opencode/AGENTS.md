@@ -23,7 +23,7 @@
 
 - 页面把“路径管理”与“配置内容”分开：路径通过 `ConfigPathModal` 管理，配置内容单独读取和保存，避免把文件定位和文件内容混在同一表单里。
 - 预览配置使用文件 Tab 模式：主配置文件与 `auth.json` 分开展示，由 `getOpenCodePreview()` 获取原始内容。
-- 官方认证渠道列表在 V2 模式（`v2MigrationEnabled`）下会额外读取 `opencode.db` 的 `credential` 表，并在卡片顶部提示用户用 `opencode auth login` 新增凭据；`auth.json` 编辑器只写文件，不影响 V2 运行时。
+- 官方认证渠道列表在 V2 模式（`v2MigrationEnabled`）下会额外读取 `opencode.db` 的 `credential` 表，并在卡片顶部提示用户用 `opencode auth login` 新增凭据。**V2 下 `auth.json` 是只读的**：凭据由 `opencode.db` 管理，编辑 `auth.json` 不会影响运行时，所以 `AuthConfigModal` 传 `readOnly`（隐藏保存、编辑器只读、标题/说明改用 `common.authConfig.view*`），区块文案与 `auth.json` 按钮的 Tooltip 也切换为 `opencode.official.descriptionReadOnly` / `openConfigHintReadOnly`。三者用同一个 `authConfigReadOnly = !v2MigrationLoading && v2MigrationEnabled`，与页头 V2 状态行同条件——V1 下仍可编辑（2026-10-07 的用户要求）。
 - `ConfigPathModal` 只在 `source === custom` 时回填输入框，避免把 env/default/shell 的当前生效路径误当成用户显式保存的自定义路径。
 - 托盘刷新不是自动 effect 全程接管，很多用户动作后需要显式 `refreshTrayMenu()`，否则托盘和页面状态会分叉。
 - 模型刷新走受限频率的显式操作，而不是每次页面操作都重抓远端模型，避免无谓请求和体验噪音。
