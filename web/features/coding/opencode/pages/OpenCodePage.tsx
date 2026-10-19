@@ -1,5 +1,5 @@
 import React from 'react';
-import { Alert, Button, Empty, Space, Typography, message, Spin, Select, Collapse, Form, Tooltip, Modal } from 'antd';
+import { Button, Empty, Space, Typography, message, Spin, Select, Collapse, Form, Tooltip, Modal } from 'antd';
 import {
   CloudSyncOutlined,
   FileOutlined,
@@ -2697,19 +2697,22 @@ const OpenCodePage: React.FC = () => {
                     ),
                     children: (
                       <div>
+                        {/* Both lines are plain secondary text: the V2 note
+                            explains the same block as the description above
+                            it, so an info Alert made it read like a separate
+                            warning rather than a second sentence. */}
                         <div style={{ marginBottom: 12 }}>
                           <Text type="secondary" style={{ fontSize: 12 }}>
                             {t('opencode.official.description')}
                           </Text>
+                          {v2MigrationEnabled && (
+                            <div style={{ marginTop: 4 }}>
+                              <Text type="secondary" style={{ fontSize: 12 }}>
+                                {t('opencode.official.v2AuthHint')}
+                              </Text>
+                            </div>
+                          )}
                         </div>
-                        {v2MigrationEnabled && (
-                          <Alert
-                            type="info"
-                            showIcon
-                            style={{ marginBottom: 12 }}
-                            title={t('opencode.official.v2AuthHint')}
-                          />
-                        )}
                         {authProvidersData ? (
                           authProvidersData.standaloneProviders.length > 0 ? (
                             authProvidersData.standaloneProviders.map((provider) => (
