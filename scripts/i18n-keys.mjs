@@ -73,9 +73,6 @@ const DEFAULT_DYNAMIC_IDENTIFIER_VALUES_BY_FILE = {
   'web/components/common/ProviderCard/index.tsx': {
     i18nPrefix: ['opencode', 'openclaw'],
   },
-  'web/components/common/ProviderFormModal/index.tsx': {
-    i18nPrefix: ['settings', 'opencode'],
-  },
   'web/features/coding/shared/prompt/GlobalPromptConfigCard.tsx': {
     translationKeyPrefix: ['claudecode.prompt', 'codex.prompt', 'geminicli.prompt', 'opencode.prompt'],
   },

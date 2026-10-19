@@ -1,19 +1,10 @@
 import React from 'react';
 import { Alert, Button, Empty, Space, Typography, message, Spin, Select, Collapse, Form, Tooltip, Modal } from 'antd';
 import {
-  PlusOutlined,
-  FolderOpenOutlined,
-  LinkOutlined,
-  EyeOutlined,
-  EllipsisOutlined,
-  EditOutlined,
-  CloudDownloadOutlined,
   CloudSyncOutlined,
-  ReloadOutlined,
   FileOutlined,
   ImportOutlined,
   ApiOutlined,
-  DeleteOutlined,
   CloseOutlined,
   SafetyCertificateOutlined,
   RobotOutlined,
@@ -22,11 +13,10 @@ import {
   ThunderboltOutlined,
   FileTextOutlined,
   MessageOutlined,
-  CheckSquareOutlined,
 } from '@ant-design/icons';
 
 import { useTranslation } from 'react-i18next';
-import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener';
+import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import {
@@ -40,11 +30,12 @@ import {
 } from '@dnd-kit/core';
 import {
   arrayMove,
+  rectSortingStrategy,
   SortableContext,
   sortableKeyboardCoordinates,
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
-import { restrictToVerticalAxis } from '@dnd-kit/modifiers';
+import { restrictToVerticalAxis, restrictToWindowEdges } from '@dnd-kit/modifiers';
 import { useProviderSharing } from '@/features/coding/shared/providerShare';
 import { readOpenCodeConfigWithResult, saveOpenCodeConfig, getOpenCodeConfigPathInfo, getOpenCodeV2ConfigMode, setOpenCodeV2ConfigMode, getOpenCodeUnifiedModels, getOpenCodeAuthProviders, getOpenCodeAuthConfigPath, getOpenCodePreview, saveOpenCodeAuthConfig, listFavoriteProviders, upsertFavoriteProvider, deleteFavoriteProvider, buildModelVariantsMap, getOpenCodeFreeModels, type ConfigPathInfo, type UnifiedModelOption, type GetAuthProvidersResponse, type OpenCodeFavoriteProvider, type OpenCodeDiagnosticsConfig, type OpenCodePreviewData, type ReadConfigResult } from '@/services/opencodeApi';
 import { listOhMyOpenAgentConfigs, applyOhMyOpenAgentConfig } from '@/services/ohMyOpenAgentApi';
@@ -59,16 +50,10 @@ import {
   type PresetModel,
 } from '@/constants/presetModels';
 import { TRAY_CONFIG_REFRESH_EVENT } from '@/constants/configEvents';
-import type {
-  ProviderDisplayData,
-  ModelDisplayData,
-  OfficialModelDisplayData,
-  ProviderConnectivityStatusItem,
-} from '@/components/common/ProviderCard/types';
-import ProviderCard from '@/components/common/ProviderCard';
+import type { ProviderConnectivityStatusItem } from '@/components/common/ProviderCard/types';
 import OfficialProviderCard from '@/components/common/OfficialProviderCard';
-import ProviderFormModal from '@/components/common/ProviderFormModal';
-import type { ProviderFormValues } from '@/components/common/ProviderFormModal';
+import OpenCodeProviderFormModal from '../components/OpenCodeProviderFormModal';
+import type { OpenCodeProviderFormValues } from '../components/OpenCodeProviderFormModal';
 import ModelFormModal from '@/components/common/ModelFormModal';
 import type { ModelFormValues } from '@/components/common/ModelFormModal';
 import FetchModelsModal from '@/components/common/FetchModelsModal';
@@ -144,20 +129,22 @@ import { SessionManagerPanel } from '@/features/coding/shared/sessionManager';
 import {
   PROVIDER_SORT_MODES_BASIC,
   backupProvidersBeforeDelete,
-  ProviderBatchToolbar,
-  ProviderSearchEmpty,
-  ProviderSearchInput,
-  ProviderSortDropdown,
   filterProviderItems,
-  sortProviderItems,
   useProviderBatchSelection,
+  useProviderListViewPrefs,
   useProviderListSort,
+  sortProviderItems,
 } from '@/features/coding/shared/providerList';
+import { ProviderCardGrid } from '@/features/coding/shared/providerCardView';
+import ProviderListSection from '@/features/coding/shared/ProviderListSection';
+import CodingPageHeader from '@/features/coding/shared/CodingPageHeader';
+import OpenCodeProviderCard from '../components/OpenCodeProviderCard';
+import { resolveOpenCodeDefaultProviderId } from '../utils/providerCardMapping';
 
 import styles from './OpenCodePage.module.less';
 import { LOCAL_CONFIG_ID } from '../../shared/localConfig';
 
-const { Title, Text, Link } = Typography;
+const { Title, Text } = Typography;
 
 const isOhMyOpenAgentPlugin = (pluginName: string): boolean => {
   const baseName = getOpenCodePluginPackageName(pluginName);
@@ -171,7 +158,7 @@ const isMagicContextPlugin = (pluginName: string): boolean => (
   getOpenCodePluginPackageName(pluginName) === '@cortexkit/opencode-magic-context'
 );
 
-const buildManagedProviderOptions = (values: ProviderFormValues): OpenCodeProvider['options'] => {
+const buildManagedProviderOptions = (values: OpenCodeProviderFormValues): OpenCodeProvider['options'] => {
   const nextOptions: Record<string, unknown> = {
     ...(values.extraOptions ?? {}),
   };
@@ -228,22 +215,6 @@ const buildManagedModelLimit = (
 
   return nextLimit;
 };
-
-// Helper function to convert OpenCodeProvider to ProviderDisplayData
-const toProviderDisplayData = (id: string, provider: OpenCodeProvider): ProviderDisplayData => ({
-  id,
-  name: provider.name || id,
-  sdkName: provider.npm || '@ai-sdk/openai-compatible',
-  baseUrl: provider.options?.baseURL || '',
-});
-
-// Helper function to convert OpenCodeModel to ModelDisplayData
-const toModelDisplayData = (id: string, model: OpenCodeModel): ModelDisplayData => ({
-  id,
-  name: model.name || id,
-  contextLimit: model.limit?.context,
-  outputLimit: model.limit?.output,
-});
 
 // Helper function to reorder object entries and return a new object
 const reorderObject = <T,>(obj: Record<string, T>, newOrder: string[]): Record<string, T> => {
@@ -357,7 +328,11 @@ const OpenCodePage: React.FC = () => {
   const [previewData, setPreviewDataLocal] = React.useState<OpenCodePreviewData | null>(null);
   const [settingsModalOpen, setSettingsModalOpen] = React.useState(false);
   const [v2MigrationEnabled, setV2MigrationEnabled] = React.useState(false);
-  const [v2MigrationLoading, setV2MigrationLoading] = React.useState(false);
+  // Starts true: the mode is probed asynchronously after mount, and a false
+  // start paints the "migration is off" banner for one frame on every load —
+  // V2 users would see the V1 advice flash before it disappears. It also keeps
+  // 「自定义配置目录」 disabled until the real mode is known.
+  const [v2MigrationLoading, setV2MigrationLoading] = React.useState(true);
   const [v2HintDismissed, setV2HintDismissed] = React.useState(() => {
     try {
       return localStorage.getItem(OPENCODE_V2_HINT_DISMISSED_KEY) === '1';
@@ -370,7 +345,7 @@ const OpenCodePage: React.FC = () => {
   // Provider modal state
   const [providerModalOpen, setProviderModalOpen] = React.useState(false);
   const [currentProviderId, setCurrentProviderId] = React.useState<string>('');
-  const [providerInitialValues, setProviderInitialValues] = React.useState<Partial<ProviderFormValues> | undefined>();
+  const [providerInitialValues, setProviderInitialValues] = React.useState<Partial<OpenCodeProviderFormValues> | undefined>();
   const [baseProviderSnapshot, setBaseProviderSnapshot] = React.useState<OpenCodeProvider | null>(null);
 
   // Model modal state
@@ -434,6 +409,7 @@ const OpenCodePage: React.FC = () => {
       coordinateGetter: sortableKeyboardCoordinates,
     })
   );
+  const { viewMode, setViewMode } = useProviderListViewPrefs('opencode');
 
   const handleSidebarSelect = React.useCallback((id: string) => {
     // Keep expand logic local to this page.
@@ -1027,15 +1003,18 @@ const OpenCodePage: React.FC = () => {
     [existingProviderIds],
   );
 
-  const handleToggleProviderDisabled = async (providerId: string) => {
+  const handleToggleProviderDisabled = async (providerId: string, enabled: boolean) => {
     if (!config) return;
 
+    // The shared switch hands over the **new enabled state**; deriving it from
+    // the current list here would write back the value the switch already
+    // moved away from (the switch then looks alive but does nothing).
     const current = config.disabled_providers ?? [];
     const nextSet = new Set(current);
-    if (nextSet.has(providerId)) {
-      nextSet.delete(providerId); // enable
+    if (enabled) {
+      nextSet.delete(providerId);
     } else {
-      nextSet.add(providerId); // disable
+      nextSet.add(providerId);
     }
 
     const nextArr = Array.from(nextSet);
@@ -1144,7 +1123,7 @@ const OpenCodePage: React.FC = () => {
     // Determine filter mode: use blacklist mode only if blacklist has items,
     // otherwise use whitelist mode (even if both arrays exist but blacklist is empty)
     const hasBlacklistItems = (provider.blacklist?.length ?? 0) > 0;
-    const initialVals: Partial<ProviderFormValues> = {
+    const initialVals: Partial<OpenCodeProviderFormValues> = {
       id: providerId,
       name: provider.name,
       sdkType: provider.npm || '@ai-sdk/openai-compatible',
@@ -1242,7 +1221,7 @@ const OpenCodePage: React.FC = () => {
     }
   };
 
-  const handleProviderSuccess = async (values: ProviderFormValues) => {
+  const handleProviderSuccess = async (values: OpenCodeProviderFormValues) => {
     if (!config) return;
 
     const filterMode = values.filterMode || 'whitelist';
@@ -1440,16 +1419,11 @@ const OpenCodePage: React.FC = () => {
     });
   };
 
-  const handleBatchDeleteModels = async (providerId: string) => {
+  const performBatchDeleteModels = async (providerId: string, selectedModelIds: string[]) => {
     if (!config) return;
 
     const provider = config.provider[providerId];
     if (!provider) return;
-
-    const selectedModelIds = selectedModelIdsByProvider[providerId] ?? [];
-    if (selectedModelIds.length === 0) {
-      return;
-    }
 
     const nextModels = { ...provider.models };
     for (const modelId of selectedModelIds) {
@@ -1485,6 +1459,32 @@ const OpenCodePage: React.FC = () => {
     await refreshTrayMenu();
     incrementOpenCodeConfigRefresh();
     clearBatchDeleteState(providerId);
+  };
+
+  const handleBatchDeleteModels = async (providerId: string) => {
+    if (!config) return;
+
+    const provider = config.provider[providerId];
+    if (!provider) return;
+
+    const selectedModelIds = selectedModelIdsByProvider[providerId] ?? [];
+    if (selectedModelIds.length === 0) {
+      return;
+    }
+
+    // The shared model toolbar calls this handler directly, so the confirmation
+    // lives here rather than in the card (it used to be built in the page's JSX
+    // around the old card). The modal resolves asynchronously; the rest of the
+    // deletion runs from its `onOk`.
+    Modal.confirm({
+      title: t('common.model.batchDeleteConfirmTitle'),
+      content: t('common.model.batchDeleteConfirmContent', { count: selectedModelIds.length }),
+      okText: t('common.confirm'),
+      cancelText: t('common.cancel'),
+      onOk: async () => {
+        await performBatchDeleteModels(providerId, selectedModelIds);
+      },
+    });
   };
 
   const handleModelSuccess = async (values: ModelFormValues) => {
@@ -2150,6 +2150,87 @@ const OpenCodePage: React.FC = () => {
     }
   };
 
+  /**
+   * The provider that owns the global default model, which is what the list's
+   * "定位" action scrolls to. `''` (rather than `undefined`) keeps the button
+   * visible so it can explain that nothing is applied instead of silently
+   * disappearing.
+   */
+  const defaultProviderId = resolveOpenCodeDefaultProviderId(config?.model);
+
+  /**
+   * One provider's card props, for both layouts.
+   *
+   * The grid cell and the list card render the *same* object — the cell is a
+   * presentation of this provider, not a second reading of it, so the buttons
+   * they offer cannot drift apart. The layout only adds `viewMode`.
+   */
+  const openCodeProviderCardProps = (providerId: string, provider: OpenCodeProvider) => {
+    const npm = provider.npm || '@ai-sdk/openai-compatible';
+    const isAuthReady = Boolean(
+      resolvedAuthProviderIds.has(providerId)
+      || (provider.options?.baseURL?.trim() && provider.options?.apiKey?.trim()),
+    );
+    const isConnectivitySupported = SUPPORTED_PROVIDER_NPMS.has(npm);
+    const missingCredentialsHint = t('opencode.provider.completeUrlAndKey');
+
+    return {
+      providerId,
+      provider,
+      defaultModelReference,
+      dragDisabled: providerDragDisabled,
+      selectable: providerBatch.selectionMode && providerBatch.isSelectable(providerId),
+      selected: providerBatch.selectedIds.has(providerId),
+      onSelectChange: (selected: boolean) => providerBatch.toggleSelect(providerId, selected),
+      connectivityStatus: connectivityStatuses[providerId],
+      isDisabled: disabledProviderIds.has(providerId),
+      onToggleDisabled: (enabled: boolean) => {
+        void handleToggleProviderDisabled(providerId, enabled);
+      },
+      onEdit: () => handleEditProvider(providerId),
+      onCopy: () => handleCopyProvider(providerId),
+      onShare: () => shareProvider({
+        id: providerId,
+        name: provider.name || providerId,
+        category: 'custom',
+        settingsConfig: JSON.stringify(provider),
+        defaultModel: defaultModelReference?.providerId === providerId
+          ? defaultModelReference.modelId
+          : undefined,
+      }),
+      onDelete: () => void handleDeleteProvider(providerId),
+      // The channel that carries `config.model` cannot be deleted: doing so
+      // would leave the global default pointing into a missing provider.
+      deleteDisabledReason: providerId === defaultProviderId
+        ? t('opencode.provider.deleteDisabledDefault')
+        : undefined,
+      officialModels: authProvidersData?.mergedModels?.[providerId],
+
+      onAddModel: () => handleAddModel(providerId),
+      onEditModel: (modelId: string) => handleEditModel(providerId, modelId),
+      onCopyModel: (modelId: string) => handleCopyModel(providerId, modelId),
+      onDeleteModel: (modelId: string) => void handleDeleteModel(providerId, modelId),
+      onSetPrimaryModel: (modelId: string) => void handleSetPrimaryModel(providerId, modelId),
+      onReorderModels: (modelIds: string[]) => void handleReorderModels(providerId, modelIds),
+      modelSelectionMode: batchDeleteProviderId === providerId,
+      selectedModelIds: selectedModelIdsByProvider[providerId] ?? [],
+      onToggleModelSelection: (modelId: string, selected: boolean) => (
+        handleToggleModelSelection(providerId, modelId, selected)
+      ),
+      onToggleBatchDeleteMode: () => handleToggleBatchDeleteMode(providerId),
+      onBatchDeleteModels: () => void handleBatchDeleteModels(providerId),
+
+      onTestModels: () => handleOpenConnectivityTest(providerId),
+      testModelsDisabled: !isConnectivitySupported || !isAuthReady,
+      testModelsDisabledTooltip: !isConnectivitySupported
+        ? t('opencode.connectivity.unsupportedNpm', { npm })
+        : missingCredentialsHint,
+      onFetchModels: () => handleOpenFetchModels(providerId),
+      fetchDisabled: !isAuthReady,
+      fetchDisabledTooltip: missingCredentialsHint,
+    };
+  };
+
   return (
     <div>
       {/* If parse error exists, only show the error alert */}
@@ -2180,97 +2261,80 @@ const OpenCodePage: React.FC = () => {
           onSectionSelect={handleSidebarSelect}
         >
           <div className={styles.opencodePageContent}>
-            <div style={{ marginBottom: 16, order: 0 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                <div>
-                  <div style={{ marginBottom: 8 }}>
-                    <Title level={4} style={{ margin: 0, display: 'inline-block', marginRight: 8 }}>
-                      {t('opencode.title')}
-                    </Title>
-                    <Link
-                      type="secondary"
-                      style={{ fontSize: 12 }}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        openUrl('https://opencode.ai/docs/config/#format');
-                      }}
-                    >
-                      <LinkOutlined /> {t('opencode.viewDocs')}
-                    </Link>
-                    <Link
-                      type="secondary"
-                      style={{ fontSize: 12, marginLeft: 16 }}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handlePreviewConfig();
-                      }}
-                    >
-                      <EyeOutlined /> {t('common.previewConfig')}
-                    </Link>
-                  </div>
-                  <Space>
-                    <Text type="secondary" style={{ fontSize: 12 }}>
-                      {t('opencode.configPath')}:
-                    </Text>
-                    <Text code style={{ fontSize: 12 }}>
-                      {configPathInfo?.path}
-                    </Text>
-                    <Button
-                      type="text"
-                      size="small"
-                      icon={<EditOutlined />}
-                      onClick={() => setPathModalOpen(true)}
-                      disabled={v2MigrationEnabled || v2MigrationLoading}
-                      style={{ padding: 0, fontSize: 12 }}
-                    >
-                      {t('opencode.configPathSource.customize')}
-                    </Button>
-                    <Button
-                      type="text"
-                      size="small"
-                      icon={<FolderOpenOutlined />}
-                      onClick={handleOpenConfigFolder}
-                      style={{ padding: 0, fontSize: 12 }}
-                    >
-                      {t('opencode.openFolder')}
-                    </Button>
-                    <Button
-                      type="text"
-                      size="small"
-                      icon={<ReloadOutlined />}
-                      onClick={() => {
-                        loadConfig(true);
-                        incrementOpenCodeConfigRefresh();
-                        incrementOmoConfigRefresh();
-                        incrementOmosConfigRefresh();
-                        refreshTrayMenu();
-                      }}
-                      style={{ padding: 0, fontSize: 12 }}
-                    >
-                      {t('opencode.refreshConfig')}
-                    </Button>
-                    <Button
-                      type="text"
-                      size="small"
-                      icon={<CloudSyncOutlined />}
-                      onClick={handleRefreshModelsCache}
-                      loading={refreshingModels}
-                      style={{ padding: 0, fontSize: 12 }}
-                    >
-                      {t('opencode.syncModels')}
-                    </Button>
-                  </Space>
-                </div>
-                <Space>
-                  <Button type="text" icon={<EllipsisOutlined />} onClick={() => setSettingsModalOpen(true)}>
-                    {t('common.moreOptions')}
+            {/*
+             * The page hint stays under the header instead of moving into
+             * `ProviderListSection.hint`: this text describes how the whole
+             * page reads and writes the config file, not the provider list.
+             * `CodingPageHeader` already brings a 16px bottom margin, so the
+             * hint pulls itself back up to the old 4px gap and the wrapper
+             * supplies the 16px before the next section.
+             */}
+            <div style={{ order: 0, marginBottom: 16 }}>
+              <CodingPageHeader
+                title={t('opencode.title')}
+                docsUrl="https://opencode.ai/docs/config/#format"
+                configPath={configPathInfo?.path || '~/.config/opencode/opencode.json'}
+                onPreviewConfig={() => void handlePreviewConfig()}
+                onCustomizeConfig={() => setPathModalOpen(true)}
+                // The V2 migration owns the config file location; moving it
+                // mid-migration would leave the switch pointing at another file.
+                customizeConfigDisabled={v2MigrationEnabled || v2MigrationLoading}
+                customizeConfigDisabledReason={t('opencode.v2Migration.customizeDisabledReason')}
+                onOpenFolder={handleOpenConfigFolder}
+                onRefresh={() => {
+                  loadConfig(true);
+                  incrementOpenCodeConfigRefresh();
+                  incrementOmoConfigRefresh();
+                  incrementOmosConfigRefresh();
+                  refreshTrayMenu();
+                }}
+                onMoreOptions={() => setSettingsModalOpen(true)}
+                extraActions={(
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<CloudSyncOutlined />}
+                    onClick={handleRefreshModelsCache}
+                    loading={refreshingModels}
+                    style={{ padding: 0, fontSize: 12 }}
+                  >
+                    {t('opencode.syncModels')}
                   </Button>
-                </Space>
-              </div>
-              <div style={{ fontSize: 12, color: 'var(--color-text-secondary)', borderLeft: '2px solid var(--color-border)', paddingLeft: 8, marginTop: 4 }}>
+                )}
+              />
+              {/* The hint + V2 state are one block: both state how the page
+                  treats the config file. The V2 line has two forms, and the
+                  enabled one is not optional — a page that only explains the
+                  migration while it is OFF leaves a V2 user with no way to
+                  tell whether the switch took effect. The disabled banner is
+                  dismissible; the enabled line is a state statement, so it
+                  stays. Neither renders while the mode is still loading, or
+                  the banner flashes on every mount for V2 users. */}
+              <div
+                style={{
+                  fontSize: 12,
+                  color: 'var(--color-text-secondary)',
+                  borderLeft: '2px solid var(--color-border)',
+                  paddingLeft: 8,
+                  marginTop: -12,
+                }}
+              >
                 <div>{t('opencode.pageHint')}</div>
-                {!v2MigrationEnabled && !v2HintDismissed && (
-                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginTop: 4, lineHeight: 1.5 }}>
+                {!v2MigrationLoading && v2MigrationEnabled && (
+                  <div style={{ marginTop: 4, lineHeight: 1.5 }}>
+                    {t('opencode.v2Migration.activeHint')}
+                  </div>
+                )}
+                {!v2MigrationLoading && !v2MigrationEnabled && !v2HintDismissed && (
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'flex-start',
+                      gap: 8,
+                      marginTop: 4,
+                      lineHeight: 1.5,
+                    }}
+                  >
                     <span style={{ flex: 1 }}>{t('opencode.v2Migration.banner')}</span>
                     <Button
                       type="text"
@@ -2484,274 +2548,91 @@ const OpenCodePage: React.FC = () => {
 
 
             <div
-              id="opencode-providers"
               className={styles.opencodeSection}
               data-opencode-sidebar-section="true"
-              data-sidebar-title={t('opencode.provider.title')}
+              data-sidebar-title={t('common.provider.title')}
               data-sidebar-order={6}
               style={{ order: 6 }}
             >
-              <Collapse
-                className={styles.collapseCard}
-                activeKey={providerListCollapsed ? [] : ['providers']}
-                onChange={(keys) => setProviderListCollapsed(!keys.includes('providers'))}
-                items={[
-                  {
-                    key: 'providers',
-                    label: (
-                      <Text strong><DatabaseOutlined style={{ marginRight: 8 }} />{t('opencode.provider.title')}</Text>
-                    ),
-                    extra: (
-                      <Space size={4} wrap>
-                        <Button
-                          type="link"
-                          size="small"
-                          style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4 }}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (providerBatch.selectionMode) {
-                              providerBatch.exitSelection();
-                            } else {
-                              providerBatch.enterSelection();
-                            }
-                          }}
-                        >
-                          <CheckSquareOutlined style={{ fontSize: 13, lineHeight: 1 }} />
-                          <span>
-                            {providerBatch.selectionMode
-                              ? t('common.batch.exit')
-                              : t('common.batch.manage')}
-                          </span>
-                        </Button>
-                        {providerBatch.selectionMode && (
-                          <ProviderBatchToolbar
-                            hasSelection={providerBatch.hasSelection}
-                            visibleCount={batchSelectableIds.length}
-                            isAllSelected={providerBatch.isAllSelected}
-                            indeterminate={providerBatch.indeterminate}
-                            onSelectAll={providerBatch.selectAllFiltered}
-                            onBatchDelete={providerBatch.batchDelete}
-                            disabled={loading}
+              <ProviderListSection
+                sectionId="opencode-providers"
+                collapsed={providerListCollapsed}
+                onCollapsedChange={setProviderListCollapsed}
+                loading={loading}
+                providerCount={providerEntries.length}
+                visibleCount={visibleProviderEntries.length}
+                batch={providerBatch}
+                batchSelectableIds={batchSelectableIds}
+                keyword={providerKeyword}
+                onKeywordChange={setProviderKeyword}
+                sortMode={sortMode}
+                sortModes={PROVIDER_SORT_MODES_BASIC}
+                onSortModeChange={setSortMode}
+                dragDisabledBySort={sortMode !== 'custom'}
+                locateProviderId={defaultProviderId}
+                viewMode={viewMode}
+                onViewModeChange={setViewMode}
+                onBatchTest={handleBatchTestProviders}
+                batchTesting={batchTestingProviders}
+                onAddProvider={handleAddProvider}
+                footer={(
+                  <Space wrap>
+                    <Button
+                      type="dashed"
+                      icon={<ImportOutlined />}
+                      onClick={() => setImportModalOpen(true)}
+                    >
+                      {t('opencode.provider.importFavorite')}
+                    </Button>
+                    {allApiHubAvailable && (
+                      <Button
+                        type="dashed"
+                        icon={<AllApiHubIcon />}
+                        onClick={() => setAllApiHubImportModalOpen(true)}
+                      >
+                        {t('opencode.provider.importAllApiHub')}
+                      </Button>
+                    )}
+                  </Space>
+                )}
+              >
+                <DndContext
+                  sensors={providerBatchDragDisabled ? [] : sensors}
+                  collisionDetection={closestCenter}
+                  // One context serves both layouts; only the drag axis and the
+                  // sorting strategy change with the view, so the two can never
+                  // disagree about when dragging is disabled.
+                  modifiers={[viewMode === 'card' ? restrictToWindowEdges : restrictToVerticalAxis]}
+                  onDragEnd={handleProviderDragEnd}
+                >
+                  <SortableContext
+                    items={providerEntries.map(([id]) => id)}
+                    strategy={viewMode === 'card' ? rectSortingStrategy : verticalListSortingStrategy}
+                  >
+                    {viewMode === 'card' ? (
+                      <ProviderCardGrid
+                        items={visibleProviderEntries}
+                        getKey={([providerId]) => providerId}
+                        renderItem={([providerId, provider]) => (
+                          <OpenCodeProviderCard
+                            {...openCodeProviderCardProps(providerId, provider)}
+                            viewMode="card"
                           />
                         )}
-                        <ProviderSearchInput value={providerKeyword} onChange={setProviderKeyword} />
-                        <ProviderSortDropdown
-                          mode={sortMode}
-                          modes={PROVIDER_SORT_MODES_BASIC}
-                          onChange={setSortMode}
-                        />
-                        <Button
-                          type="link"
-                          size="small"
-                          style={{ fontSize: 12 }}
-                          icon={<ThunderboltOutlined />}
-                          loading={batchTestingProviders}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleBatchTestProviders();
-                          }}
-                        >
-                          {t('common.batchTest')}
-                        </Button>
-                        <Button
-                          type="link"
-                          size="small"
-                          style={{ fontSize: 12 }}
-                          icon={<PlusOutlined />}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleAddProvider();
-                          }}
-                        >
-                          {t('opencode.addProvider')}
-                        </Button>
-                      </Space>
-                    ),
-                    children: (
-                      <Spin spinning={loading}>
-                        {providerEntries.length === 0 ? (
-                          <Empty description={t('opencode.emptyText')} style={{ marginTop: 40 }} />
-                        ) : visibleProviderEntries.length === 0 ? (
-                          <ProviderSearchEmpty />
-                        ) : (
-                          <DndContext
-                            sensors={providerBatchDragDisabled ? [] : sensors}
-                            collisionDetection={closestCenter}
-                            modifiers={[restrictToVerticalAxis]}
-                            onDragEnd={handleProviderDragEnd}
-                          >
-                            <SortableContext
-                              items={providerEntries.map(([id]) => id)}
-                              strategy={verticalListSortingStrategy}
-                            >
-                              {visibleProviderEntries.map(([providerId, provider]) => {
-                                const providerNpm = provider.npm || '@ai-sdk/openai-compatible';
-                                const isBatchDeleteMode = batchDeleteProviderId === providerId;
-                                const selectedModelIds = selectedModelIdsByProvider[providerId] ?? [];
-                                const selectedModelCount = selectedModelIds.length;
-                                const isConnectivitySupported = SUPPORTED_PROVIDER_NPMS.has(providerNpm);
-                                const providerBaseUrl = provider.options?.baseURL?.trim() || '';
-                                const providerApiKey = provider.options?.apiKey?.trim() || '';
-                                const hasOfficialAuthFallback = resolvedAuthProviderIds.has(providerId);
-                                const isProviderAuthReady = Boolean(
-                                  hasOfficialAuthFallback || (providerBaseUrl && providerApiKey),
-                                );
-                                const connectivityTooltip = !isConnectivitySupported
-                                  ? t('opencode.connectivity.unsupportedNpm', { npm: providerNpm })
-                                  : !isProviderAuthReady
-                                    ? t('opencode.provider.completeUrlAndKey')
-                                    : '';
-                                const fetchModelsTooltip = !isProviderAuthReady
-                                  ? t('opencode.provider.completeUrlAndKey')
-                                  : '';
-                                const providerModels = provider.models ? Object.entries(provider.models).map(([modelId, model]) => ({
-                                  ...toModelDisplayData(modelId, model),
-                                  isPrimary: buildUnifiedModelId(providerId, modelId) === selectedMainModel,
-                                })) : [];
-                                // 该渠道承载着全局默认模型(config.model 形如 providerId/modelId)时，禁止删除整条渠道，但保留按钮并置灰提示。
-                                const isDefaultProviderChannel = selectedMainModel?.split('/')[0] === providerId;
-                                const deleteDisabledReason = isDefaultProviderChannel
-                                  ? t('opencode.provider.deleteDisabledDefault', { defaultValue: '该渠道已设为默认，不可删除' })
-                                  : undefined;
-                                return (
-                                  <ProviderCard
-                                    key={providerId}
-                                    provider={toProviderDisplayData(providerId, provider)}
-                                    models={providerModels}
-                                    officialModels={authProvidersData?.mergedModels?.[providerId]?.map((m): OfficialModelDisplayData => ({
-                                      id: m.id,
-                                      name: m.name,
-                                      isFree: m.isFree,
-                                      context: m.context,
-                                      output: m.output,
-                                      status: m.status,
-                                    }))}
-                                    draggable={!providerBatchDragDisabled}
-                                    sortableId={providerId}
-                                    onEdit={() => handleEditProvider(providerId)}
-                                    onCopy={() => handleCopyProvider(providerId)}
-                                    onShare={() => shareProvider({
-                                      id: providerId, name: provider.name || providerId, category: 'custom',
-                                      settingsConfig: JSON.stringify(provider),
-                                      defaultModel: defaultModelReference?.providerId === providerId ? defaultModelReference.modelId : undefined,
-                                    })}
-                                    onDelete={() => handleDeleteProvider(providerId)}
-                                    deleteDisabledReason={deleteDisabledReason}
-                                    selectable={providerBatch.selectionMode && providerBatch.isSelectable(providerId)}
-                                    selected={providerBatch.selectedIds.has(providerId)}
-                                    onSelectChange={(checked) =>
-                                      providerBatch.toggleSelect(providerId, checked)
-                                    }
-                                    isDisabled={disabledProviderIds.has(providerId)}
-                                    onToggleDisabled={() => handleToggleProviderDisabled(providerId)}
-                                    connectivityStatus={connectivityStatuses[providerId]}
-                                    extraActions={
-                                      <Space size={0}>
-                                        <Button
-                                          size="small"
-                                          type="text"
-                                          icon={<DeleteOutlined />}
-                                          style={{ fontSize: 12 }}
-                                          onClick={() => handleToggleBatchDeleteMode(providerId)}
-                                        >
-                                          {isBatchDeleteMode
-                                            ? t('opencode.model.cancelBatchDelete')
-                                            : t('opencode.model.batchDelete')}
-                                        </Button>
-                                        {isBatchDeleteMode && (
-                                          <Button
-                                            size="small"
-                                            type="text"
-                                            danger
-                                            style={{ fontSize: 12 }}
-                                            disabled={selectedModelCount === 0}
-                                            onClick={() => {
-                                              Modal.confirm({
-                                                title: t('common.model.batchDeleteConfirmTitle'),
-                                                content: t('common.model.batchDeleteConfirmContent', { count: selectedModelCount }),
-                                                okText: t('common.confirm'),
-                                                cancelText: t('common.cancel'),
-                                                onOk: async () => {
-                                                  await handleBatchDeleteModels(providerId);
-                                                },
-                                              });
-                                            }}
-                                          >
-                                            {t('opencode.model.deleteSelected', { count: selectedModelCount })}
-                                          </Button>
-                                        )}
-                                        <Tooltip title={connectivityTooltip}>
-                                          <span>
-                                            <Button
-                                              size="small"
-                                              type="text"
-                                              style={{ fontSize: 12 }}
-                                              onClick={() => handleOpenConnectivityTest(providerId)}
-                                              disabled={!isConnectivitySupported || !isProviderAuthReady}
-                                            >
-                                              <ApiOutlined style={{ marginRight: 4 }} />
-                                              {t('opencode.connectivity.button')}
-                                            </Button>
-                                          </span>
-                                        </Tooltip>
-                                        <Tooltip title={fetchModelsTooltip}>
-                                          <span>
-                                            <Button
-                                              size="small"
-                                              type="text"
-                                              style={{ fontSize: 12 }}
-                                              onClick={() => handleOpenFetchModels(providerId)}
-                                              disabled={!isProviderAuthReady}
-                                            >
-                                              <CloudDownloadOutlined style={{ marginRight: 4 }} />
-                                              {t('opencode.fetchModels.button')}
-                                            </Button>
-                                          </span>
-                                        </Tooltip>
-                                      </Space>
-                                    }
-
-                                    onAddModel={() => handleAddModel(providerId)}
-                                    onEditModel={(modelId) => handleEditModel(providerId, modelId)}
-                                    onCopyModel={(modelId) => handleCopyModel(providerId, modelId)}
-                                    onDeleteModel={(modelId) => handleDeleteModel(providerId, modelId)}
-                                    onSetPrimaryModel={(modelId) => handleSetPrimaryModel(providerId, modelId)}
-                                    modelSelectionMode={isBatchDeleteMode}
-                                    selectedModelIds={selectedModelIds}
-                                    onToggleModelSelection={(modelId, selected) => handleToggleModelSelection(providerId, modelId, selected)}
-                                    modelsDraggable={!isBatchDeleteMode}
-                                    onReorderModels={(modelIds) => handleReorderModels(providerId, modelIds)}
-                                  />
-                                );
-                              })}
-                            </SortableContext>
-                          </DndContext>
-                        )}
-                        <div style={{ marginTop: 12 }}>
-                          <Space wrap>
-                            <Button
-                              type="dashed"
-                              icon={<ImportOutlined />}
-                              onClick={() => setImportModalOpen(true)}
-                            >
-                              {t('opencode.provider.importFavorite')}
-                            </Button>
-                            {allApiHubAvailable && (
-                              <Button
-                                type="dashed"
-                                icon={<AllApiHubIcon />}
-                                onClick={() => setAllApiHubImportModalOpen(true)}
-                              >
-                                {t('opencode.provider.importAllApiHub')}
-                              </Button>
-                            )}
-                          </Space>
-                        </div>
-                      </Spin>
-                    ),
-                  },
-                ]}
-              />
+                      />
+                    ) : (
+                      <div>
+                        {visibleProviderEntries.map(([providerId, provider]) => (
+                          <OpenCodeProviderCard
+                            key={providerId}
+                            {...openCodeProviderCardProps(providerId, provider)}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </SortableContext>
+                </DndContext>
+              </ProviderListSection>
             </div>
 
             <div
@@ -2838,7 +2719,16 @@ const OpenCodePage: React.FC = () => {
                                 name={provider.name}
                                 models={provider.models}
                                 isDisabled={disabledProviderIds.has(provider.id)}
-                                onToggleDisabled={() => handleToggleProviderDisabled(provider.id)}
+                                onToggleDisabled={() => {
+                                  // The official card's switch is a plain
+                                  // no-arg toggle, so the next value is
+                                  // derived here — the one place that still
+                                  // needs to invert.
+                                  void handleToggleProviderDisabled(
+                                    provider.id,
+                                    !disabledProviderIds.has(provider.id),
+                                  );
+                                }}
                                 onShare={() => shareProvider({
                                   id: provider.id, name: provider.name, category: 'official', settingsConfig: '{}',
                                   defaultModel: defaultModelReference?.providerId === provider.id ? defaultModelReference.modelId : undefined,
@@ -2926,12 +2816,11 @@ const OpenCodePage: React.FC = () => {
               <SessionManagerPanel tool="opencode" expandNonce={sessionManagerExpandNonce} />
             </div>
 
-            <ProviderFormModal
+            <OpenCodeProviderFormModal
               open={providerModalOpen}
               isEdit={!!currentProviderId}
               initialValues={providerInitialValues}
               existingIds={currentProviderId ? [] : existingProviderIds}
-              apiKeyRequired={false}
               onCancel={() => {
                 setProviderModalOpen(false);
                 setProviderInitialValues(undefined);
@@ -2939,8 +2828,6 @@ const OpenCodePage: React.FC = () => {
               }}
               onSuccess={handleProviderSuccess}
               onDuplicateId={handleProviderDuplicateId}
-              headersOutputFormat="object"
-              showOpenCodeAdvanced={true}
               modelOptions={providerFilterOptions}
             />
 

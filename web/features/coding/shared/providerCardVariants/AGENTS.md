@@ -57,7 +57,7 @@
 - `features/coding/shared/providerConnectivity/ProviderConnectivityStatus`：连通性状态点。
 - `components/common/ProviderNameLink`、`components/common/SdkTag`：名称链接与 SDK 标签。
 - `features/coding/shared/providerCardView/`：紧凑卡片网格视图（同一批数据的另一种呈现密度，不是第四种样式）。共用 `cardChrome.ts`、`providerCardMenu.tsx` 与 `providerCardActions.tsx`；`ProviderCompactCard` 是它自己的 chrome 宿主，与 `CardShell` 同级。
-- 使用方：`claudecode`（Claude 式）、`codex` + `kimi`（Codex 式）、`zcode` + `omo_native`（OpenCode 式）。三种样式**均已落地**。
+- 使用方：`claudecode`（Claude 式）、`codex` + `kimi`（Codex 式）、`zcode` + `omo_native` + `opencode`（OpenCode 式）。三种样式**均已落地**。
 - 仍持 bespoke 卡片的三个（claudedesktop / geminicli / grok）已登记在 `scripts/verify-provider-card-layout.mjs` 的 `PENDING_MIGRATION` 里，只减不增。
 
 ## 迁移一个 CLI 的步骤

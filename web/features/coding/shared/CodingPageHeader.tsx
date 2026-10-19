@@ -1,5 +1,5 @@
 import React from 'react';
-import { Button, Space, Typography } from 'antd';
+import { Button, Space, Tooltip, Typography } from 'antd';
 import { useTranslation } from 'react-i18next';
 import {
   EditOutlined,
@@ -26,6 +26,13 @@ export interface CodingPageHeaderProps {
   /** Shows the "customize config dir" button when provided. */
   onCustomizeConfig?: () => void;
   customizeConfigDisabled?: boolean;
+  /**
+   * Why the customize button is disabled. A disabled antd button cannot show
+   * its own tooltip (the browser drops pointer events on it), so the wrapper
+   * below is what carries the explanation. Always pass it together with
+   * `customizeConfigDisabled`, otherwise the button just looks broken.
+   */
+  customizeConfigDisabledReason?: string;
   /** Shows the "open folder" button when provided. */
   onOpenFolder?: () => void;
   /** Shows the "refresh config" button when provided. */
@@ -56,6 +63,7 @@ const CodingPageHeader: React.FC<CodingPageHeaderProps> = ({
   configPath,
   onCustomizeConfig,
   customizeConfigDisabled,
+  customizeConfigDisabledReason,
   onOpenFolder,
   onRefresh,
   onMoreOptions,
@@ -104,16 +112,24 @@ const CodingPageHeader: React.FC<CodingPageHeaderProps> = ({
               {configPath}
             </Text>
             {onCustomizeConfig && (
-              <Button
-                type="text"
-                size="small"
-                icon={<EditOutlined />}
-                onClick={onCustomizeConfig}
-                disabled={customizeConfigDisabled}
-                style={textButtonStyle}
-              >
-                {t('common.customizeConfigDir')}
-              </Button>
+              // A disabled antd button stops emitting pointer events, so a
+              // Tooltip on the button itself never opens. The span keeps the
+              // hover target; without the tooltip the disabled state has no
+              // explanation on screen and reads as a broken button.
+              <Tooltip title={customizeConfigDisabled ? customizeConfigDisabledReason : undefined}>
+                <span>
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<EditOutlined />}
+                    onClick={onCustomizeConfig}
+                    disabled={customizeConfigDisabled}
+                    style={textButtonStyle}
+                  >
+                    {t('common.customizeConfigDir')}
+                  </Button>
+                </span>
+              </Tooltip>
             )}
             {onOpenFolder && (
               <Button

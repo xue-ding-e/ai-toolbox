@@ -30,9 +30,13 @@ test('i18n check expands known dynamic translation key helpers', async () => {
   const analysis = await i18nKeys.analyzeProject();
   const expandedKeys = new Set(analysis.expandedDynamicKeyUsages.map((usage) => usage.key));
 
-  assert.ok(expandedKeys.has('opencode.provider.id'));
-  assert.ok(expandedKeys.has('opencode.provider.baseUrlHint'));
-  assert.ok(expandedKeys.has('opencode.provider.name'));
+  // Static key builders are resolved at the call site and land in `usedKeys`,
+  // not in the dynamic expansion list — the OpenCode provider form is one.
+  // The expansion path itself is still exercised by the remaining caller of a
+  // per-prefix helper: `OfficialProviderCard`'s `${i18nPrefix}.official.*`.
+  assert.ok(expandedKeys.has('opencode.official.modelReadOnlyHint'));
+  assert.ok(expandedKeys.has('opencode.official.freeModel'));
+  assert.ok(expandedKeys.has('omoNative.official.noModels'));
 });
 
 test('i18n text lookup can find translation keys without reading full locale files', async () => {

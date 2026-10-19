@@ -80,6 +80,15 @@ export interface ProviderFormSectionsProps {
 
   notesRows?: number;
   notesResetKey: string;
+  /**
+   * Whether the notes section renders at all. Defaults to `true`.
+   *
+   * OpenCode's provider record has no `notes` field, so rendering the editor
+   * would collect text no save path stores — the "writes into a key nobody
+   * reads" failure the SOP calls out. A CLI whose storage does have notes
+   * leaves this unset.
+   */
+  showNotes?: boolean;
 }
 
 /**
@@ -118,6 +127,7 @@ const ProviderFormSections: React.FC<ProviderFormSectionsProps> = ({
   onModelServiceTiersChange,
   notesRows = 3,
   notesResetKey,
+  showNotes = true,
 }) => {
   const { t } = useTranslation();
 
@@ -161,14 +171,16 @@ const ProviderFormSections: React.FC<ProviderFormSectionsProps> = ({
         </Form.Item>
       )}
 
-      <Form.Item name="notes" wrapperCol={PROVIDER_SECTION_WRAPPER_COL}>
-        <ProviderNotesCollapse
-          title={t('common.provider.notes')}
-          placeholder={t('common.provider.notesPlaceholder')}
-          rows={notesRows}
-          resetKey={notesResetKey}
-        />
-      </Form.Item>
+      {showNotes && (
+        <Form.Item name="notes" wrapperCol={PROVIDER_SECTION_WRAPPER_COL}>
+          <ProviderNotesCollapse
+            title={t('common.provider.notes')}
+            placeholder={t('common.provider.notesPlaceholder')}
+            rows={notesRows}
+            resetKey={notesResetKey}
+          />
+        </Form.Item>
+      )}
     </>
   );
 };

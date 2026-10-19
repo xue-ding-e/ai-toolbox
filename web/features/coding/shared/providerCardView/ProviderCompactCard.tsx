@@ -101,12 +101,17 @@ interface ProviderCompactCardProps {
   /**
    * The second line: every `Role: model` pair the CLI states, in order.
    *
+   * A pair without a `label` renders as the bare value — for facts that name
+   * themselves (`@ai-sdk/openai-compatible` is the npm specifier, not a value
+   * of some role), where a `NPM 包:` prefix would only cost room on a one-line
+   * row.
+   *
    * It is one truncated line rather than a wrapped block — the card's height
    * has to stay uniform across the grid, and a provider with six bindings must
    * not make its row taller than its neighbours'. Omit it (or pass an empty
    * array) to render no second line at all.
    */
-  subtitle?: { label: string; value: string }[];
+  subtitle?: { label?: string; value: string }[];
   /** Same object the list card receives. */
   providerState?: ProviderCardState;
   /**
@@ -400,11 +405,15 @@ const ProviderCompactCard: React.FC<ProviderCompactCardProps> = ({
               <div
                 className={styles.subtitle}
                 data-provider-subtitle
-                title={subtitle.map((entry) => `${entry.label}: ${entry.value}`).join('  ')}
+                title={subtitle
+                  .map((entry) => (entry.label ? `${entry.label}: ${entry.value}` : entry.value))
+                  .join('  ')}
               >
-                {subtitle.map((entry) => (
-                  <span key={entry.label} className={styles.subtitleEntry}>
-                    <span className={styles.subtitleLabel}>{entry.label}:</span>
+                {subtitle.map((entry, index) => (
+                  <span key={`${entry.label ?? ''}:${entry.value}:${index}`} className={styles.subtitleEntry}>
+                    {entry.label && (
+                      <span className={styles.subtitleLabel}>{entry.label}:</span>
+                    )}
                     <span className={styles.subtitleValue}>{entry.value}</span>
                   </span>
                 ))}

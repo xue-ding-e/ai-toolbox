@@ -12,7 +12,7 @@
 - OpenCode Core 的 Agent 配置字段是单数 `agent`，与 OMO/OMOS 插件配置里的复数 `agents` 不同；`small_model` 仍用于标题生成等轻量内部任务，不是所有 Subagent 的统一模型。
 - 后端统一模型列表会把 models.dev 的 `experimental.modes.*` 展开为虚拟模型，并通过 `baseModelId` / `experimentalMode` 标记来源；页面里的 variant dropdown 应基于这些元数据继承 base model variants，不要靠 `-fast` 等后缀猜测。
 - `favorite provider` 列表和诊断属于辅助历史状态，不能反推为 OpenCode 当前运行时真实配置。
-- “更多选项”的 V1→V2 开关调用后端文件迁移命令；开关状态从当前配置路径旁的 V1 备份探测，不能另存一份可能与文件状态分叉的前端持久化布尔值。切换成功后必须重读配置并刷新托盘。前端始终按 V1 编辑结构读写，**不要**自行识别或拼装 V2 的 `providers`/`plugins`/`agents`/`mcp` 形状；后端 `v2_migration` 按 `../opencode` 官方 `migrate.ts` 在读写边界转换，前端对 V2 文件字段的任何假设都会在保存时被后端再次转换。页头在迁移未开启时显示可关闭的 V2 提示，关闭状态只记在 `localStorage` 的 `opencode.v2MigrationHintDismissed`，不要写成配置或开关状态。
+- “更多选项”的 V1→V2 开关调用后端文件迁移命令；开关状态从当前配置路径旁的 V1 备份探测，不能另存一份可能与文件状态分叉的前端持久化布尔值。切换成功后必须重读配置并刷新托盘。前端始终按 V1 编辑结构读写，**不要**自行识别或拼装 V2 的 `providers`/`plugins`/`agents`/`mcp` 形状；后端 `v2_migration` 按 `../opencode` 官方 `migrate.ts` 在读写边界转换，前端对 V2 文件字段的任何假设都会在保存时被后端再次转换。页头在迁移**开启**时显示已启用状态行，在**未开启**时显示可关闭的 V2 提示；提示的关闭状态只记在 `localStorage` 的 `opencode.v2MigrationHintDismissed`，不要写成配置或开关状态。
 - 共享连通性弹窗允许调用方传入 `apiFormat=openai-codex-responses`：该接口只接受流式诊断，温度与输出上限控件禁用；普通 OpenCode 调用不传此标记，保持原有选项与请求格式。
 - 共享连通性弹窗的「发送测试图片」(issue #410) 开关写入 `diagnostics.visionProbe` 并随请求下发；结果表新增「视觉」列消费 `visionStatus`，并用共享纯函数 `shared/providerConnectivity/visionProbe.ts` 的 `declaredVisionCapability` / `visionProbeMismatchesDeclaration` 与模型声明的 `attachment`/`vision`/`modalities.input` 做比对，不一致时高亮提示。声明未知或未测试(`unavailable`)不算不一致。判定逻辑不要写进组件，保持纯函数可测。
 - 共享连通性弹窗的「测试配置」section 默认**收起**，只留一行 header + 摘要（prompt · 视觉 · 默认模型）。收起是为了让模型列表在弹窗打开的第一屏可见——展开态配置区约 438px，会把列表推到折叠线以下。展开态必须与收起前完全一致（同一 Form、同一字段结构、同一「更多参数」Collapse）。Prompt 是必填项，因此 `handleRunTest` 捕获到 antd 校验拒绝（`errorFields`）时必须先展开配置区再返回，否则错误框藏在隐藏区域里，用户只会看到点击无反应。
@@ -31,6 +31,32 @@
 - Agent 指令属于 OpenCode Core 的 `agent.<name>.prompt` 字符串。页面使用 Markdown 编辑器只是提供编辑/预览体验，保存时直接写入当前 `opencode.json` 的 Agent 配置并复用既有配置保存、事件和 WSL 同步链路；不要在此模块额外生成 `prompts/*.md` 或 `agents/*.md` 文件。添加弹窗只显示摘要入口，正文在独立大弹窗编辑；清空内置 Agent 唯一的 prompt 覆盖时应恢复默认节点，自定义 Agent 则只移除 prompt。
 - 上一条只描述 JSON Agent。用户已有的官方 Markdown Agent（全局 `agent/**/*.md` / `agents/**/*.md`）必须作为独立来源读取和原地编辑：Frontmatter 管配置，正文管 Agent 指令；不能把它转换成 `agent.<name>`。同名 JSON/Markdown 配置按 OpenCode 顺序聚合展示并明确标出多来源，新增 Agent 的重名校验也必须包含 Markdown 名称。
 - JSON 与 Markdown 同名 Agent 聚合后，`default_agent` 合法性、页面候选和 model/variant 行内编辑都必须使用同一份 effective config。已有字段写回真正声明该字段的最高优先级来源；只有字段在所有来源中都不存在时，才写入最高优先级可编辑来源。修改 Markdown Frontmatter 的 `model` / `variant` 时必须完整处理 YAML `|` / `>` block scalar 续行，不能只替换字段首行。
+
+## 供应商列表：共享外壳 + OpenCode 式卡片（2026-10-19 迁移）
+
+页面骨架已迁到共享组件（`CodingPageHeader` / `ProviderListSection` / `providerCardVariants` / `providerCardView` / `ProviderFormSections`），本模块只保留映射与业务 handler：
+
+| 层 | 落点 |
+|---|---|
+| 页头 | `CodingPageHeader`：V1→V2 迁移未定稿时 `customizeConfigDisabled` 置灰「自定义配置目录」并传 `customizeConfigDisabledReason`（悬停说明：先在「更多选项」里关闭迁移）；迁移命令拥有配置文件位置。`extraActions` 放「同步预设模型」 |
+| 列表外壳 | `ProviderListSection` 渲染 `id={sectionId="opencode-providers"}`；外层 `div` 仍保留 `styles.opencodeSection` + `data-opencode-sidebar-section` + `style={{ order: 6 }}` 承载侧栏锚点与视觉排序 |
+| 卡片映射层 | `components/OpenCodeProviderCard.tsx` → `OpenCodeStyleCard`（列表）/ `ProviderCompactCard`（卡片视图）；纯映射在 `utils/providerCardMapping.ts` |
+| 模型区 | `ProviderModelSection`（两种布局共用一份 `modelSection`），侧栏传 `appearance="detail"` |
+| 编辑弹窗 | `components/OpenCodeProviderFormModal.tsx`，顶部字段 + 自有高级块 + `ProviderFormSections` |
+
+**卡片能力集的几个契约**：
+
+- **卡片样式是 OpenCode 式**：OpenCode 有 per-provider 模型目录、没有 provider 级「应用」——`config.model` 指向某个渠道内的某个模型，「设为默认」在模型行上。不要给卡片加「应用」按钮。
+- **官方模型走 `footer` 插槽，不在模型折叠区内**。`auth.json` 合并进自定义渠道的只读目录进不了可编辑的 `ModelListSection`；共享卡片对「只读目录」的既定落点是 `footer`（位于头部与模型列表之间，卡片视图里进详情侧栏）。旧实现把它排在自定义模型之后，迁移后位置变化是既定结果。
+- **启用开关回调收到的是「新的启用状态」**（antd `Switch.onChange` 契约）。`handleToggleProviderDisabled(providerId, enabled)` 直接用它增删 `disabled_providers`，**不要**再从当前列表反推一次——那会写回开关刚离开的值，表现为「开关会动但配置不变」。
+- **批量删除的确认在 handler 里**（`handleBatchDeleteModels` → `Modal.confirm` → `performBatchDeleteModels`）。共享 `ModelListSection` 的 `onBatchDelete` 是直接调用，不弹确认；把确认留在卡片 JSX 里会绕过工具栏入口。
+- **「定位」指向默认模型所在渠道**：`locateProviderId = resolveOpenCodeDefaultProviderId(config?.model)`。OpenCode 没有「已应用供应商」，这里语义是「谁拥有全局默认模型」；没有默认模型时传 `''`（按钮仍渲染并说明「当前没有已应用的供应商」），不要为了隐藏按钮传 `undefined`。
+- **卡片视图第二行先陈述 npm 包**：裸包名 `@ai-sdk/…`（无 label，共享 `subtitle` 的 `label` 可省），拥有默认模型时再追加 `当前主模型: <model>`（2026-10-19 用户指定）。没有默认模型的格子此前第二行整行空着，看起来像缺数据；npm 包是每个 provider 都有的事实（`buildOpenCodeProviderCardModel` 已把缺省补成 `@ai-sdk/openai-compatible`），所以这一行永远有内容。列表卡片的第二行用 `SdkTag` 展示同一个包。
+- **默认模型渠道不可删**：映射层给 `deleteDisabledReason`，批量选择集合用 `canDeleteOpenCodeProvider` 过滤，三个入口都要守住。**卡片视图的详情侧栏是第三个入口**：侧栏 footer 不是 `Popconfirm` 的宿主，删除按钮要自己 `Modal.confirm`，且在 `deleteDisabledReason` 存在时置灰（外层 `<span>` 承载 Tooltip），否则侧栏会绕开列表卡的内置确认与删除保护。
+- **页头下方的「页面说明 + V2 状态」不放进 `ProviderListSection.hint`**：这两句描述的是整页如何读写配置文件，不是供应商列表的说明；`hint` 留给「列表怎么用」（与 Codex / ZCode / Claude Code 一致）。页头自带 16px 下边距，提示块用负 `marginTop` 回到原 4px 间距。
+- **V2 状态行两种状态都要说话**：迁移开启时显示 `opencode.v2Migration.activeHint`（说明保存会自动转 V2），关闭且未关闭提示时显示可关闭的 `banner`（说明如何开启）。**只在关闭态显示**会让 V2 用户看不到任何「已启用」的确认；`v2MigrationLoading` 初值为 `true`，避免每次挂载先闪现 V1 提示再消失。开关状态只从后端 `get_opencode_v2_config_mode` 读，不要写前端持久化布尔值。
+
+**编辑弹窗**：计费 / 自定义请求头 / 模型改写 / 速度档**全部不显示**——OpenCode 不在 `GatewayCliKey::supported_mvp()`，这些分区没有读者；备注传 `showNotes={false}`（provider 记录没有 `notes` 字段）。请求头、超时、`setCacheKey`、额外参数、模型白/黑名单属于 OpenCode 自己的配置键，留在弹窗的高级块里，不进 `ProviderFormSections`。
 
 ## 关键流程
 
@@ -106,5 +132,6 @@ sequenceDiagram
 - 至少验证：保存配置、应用 prompt、导入 provider 后托盘仍同步刷新。
 - 改 Agent 配置时至少验证：内置 Agent 模型覆盖、自定义 Agent、未知字段往返、删除 Provider/模型后的引用清理，以及 `agent` 与插件 `agents` 不混用。
 - 覆盖供应商和默认供应商删除保护运行 `web/test/features/coding/opencode/utils/providerMutations.test.ts`。
+- 改卡片映射层时运行 `web/test/features/coding/opencode/utils/providerCardMapping.test.ts`（头部兜底、`isPrimary` 对带 `/` 与 `#variant` 的默认引用、无默认模型返回空）；再加 `pnpm run test:provider-card-layout` 与 `pnpm run test:form-modal-layout` 两道静态守卫。
 - 改“其他配置”的保存基底或 `JsonEditor` 失焦回调时运行 `web/test/features/coding/opencode/utils/openCodeOtherConfig.test.ts`；要验证真实 Monaco 失焦链路（含 issue #406 的回归）走 `pnpm test:json-editor-blur`（本地浏览器 fixture，不进 CI）。
 - 改共享连通性弹窗的「测试配置」折叠布局时运行 `pnpm test:connectivity-modal-layout`（浏览器 fixture，在 CI 链中）。它锁定：配置区默认收起、收起态模型表在首屏内、收起态表单控件不进 tab 序、摘要行不溢出、以及校验被拒时自动展开配置区。

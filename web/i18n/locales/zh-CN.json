@@ -2074,19 +2074,13 @@
   "opencode": {
     "title": "OpenCode 配置管理",
     "pageHint": "OpenCode 的配置始终以本地配置文件为准，本页面仅做可视化编辑，所有更改直接读写配置文件。",
-    "configPath": "配置文件路径",
-    "openFolder": "打开文件夹",
-    "viewDocs": "官方文档",
     "refreshSuccess": "配置已刷新",
-    "refreshConfig": "刷新配置",
     "syncModels": "同步预设模型",
     "modelsRefreshSuccess": "模型列表已从 API 刷新",
     "modelsRefreshRateLimit": "请等待 {{seconds}} 秒后再刷新模型",
     "addProvider": "添加供应商",
     "editProvider": "编辑供应商",
-    "emptyText": "暂无配置，点击上方按钮添加供应商或从设置同步",
     "configPathSource": {
-      "customize": "自定义配置路径",
       "modal": {
         "title": "自定义配置文件路径",
         "currentSource": "当前来源",
@@ -2189,9 +2183,6 @@
     },
     "model": {
       "title": "模型列表",
-      "batchDelete": "批量删除",
-      "cancelBatchDelete": "取消批量删除",
-      "deleteSelected": "删除已选 {{count}} 项",
       "batchDeleteSuccess": "已删除 {{count}} 个模型",
       "setAsPrimarySuccess": "已将 {{name}} 设为主模型",
       "idExists": "该模型 ID 已存在",
@@ -2199,7 +2190,6 @@
       "limitsBothRequired": "上下文限制和输出限制需同时填写或同时留空"
     },
     "fetchModels": {
-      "button": "获取模型",
       "title": "获取模型列表 - {{provider}}",
       "sourceSection": "抓取来源",
       "sourceSectionHint": "确认本次抓取使用的接口类型和目标地址。",
@@ -2765,7 +2755,9 @@
       "banner": "若本机 OpenCode 已升级到 V2，请点右上角「更多选项」，开启「迁移 OpenCode 配置到 V2」。未开启时，本页仍按 V1 读写本地文件。",
       "hint": "开启后会备份原配置为 openvode_v1.<扩展名> 并转换当前文件；关闭后恢复 V1，并将 V2 文件保存为 opencode_v2.<扩展名>。",
       "enabled": "OpenCode 配置已迁移到 V2",
-      "disabled": "已恢复 OpenCode V1 配置"
+      "disabled": "已恢复 OpenCode V1 配置",
+      "customizeDisabledReason": "已启用 V2 配置迁移，配置文件位置由迁移管理；请先在「更多选项」中关闭迁移再修改",
+      "activeHint": "已启用 V2 配置迁移：保存时会自动转换为 V2 格式，关闭开关即可恢复 V1。"
     }
   },
   "claudecode": {

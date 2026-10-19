@@ -2077,19 +2077,13 @@
   "opencode": {
     "title": "OpenCode Configuration",
     "pageHint": "OpenCode configuration is always based on the local config file. This page only provides visual editing — all changes are read from and written to the config file directly.",
-    "configPath": "Configuration File Path",
-    "openFolder": "Open Folder",
-    "viewDocs": "Documentation",
     "refreshSuccess": "Configuration refreshed",
-    "refreshConfig": "Refresh Config",
     "syncModels": "Sync Official Models",
     "modelsRefreshSuccess": "Model list refreshed from API",
     "modelsRefreshRateLimit": "Please wait {{seconds}} seconds before refreshing models",
     "addProvider": "Add Provider",
     "editProvider": "Edit Provider",
-    "emptyText": "No configuration yet, click the button above to add a provider or sync from settings",
     "configPathSource": {
-      "customize": "Customize Path",
       "modal": {
         "title": "Customize Configuration File Path",
         "currentSource": "Current Source",
@@ -2192,9 +2186,6 @@
     },
     "model": {
       "title": "Model List",
-      "batchDelete": "Batch Delete",
-      "cancelBatchDelete": "Cancel Batch Delete",
-      "deleteSelected": "Delete Selected ({{count}})",
       "batchDeleteSuccess": "Deleted {{count}} model(s)",
       "setAsPrimarySuccess": "{{name}} has been set as the main model",
       "idExists": "This model ID already exists",
@@ -2202,7 +2193,6 @@
       "limitsBothRequired": "Context and output limits must both be filled or both left empty"
     },
     "fetchModels": {
-      "button": "Fetch Models",
       "title": "Fetch Model List - {{provider}}",
       "sourceSection": "Fetch Source",
       "sourceSectionHint": "Confirm the endpoint type and target URL used for this fetch.",
@@ -2768,7 +2758,9 @@
       "banner": "If OpenCode on this machine is V2, open More options at the top right and turn on Migrate OpenCode config to V2. Until then, this page still reads and writes the local file as V1.",
       "hint": "Enabling backs up the current file as openvode_v1.<extension> and converts it to V2. Turning it off restores V1 and saves the V2 file as opencode_v2.<extension>.",
       "enabled": "OpenCode config migrated to V2",
-      "disabled": "OpenCode V1 config restored"
+      "disabled": "OpenCode V1 config restored",
+      "customizeDisabledReason": "V2 config migration manages the config file location. Turn it off in More Options before changing the path.",
+      "activeHint": "V2 config migration is on: saves are converted to the V2 format automatically. Turn the switch off to restore V1."
     }
   },
   "claudecode": {
