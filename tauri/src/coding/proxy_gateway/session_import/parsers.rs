@@ -100,7 +100,10 @@ pub(super) fn revision(cli_key: GatewayUsageTool) -> u32 {
         // 5: parse `token_usage_record` as the authoritative per-response
         // source and deduct the legacy `token_count` mirror that repeats it.
         // 6: time each response from the prompt/tool output that sent it.
-        GatewayUsageTool::Codex => 6,
+        // 7: keep the upstream `response_id` as the envelope identity, so a
+        // cross-source match no longer depends on the usage-equal heuristic
+        // (which only accepts `completed` proxy rows, issue #432).
+        GatewayUsageTool::Codex => 7,
         // 5: bracket each call with the `turn/start` / `request/header` /
         // `llm/retry-started` event that sent it and the settled message.
         GatewayUsageTool::Dsh => 5,
@@ -965,6 +968,10 @@ fn parse_codex_lines(
                                 // Keep the mirror's estimate when this record
                                 // cannot compute one of its own.
                                 record.duration_ms = duration_ms.or(record.duration_ms);
+                                // The upgraded identity is the upstream
+                                // response, so it also becomes the envelope the
+                                // cross-source matcher looks for.
+                                record.usage.envelope_id = Some(response_id.clone());
                             }
                         }
                         continue;
@@ -991,13 +998,21 @@ fn parse_codex_lines(
                         format!("SESSION:codex:{thread_id}:token_usage:{event_index}")
                     }
                 };
+                // The response id is the upstream envelope the gateway stamped
+                // on its own row. Recording it here gives the cross-source
+                // matcher an exact identity, instead of relying on equal token
+                // counts and a successful terminal (issue #432).
+                let usage = TokenUsage {
+                    envelope_id: response_id.clone(),
+                    ..token_usage
+                };
                 parsed.records.push(SessionUsageRecord {
                     metadata: Default::default(),
                     request_id,
                     legacy_request_ids: Vec::new(),
                     cli_key: GatewayUsageTool::Codex,
                     model: model.clone(),
-                    usage: token_usage,
+                    usage,
                     created_at,
                     session_id: thread_id.clone(),
                     reported_cost_usd: None,
