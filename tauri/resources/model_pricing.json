@@ -1048,11 +1048,19 @@
     "cache_creation_cost_per_million": "0.375"
   },
   {
+    "model_id": "MiniMax-M3.1-Flash",
+    "display_name": "MiniMax M3.1 Flash",
+    "input_cost_per_million": "0.15",
+    "output_cost_per_million": "0.60",
+    "cache_read_cost_per_million": "0.015",
+    "cache_creation_cost_per_million": "0"
+  },
+  {
     "model_id": "MiniMax-M3",
     "display_name": "MiniMax M3",
-    "input_cost_per_million": "0.60",
-    "output_cost_per_million": "2.40",
-    "cache_read_cost_per_million": "0.12",
+    "input_cost_per_million": "0.30",
+    "output_cost_per_million": "1.20",
+    "cache_read_cost_per_million": "0.06",
     "cache_creation_cost_per_million": "0"
   },
   {
