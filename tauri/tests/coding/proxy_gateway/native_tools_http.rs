@@ -196,6 +196,72 @@ async fn a_tool_dropped_by_protocol_conversion_is_marked_filtered() {
 }
 
 #[tokio::test]
+async fn a_streamed_search_keeps_the_request_markers_and_finds_the_call() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let upstream_url = format!("http://{}", listener.local_addr().unwrap());
+    let gateway = RunningGateway::new_for_api_format(
+        &upstream_url,
+        "custom",
+        BodyLogging::Enabled,
+        "openai_responses",
+    );
+
+    // The marker is split across two SSE events and the events are small enough
+    // that `write_mock_reply` chunks the wire further: the tail scanner must
+    // still see it.
+    let mut wire = String::new();
+    for event in [
+        json!({"type": "response.output_item.added", "item": {"type": "web_search_call", "id": "ws_1"}}),
+        json!({"type": "response.output_item.done", "item": {"type": "web_search_call", "id": "ws_1"}}),
+        json!({"type": "response.completed", "response": {
+            "id": "resp_stream", "object": "response", "status": "completed",
+            "model": "fixture-model", "output": [],
+            "usage": {"input_tokens": 9, "output_tokens": 2, "total_tokens": 11}
+        }}),
+    ] {
+        wire.push_str("data: ");
+        wire.push_str(&event.to_string());
+        wire.push_str("\n\n");
+    }
+
+    let upstream = tokio::spawn(async move {
+        let mut socket = accept_upstream(&listener).await;
+        let forwarded = read_mock_request(&mut socket, "/v1/responses").await;
+        assert_eq!(
+            forwarded["tools"][0]["type"], "web_search",
+            "the declaration must reach the upstream: {forwarded}"
+        );
+        write_mock_reply(&mut socket, 200, wire.as_bytes(), true).await;
+    });
+
+    let client = http_client::create_client_no_proxy(10).unwrap();
+    let mut request = responses_request(json!([{ "type": "web_search" }]));
+    request["stream"] = json!(true);
+    let response = client
+        .post(&gateway.url)
+        .json(&request)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let _ = response.text().await.unwrap();
+    upstream.await.unwrap();
+
+    let detail = only_recorded_detail(&gateway);
+    let search = detail
+        .native_tools
+        .iter()
+        .find(|tool| tool.kind == "web_search")
+        .expect("web search marker");
+    assert!(
+        search.declared,
+        "the streaming branch must keep the markers collected on the request side"
+    );
+    assert!(search.forwarded);
+    assert!(search.used, "the stream carried a web_search_call item");
+}
+
+#[tokio::test]
 async fn detail_only_markers_do_not_exist_without_request_logging() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
     let upstream_url = format!("http://{}", listener.local_addr().unwrap());

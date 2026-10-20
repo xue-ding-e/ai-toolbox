@@ -2684,7 +2684,9 @@ async fn build_gateway_response(
             failover: false,
             source_protocol,
             stream_outcome: GatewayStreamOutcome::NotStreaming,
-            observations: Default::default(),
+            // Request-side markers were collected before the upstream answered;
+            // the streaming writer adds the used ones once the stream ends.
+            observations,
             note: format!(
                 "streaming forwarded to provider id={} name={}",
                 provider.id, provider.name

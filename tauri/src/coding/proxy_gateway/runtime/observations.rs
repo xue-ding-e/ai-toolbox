@@ -63,12 +63,12 @@ impl RequestObservations {
 
     /// Marks whether each declared tool survived into the forwarded body.
     ///
-    /// Only declared records are updated: a declaration the gateway injected
-    /// itself is not part of "what the client asked for", and this pass is
-    /// about whether the client's declaration made it through.
+    /// Only declared records are updated: a record created by observation of an
+    /// actual call (`declared: false`) was never in the client's request, so
+    /// "forwarded" is meaningless for it.
     pub(super) fn observe_forwarded(&mut self, protocol: AiProtocol, body: &Value) {
         let forwarded = declared_tools(protocol, body);
-        for record in &mut self.native_tools {
+        for record in self.native_tools.iter_mut().filter(|record| record.declared) {
             record.forwarded = forwarded
                 .iter()
                 .any(|forwarded| forwarded.kind == record.kind);
@@ -256,6 +256,12 @@ pub(super) fn used_tools(protocol: AiProtocol, body: &Value) -> Vec<&'static str
     kinds
 }
 
+/// Recurses through the reply body looking for type-tagged items.
+///
+/// Only objects carrying a `type` are candidates for the Responses/Anthropic
+/// tables; Gemini additionally keys off dedicated fields. A model that writes a
+/// JSON example in its *message text* cannot trigger this: that text lands in a
+/// string value, and strings are never descended into.
 fn collect_used_markers(protocol: AiProtocol, value: &Value, kinds: &mut Vec<&'static str>) {
     match value {
         Value::Object(object) => {
@@ -360,18 +366,21 @@ fn dedupe_records(
 /// Streaming marker scanner.
 ///
 /// SSE/WS bodies are forwarded chunk by chunk; this keeps a bounded tail so a
-/// marker split across two chunks is still recognized. It scans raw bytes for
-/// the quoted wire names from every dialect at once: a Chat stream cannot carry
-/// a Responses item type, and the extra comparisons cost nothing at SSE
-/// frequency. No protocol argument is needed for that reason.
+/// marker split across two chunks is still recognized. Scanning is a raw byte
+/// search, not JSON parsing, so it is restricted to the dialect the upstream
+/// actually speaks: a model that merely *writes* `"web_search_call"` inside an
+/// assistant message must not be reported as having run one. Within a matching
+/// dialect the marker can only appear as a JSON type value.
 pub(super) struct UsedToolScanner {
+    protocol: AiProtocol,
     tail: Vec<u8>,
     kinds: Vec<&'static str>,
 }
 
 impl UsedToolScanner {
-    pub(super) fn new() -> Self {
+    pub(super) fn new(protocol: AiProtocol) -> Self {
         Self {
+            protocol,
             tail: Vec::new(),
             kinds: Vec::new(),
         }
@@ -381,8 +390,8 @@ impl UsedToolScanner {
         let mut haystack = Vec::with_capacity(self.tail.len() + chunk.len());
         haystack.extend_from_slice(&self.tail);
         haystack.extend_from_slice(chunk);
-        for (marker, kind) in STREAM_MARKERS {
-            if self.kinds.contains(kind) {
+        for (protocol, marker, kind) in STREAM_MARKERS {
+            if *protocol != self.protocol || self.kinds.contains(kind) {
                 continue;
             }
             if contains_bytes(&haystack, marker.as_bytes()) {
@@ -398,25 +407,26 @@ impl UsedToolScanner {
     }
 }
 
-/// Markers shared by every protocol's wire dialect. Searching all of them is
-/// harmless: a Chat stream cannot contain a Responses item type, and the extra
-/// comparisons cost nothing at SSE frequency.
-const STREAM_MARKERS: &[(&str, &str)] = &[
-    ("\"web_search_call\"", TOOL_WEB_SEARCH),
-    ("\"web_search_tool_result\"", TOOL_WEB_SEARCH),
-    ("\"image_generation_call\"", TOOL_IMAGE_GENERATION),
-    ("\"code_interpreter_call\"", TOOL_CODE_INTERPRETER),
-    ("\"computer_call\"", TOOL_COMPUTER_USE),
-    ("\"file_search_call\"", TOOL_FILE_SEARCH),
-    ("\"mcp_call\"", TOOL_MCP),
-    ("\"mcp_tool_use\"", TOOL_MCP),
-    ("\"local_shell_call\"", TOOL_LOCAL_SHELL),
-    ("\"groundingMetadata\"", TOOL_WEB_SEARCH),
-    ("\"grounding_metadata\"", TOOL_WEB_SEARCH),
-    ("\"executableCode\"", TOOL_CODE_INTERPRETER),
-    ("\"executable_code\"", TOOL_CODE_INTERPRETER),
-    ("\"codeExecutionResult\"", TOOL_CODE_INTERPRETER),
-    ("\"code_execution_result\"", TOOL_CODE_INTERPRETER),
+/// Markers per wire dialect. A marker only counts when the upstream speaks that
+/// dialect; see [`UsedToolScanner`].
+const STREAM_MARKERS: &[(AiProtocol, &str, &str)] = &[
+    (AiProtocol::OpenAiResponses, "\"web_search_call\"", TOOL_WEB_SEARCH),
+    (AiProtocol::OpenAiResponses, "\"image_generation_call\"", TOOL_IMAGE_GENERATION),
+    (AiProtocol::OpenAiResponses, "\"code_interpreter_call\"", TOOL_CODE_INTERPRETER),
+    (AiProtocol::OpenAiResponses, "\"computer_call\"", TOOL_COMPUTER_USE),
+    (AiProtocol::OpenAiResponses, "\"file_search_call\"", TOOL_FILE_SEARCH),
+    (AiProtocol::OpenAiResponses, "\"mcp_call\"", TOOL_MCP),
+    (AiProtocol::OpenAiResponses, "\"mcp_list_tools\"", TOOL_MCP),
+    (AiProtocol::OpenAiResponses, "\"local_shell_call\"", TOOL_LOCAL_SHELL),
+    (AiProtocol::AnthropicMessages, "\"web_search_tool_result\"", TOOL_WEB_SEARCH),
+    (AiProtocol::AnthropicMessages, "\"mcp_tool_use\"", TOOL_MCP),
+    (AiProtocol::AnthropicMessages, "\"mcp_tool_result\"", TOOL_MCP),
+    (AiProtocol::GeminiNative, "\"groundingMetadata\"", TOOL_WEB_SEARCH),
+    (AiProtocol::GeminiNative, "\"grounding_metadata\"", TOOL_WEB_SEARCH),
+    (AiProtocol::GeminiNative, "\"executableCode\"", TOOL_CODE_INTERPRETER),
+    (AiProtocol::GeminiNative, "\"executable_code\"", TOOL_CODE_INTERPRETER),
+    (AiProtocol::GeminiNative, "\"codeExecutionResult\"", TOOL_CODE_INTERPRETER),
+    (AiProtocol::GeminiNative, "\"code_execution_result\"", TOOL_CODE_INTERPRETER),
 ];
 
 fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
@@ -505,11 +515,21 @@ mod tests {
 
     #[test]
     fn stream_scanner_sees_a_marker_split_across_chunks() {
-        let mut scanner = UsedToolScanner::new();
+        let mut scanner = UsedToolScanner::new(AiProtocol::OpenAiResponses);
         scanner.push_chunk(b"data: {\"type\":\"web_sea");
         scanner.push_chunk(b"rch_call\"}\n\n");
 
         assert_eq!(scanner.kinds(), &[TOOL_WEB_SEARCH]);
+    }
+
+    #[test]
+    fn stream_scanner_ignores_another_dialects_marker() {
+        // A Gemini reply that merely *mentions* `web_search_call` in text is not
+        // a Responses item; scanning every dialect would report a false call.
+        let mut scanner = UsedToolScanner::new(AiProtocol::GeminiNative);
+        scanner.push_chunk(b"{\"text\":\"call \\\"web_search_call\\\" next\"}");
+
+        assert!(scanner.kinds().is_empty());
     }
 
     #[test]

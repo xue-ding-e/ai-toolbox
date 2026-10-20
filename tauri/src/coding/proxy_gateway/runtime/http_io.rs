@@ -619,8 +619,11 @@ async fn write_streaming_body(
         SseUsageCollector::with_provider_type(response.provider_type.as_deref());
     // Hosted-tool markers are scanned on the bytes actually forwarded, so the
     // detail dialog can say whether the upstream really ran a native tool. This
-    // is independent of body storage, which is off by default.
-    let mut used_tool_scanner = super::observations::UsedToolScanner::new();
+    // is independent of body storage, which is off by default. The scan is a
+    // byte search, so it is restricted to the upstream's own dialect.
+    let mut used_tool_scanner = super::observations::UsedToolScanner::new(
+        response.target_protocol.unwrap_or(AiProtocol::OpenAiResponses),
+    );
     response.response_body_bytes = 0;
     response.body.clear();
     let idle_timeout_secs = response
