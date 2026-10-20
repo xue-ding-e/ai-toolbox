@@ -13,7 +13,8 @@
 | 直接 import 逻辑 | `claudecode/utils/claudeModelConfig.ts`（`parseClaudeSettingsConfig` / `getClaudeProviderModelConfig` / `getClaudeConfiguredModelIds` / `hasClaudeOneMMarker` / `setClaudeOneMMarker` / `stripClaudeOneMMarker`） | **共享语义**：`settingsConfig.env` 的 `ANTHROPIC_*` 键在两边同形，改这个文件会同时影响两页 |
 | import 样式 | `claudecode/components/CommonConfigModal.module.less` | 只共享视觉 |
 | 复用 i18n key | 51 个 `claudecode.*` key（`claudecode.model.*` / `claudecode.provider.*` / `claudecode.fetchModels.*` / `claudecode.apply.success` …） | **共享文案**：改这些 key 的措辞会同时改两个页面，且 `i18n:prune` 依赖两边都在用 |
-| 独立实现 | 卡片 `ClaudeDesktopProviderCard`、表单 `ClaudeDesktopProviderFormModal`、`ClaudeDesktopCommonConfigModal` | 不复用 claudecode 的组件 |
+| 独立实现 | 表单 `ClaudeDesktopProviderFormModal`、`ClaudeDesktopCommonConfigModal` | 不复用 claudecode 的组件 |
+| 共享卡片 / 页面外壳 | `ClaudeStyleCard` + `ProviderCompactCard`（经 `ClaudeDesktopProviderCard` 薄映射层）、`CodingPageHeader`、`ProviderListSection` | 2026-10-20 迁移；布局与列表工具栏不再由本模块自己实现 |
 
 **关键差异（不要按 claudecode 的直觉改这里）**：
 
@@ -21,7 +22,8 @@
 - **1M 的表达方式不同**。Claude Code 用模型串末尾的 `[1M]` 后缀持久化；Claude Desktop 用 `meta.claudeDesktopModelRoutes[route].supports1m` 布尔字段。表单里的 `[1m]` 标记只是**输入态**：`buildClaudeDesktopModelRoutes` 会 `stripClaudeOneMMarker` 后再存 `supports1m`，回填时再用 `setClaudeOneMMarker` 还原成勾选态。**把标记原样存进 `model` 会同时造成两个故障**：① Direct 模式把 `upstream != route_id` 判成模型映射而报错；② `is_claude_safe_model_id` 会拒收带 `[1m]` 的值。
 - **route_id 是固定的 claude-safe 名**（`claude-sonnet-5` / `claude-opus-5` / `claude-fable-5` / `claude-haiku-4-5`，镜像 cc-switch 的 `CLAUDE_DESKTOP_ROLE_ROUTE_IDS`）。这个常量在**三个文件里各有一份**（page / card / form modal），是刻意的就近拷贝；改一处必须同时改三处，否则表单存进去的 route 卡片读不出来。
 - **没有 `__local__` 桥接项**。Claude Desktop 的 provider 是 SQLite 记录，不是本地配置文件收编来的，所以卡片列表里不存在 claudecode 那种"未入库的当前生效配置"，批量选择的全集就是可见列表本身。
-- 卡片是**独立实现**（不是共享 `ProviderCard`），因为它有角色模型网格、网关胶囊和 P0/P1 优先级徽标；本页也**未**接入共享 `ProviderListSection`。
+- **供应商卡片与页面外壳走共享组件（2026-10-20）**：`ClaudeDesktopProviderCard` 只是薄映射层，把角色路由、凭据与网关状态映射成 `ProviderCardVariantProps`，再按 `viewMode` 渲染 `ClaudeStyleCard`（列表）或 `ProviderCompactCard`（卡片视图）。角色绑定走 `metaEntries`（`{ kind:'code', label:'Sonnet:', value }`），`tierAlias` 走同一行的 `{ kind:'tag' }`；基础地址从旧卡片的标题行移到了第二行，与 Claude Code 同形。网关按钮（代理 / 恢复直连 / 应用并代理 / 切换主渠道 / 锁定的应用）走 `actions.gatewayActions`，直接应用走 `actions.primaryAction`，状态徽标（官方 / 被绕过 / 已应用 / 代理 / P0）走 `nameTags`，备注走 `footer`（在头部两栏之外、跨满整宽）。
+- 页头用 `CodingPageHeader`（**不传 `onCustomizeConfig`**：本模块没有自定义根目录能力），列表用 `ProviderListSection`；平台不支持时（`pathInfo.supported === false`）在页头下方补一行次要色说明。页头与工具栏文案统一取 `common.*`。
 
 ## Source of Truth
 
@@ -80,7 +82,7 @@ sequenceDiagram
 - 从 Claude Code 导入（`handleImportFromClaude`）是**后端批量创建**，只返回数量。所以前端必须重新拉列表、用导入前的 id 集合做差集，再补写收藏——不要假设命令会返回新建的行。
 - CC Switch / All API Hub 导入用 `sourceProviderId` 去重（不是 provider id），"已存在"的判定与弹窗的 `existingProviderIds` 必须传同一份 `sourceProviderId` 集合。
 - 会话详情走隐藏二级路由 `/coding/claudedesktop/sessions/detail`，由 `routeConfig.chrome` 声明 `mode: 'secondary'` + `ownerTabKey: 'claudedesktop'`。**侧栏分区跳转靠 `expandNonce`**：`onSectionSelect` 对 prompt / session 两个分区各自递增 nonce，并给 `GlobalPromptSettings` 加 `key={...-${promptExpandNonce}}` 强制重挂载来展开折叠面板。删掉这个 key 或 nonce，侧栏点击就会"没反应"。
-- 页面头部**文案仍是硬编码中文**（标题、分区名、"通用配置"、"新增供应商"、导入按钮、通用配置 Modal 的标题与提示），尚未迁移到 `CodingPageHeader`。新增文案时不要引入第三套写法（既不硬编码、也不新造 key 前缀）；迁移是已登记的工作项，见 `docs/new-cli-onboarding-sop.md` §4.3。
+- 页面头部已迁到 `CodingPageHeader` + `ProviderListSection`（2026-10-20）：标题、配置路径、预览、打开文件夹、刷新、更多选项与工具栏全走共享组件；新增文案用 `common.*`，本模块只保留 `claudedesktop.pageHint` / `pageWarning` / `unsupportedPlatform` 三条页面专属提示（见 `docs/new-cli-onboarding-sop.md` §4.3）。侧栏分区标题仍是本页自己的 `claudedesktop.*` key，与共享外壳文案是两套。
 
 ## 跨模块依赖
 
@@ -93,7 +95,7 @@ sequenceDiagram
 
 ## 典型变更场景（按需）
 
-- 改角色集合或 route_id：三个文件的 `CLAUDE_DESKTOP_ROLE_ROUTE_IDS` / `_ORDER` 必须同步；再检查 `buildClaudeDesktopModelRoutes`、卡片网格、表单回填、`inferenceModels` 消费方（后端）。
+- 改角色集合或 route_id：三个文件的 `CLAUDE_DESKTOP_ROLE_ROUTE_IDS` / `_ORDER` 必须同步；再检查 `buildClaudeDesktopModelRoutes`、卡片第二行的角色条目、表单回填、`inferenceModels` 消费方（后端）。
 - 改 `buildProviderMeta`：同时检查 official 分支的删除名单、`customHeaders`/`modelRewrites` 的合并顺序、以及"编辑后保存不丢未知 meta 键"。
 - 改网关交互：确认 `saveProviderWithGatewayReengage` 的 restore → save → re-engage 顺序未被破坏，且没有给 Claude Desktop 引入 `engageAggregate`。
 

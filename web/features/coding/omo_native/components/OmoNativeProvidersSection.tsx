@@ -2,10 +2,11 @@ import React from 'react';
 import { App, Button, Space, Typography } from 'antd';
 import { ImportOutlined } from '@ant-design/icons';
 import { DndContext, closestCenter, type DragEndEvent } from '@dnd-kit/core';
-import { restrictToVerticalAxis } from '@dnd-kit/modifiers';
+import { restrictToVerticalAxis, restrictToWindowEdges } from '@dnd-kit/modifiers';
 import {
   SortableContext,
   arrayMove,
+  rectSortingStrategy,
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
 import { useTranslation } from 'react-i18next';
@@ -28,7 +29,9 @@ import {
   sortProviderItems,
   useProviderBatchSelection,
   useProviderListSort,
+  useProviderListViewPrefs,
 } from '@/features/coding/shared/providerList';
+import { ProviderCardGrid } from '@/features/coding/shared/providerCardView';
 import {
   buildFavoriteProviderStorageKey,
   extractFavoriteProviderRawId,
@@ -115,6 +118,13 @@ interface OmoNativeProvidersSectionProps {
    * 与 Pi 同规则——删除按钮保留但置灰，并排除出批量选择。
    */
   defaultProviderKey?: string;
+  /**
+   * 「模型设置」里选中的默认模型 id（`settings.json` 的 `defaultModel`）。
+   *
+   * 只给卡片视图的格子看：它陈述「当前主模型」，与列表卡片的模型行
+   * （`isPrimary` 由默认指针决定）说的是同一件事。
+   */
+  defaultModelId?: string;
 }
 
 const OmoNativeProvidersSection: React.FC<OmoNativeProvidersSectionProps> = ({
@@ -122,6 +132,7 @@ const OmoNativeProvidersSection: React.FC<OmoNativeProvidersSectionProps> = ({
   setProviders,
   loadProviders,
   defaultProviderKey,
+  defaultModelId,
 }) => {
   const { t } = useTranslation();
   const { message } = App.useApp();
@@ -162,6 +173,7 @@ const OmoNativeProvidersSection: React.FC<OmoNativeProvidersSectionProps> = ({
   );
 
   const { sortMode, setSortMode, lastUsedAt } = useProviderListSort('omo_native');
+  const { viewMode, setViewMode } = useProviderListViewPrefs('omo_native');
   const visibleProviders = React.useMemo(
     () =>
       sortProviderItems(
@@ -623,6 +635,56 @@ const OmoNativeProvidersSection: React.FC<OmoNativeProvidersSectionProps> = ({
 
   const builtinCount = providers.length - customProviders.length;
 
+  /**
+   * One provider's card props, for whichever layout draws it.
+   *
+   * Both layouts render the same mapping layer with the same object — the list
+   * card ignores `viewMode` and reads the card props; the compact cell uses the
+   * same actions, tags and drag state. Computing them twice is how "the two
+   * layouts disagree about what this provider offers" starts.
+   */
+  const renderProviderCard = (provider: OmoNativeProvider) => (
+    <OmoNativeProviderCard
+      key={provider.key}
+      provider={provider}
+      viewMode={viewMode}
+      defaultModelId={provider.key === defaultProviderKey ? defaultModelId : undefined}
+      onEdit={() => openProviderModal(provider)}
+      onCopy={() => openProviderModal(provider, { copy: true })}
+      onDelete={() => void handleDeleteProvider(provider)}
+      deleteDisabledReason={
+        provider.key === defaultProviderKey
+          ? t('omoNative.provider.deleteDisabledDefault')
+          : undefined
+      }
+      selectable={
+        providerBatch.selectionMode && providerBatch.isSelectable(provider.key)
+      }
+      selected={providerBatch.selectedIds.has(provider.key)}
+      onSelectChange={(selected) => providerBatch.toggleSelect(provider.key, selected)}
+      connectivityStatus={connectivityStatuses[provider.key]}
+      onAddModel={() => setModelModal({ provider })}
+      onEditModel={(modelId) => setModelModal({ provider, modelId })}
+      onCopyModel={(modelId) => handleCopyModel(provider, modelId)}
+      onDeleteModel={(modelId) => void handleDeleteModel(provider, modelId)}
+      onReorderModels={(orderedIds) => void handleReorderModels(provider, orderedIds)}
+      onTestModels={() => handleTestProviderModels(provider)}
+      testModelsDisabled={
+        getOmoNativeModelEntries(provider.config).length === 0
+      }
+      testModelsDisabledTooltip={t('common.modelMissing')}
+      onFetchModels={() => setFetchModelsProvider(provider)}
+      dragDisabled={providerDragDisabled}
+      modelSelectionMode={modelBatchDeleteProviderKey === provider.key}
+      selectedModelIds={selectedModelIdsByProvider[provider.key] ?? []}
+      onToggleModelSelection={(modelId, selected) =>
+        handleToggleModelSelection(provider, modelId, selected)
+      }
+      onToggleBatchDeleteMode={() => handleToggleModelBatchDeleteMode(provider)}
+      onBatchDeleteModels={() => void handleBatchDeleteModels(provider)}
+    />
+  );
+
   return (
     <>
       <ProviderListSection
@@ -638,6 +700,9 @@ const OmoNativeProvidersSection: React.FC<OmoNativeProvidersSectionProps> = ({
         sortMode={sortMode}
         sortModes={PROVIDER_SORT_MODES_BASIC}
         onSortModeChange={setSortMode}
+        dragDisabledBySort={providerDragDisabled}
+        viewMode={viewMode}
+        onViewModeChange={setViewMode}
         onBatchTest={handleBatchTestProviders}
         batchTesting={batchTesting}
         onAddProvider={() => openProviderModal()}
@@ -679,54 +744,24 @@ const OmoNativeProvidersSection: React.FC<OmoNativeProvidersSectionProps> = ({
           // 避免任何残留的拖拽手势。
           sensors={providerDragDisabled || providerBatch.selectionMode ? [] : undefined}
           collisionDetection={closestCenter}
-          modifiers={[restrictToVerticalAxis]}
+          // The two layouts constrain the drag differently: a vertical list only
+          // needs a vertical axis, while a grid cell has to stay on screen.
+          modifiers={[viewMode === 'card' ? restrictToWindowEdges : restrictToVerticalAxis]}
           onDragEnd={(event) => void handleProviderDragEnd(event)}
         >
           <SortableContext
             items={visibleProviders.map((provider) => provider.key)}
-            strategy={verticalListSortingStrategy}
+            strategy={viewMode === 'card' ? rectSortingStrategy : verticalListSortingStrategy}
           >
-            <div>
-              {visibleProviders.map((provider) => (
-            <OmoNativeProviderCard
-              key={provider.key}
-              provider={provider}
-              onEdit={() => openProviderModal(provider)}
-              onCopy={() => openProviderModal(provider, { copy: true })}
-              onDelete={() => void handleDeleteProvider(provider)}
-              deleteDisabledReason={
-                provider.key === defaultProviderKey
-                  ? t('omoNative.provider.deleteDisabledDefault')
-                  : undefined
-              }
-              selectable={
-                providerBatch.selectionMode && providerBatch.isSelectable(provider.key)
-              }
-              selected={providerBatch.selectedIds.has(provider.key)}
-              onSelectChange={(selected) => providerBatch.toggleSelect(provider.key, selected)}
-              connectivityStatus={connectivityStatuses[provider.key]}
-              onAddModel={() => setModelModal({ provider })}
-              onEditModel={(modelId) => setModelModal({ provider, modelId })}
-              onCopyModel={(modelId) => handleCopyModel(provider, modelId)}
-              onDeleteModel={(modelId) => void handleDeleteModel(provider, modelId)}
-              onReorderModels={(orderedIds) => void handleReorderModels(provider, orderedIds)}
-              onTestModels={() => handleTestProviderModels(provider)}
-              testModelsDisabled={
-                getOmoNativeModelEntries(provider.config).length === 0
-              }
-              testModelsDisabledTooltip={t('common.modelMissing')}
-              onFetchModels={() => setFetchModelsProvider(provider)}
-              dragDisabled={providerDragDisabled}
-              modelSelectionMode={modelBatchDeleteProviderKey === provider.key}
-              selectedModelIds={selectedModelIdsByProvider[provider.key] ?? []}
-              onToggleModelSelection={(modelId, selected) =>
-                handleToggleModelSelection(provider, modelId, selected)
-              }
-              onToggleBatchDeleteMode={() => handleToggleModelBatchDeleteMode(provider)}
-              onBatchDeleteModels={() => void handleBatchDeleteModels(provider)}
-            />
-              ))}
-            </div>
+            {viewMode === 'card' ? (
+              <ProviderCardGrid
+                items={visibleProviders}
+                getKey={(provider) => provider.key}
+                renderItem={renderProviderCard}
+              />
+            ) : (
+              <div>{visibleProviders.map(renderProviderCard)}</div>
+            )}
           </SortableContext>
         </DndContext>
       </ProviderListSection>

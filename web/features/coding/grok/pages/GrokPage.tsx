@@ -1,8 +1,8 @@
 import React from 'react';
-import { Typography, Button, Space, Empty, message, Modal, Spin, Collapse, Descriptions } from 'antd';
-import { PlusOutlined, FolderOpenOutlined, AppstoreOutlined, SyncOutlined, EyeOutlined, ExclamationCircleOutlined, LinkOutlined, EllipsisOutlined, DatabaseOutlined, ImportOutlined, FileTextOutlined, ThunderboltOutlined, EditOutlined, MessageOutlined, CheckSquareOutlined } from '@ant-design/icons';
+import { Typography, Button, Space, message, Modal, Collapse, Descriptions } from 'antd';
+import { AppstoreOutlined, SyncOutlined, ExclamationCircleOutlined, DatabaseOutlined, ImportOutlined, FileTextOutlined, ThunderboltOutlined, MessageOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
-import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener';
+import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import { invoke } from '@tauri-apps/api/core';
 import {
   DndContext,
@@ -15,11 +15,12 @@ import {
 } from '@dnd-kit/core';
 import {
   SortableContext,
+  rectSortingStrategy,
   sortableKeyboardCoordinates,
   verticalListSortingStrategy,
   arrayMove,
 } from '@dnd-kit/sortable';
-import { restrictToVerticalAxis } from '@dnd-kit/modifiers';
+import { restrictToVerticalAxis, restrictToWindowEdges } from '@dnd-kit/modifiers';
 import type {
   GrokProvider,
   GrokOfficialAccount,
@@ -112,15 +113,15 @@ import { SessionManagerPanel, type SessionSourceMode } from '@/features/coding/s
 import {
   PROVIDER_SORT_MODES,
   backupProvidersBeforeDelete,
-  ProviderBatchToolbar,
-  ProviderSearchEmpty,
-  ProviderSearchInput,
-  ProviderSortDropdown,
   filterProviderItems,
   sortProviderItems,
   useProviderBatchSelection,
   useProviderListSort,
+  useProviderListViewPrefs,
 } from '@/features/coding/shared/providerList';
+import { ProviderCardGrid } from '@/features/coding/shared/providerCardView';
+import CodingPageHeader from '@/features/coding/shared/CodingPageHeader';
+import ProviderListSection from '@/features/coding/shared/ProviderListSection';
 import {
   deleteFavoriteProvider,
   listFavoriteProviders,
@@ -161,7 +162,7 @@ import {
   type GatewayCliTakeoverStatus,
 } from '@/services';
 
-const { Title, Text, Link } = Typography;
+const { Text } = Typography;
 
 function buildGrokFavoriteProviderConfig(provider: GrokProvider) {
   const settingsConfig = parseGrokSettingsConfig(provider.settingsConfig);
@@ -515,6 +516,7 @@ const GrokPage: React.FC = () => {
   });
 
   const { sortMode, setSortMode, lastUsedAt, noteProviderUsed } = useProviderListSort('grok');
+  const { viewMode, setViewMode } = useProviderListViewPrefs('grok');
   const [providerKeyword, setProviderKeyword] = React.useState('');
   // Search and non-custom sort modes bypass sort_index, so dragging would
   // write a stale custom order — dnd is only enabled in custom mode.
@@ -583,6 +585,78 @@ const GrokPage: React.FC = () => {
     onBatchDelete: handleBatchDeleteProviders,
   });
   const providerBatchDragDisabled = providerDragDisabled || providerBatch.selectionMode;
+
+  /** The locate target: the applied provider, never the `__local__` bridge. */
+  const locateProviderId = appliedProviderId === GROK_LOCAL_PROVIDER_ID
+    ? ''
+    : appliedProviderId;
+
+  /** One provider's card props, shared by both layouts. */
+  const renderProviderCard = (provider: GrokProvider) => (
+    <GrokProviderCard
+      key={provider.id}
+      provider={provider}
+      viewMode={viewMode}
+      isApplied={provider.id === appliedProviderId}
+      dragDisabled={providerDragDisabled}
+      officialAccounts={officialAccountsByProviderId[provider.id] || []}
+      onEdit={handleEditProvider}
+      onDelete={handleDeleteProvider}
+      onCopy={handleCopyProvider}
+      onShare={shareProvider}
+      onTest={handleTestProvider}
+      onSelect={handleSelectProvider}
+      onToggleDisabled={handleToggleDisabled}
+      onAddModel={handleAddModel}
+      onEditModel={handleEditModel}
+      onDeleteModel={(provider, modelKey) => {
+        void handleDeleteModel(provider, modelKey);
+      }}
+      onSetDefaultModel={(provider, modelKey) => {
+        void handleSetDefaultModel(provider, modelKey);
+      }}
+      onFetchModels={handleOpenFetchModels}
+      onToggleBatchDeleteMode={handleToggleBatchDeleteMode}
+      onBatchDeleteModels={(provider) => {
+        const selectedCount = (selectedModelIdsByProvider[provider.id] ?? []).length;
+        if (selectedCount === 0) {
+          return;
+        }
+        Modal.confirm({
+          title: t('common.model.batchDeleteConfirmTitle'),
+          content: t('common.model.batchDeleteConfirmContent', { count: selectedCount }),
+          okText: t('common.confirm'),
+          cancelText: t('common.cancel'),
+          onOk: async () => {
+            await handleBatchDeleteModels(provider);
+          },
+        });
+      }}
+      modelSelectionMode={batchDeleteProviderId === provider.id}
+      selectedModelIds={selectedModelIdsByProvider[provider.id] ?? []}
+      onToggleModelSelection={handleToggleModelSelection}
+      onOfficialAccountLogin={handleStartOfficialAccountOauth}
+      onOfficialLocalAccountSave={handleSaveOfficialLocalAccount}
+      onOfficialAccountApply={handleApplyOfficialAccount}
+      onOfficialAccountDelete={handleDeleteOfficialAccount}
+      onOfficialAccountRefresh={handleRefreshOfficialAccount}
+      onOfficialAccountRefreshToken={handleRefreshOfficialAccountToken}
+      onOfficialAccountViewDetails={handleViewOfficialAccountDetails}
+      refreshingOfficialAccountId={refreshingOfficialAccountId}
+      refreshingOfficialTokenAccountId={refreshingOfficialTokenAccountId}
+      savingOfficialAccountId={savingOfficialAccountId}
+      connectivityStatus={connectivityStatuses[provider.id]}
+      gatewayTakeoverActive={gatewayTakeoverActive}
+      gatewayStatus={gatewayCliStatus}
+      onGatewayStatusChange={async (status) => {
+        setGatewayCliStatus(status);
+        await loadConfig();
+      }}
+      selectable={providerBatch.selectionMode && providerBatch.isSelectable(provider.id)}
+      selected={providerBatch.selectedIds.has(provider.id)}
+      onSelectChange={(checked) => providerBatch.toggleSelect(provider.id, checked)}
+    />
+  );
 
   const handleSelectProvider = async (provider: GrokProvider) => {
     try {
@@ -1763,315 +1837,99 @@ const GrokPage: React.FC = () => {
       }}
     >
       <div>
-        {/* Page Header */}
-        <div style={{ marginBottom: 16 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-            <div>
-              <div style={{ marginBottom: 8 }}>
-                <Title level={4} style={{ margin: 0, display: 'inline-block', marginRight: 8 }}>
-                  {t('grok.title')}
-                </Title>
-                <Link
-                  type="secondary"
-                  style={{ fontSize: 12 }}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    openUrl('https://docs.x.ai/build/overview');
-                  }}
-                >
-                  <LinkOutlined /> {t('grok.viewDocs')}
-                </Link>
-                {appliedProviderId && (
-                  <Link
-                    type="secondary"
-                    style={{ fontSize: 12, marginLeft: 16 }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handlePreviewCurrentConfig();
-                    }}
-                  >
-                    <EyeOutlined /> {t('common.previewConfig')}
-                  </Link>
-                )}
-              </div>
-              <Space size="small">
-                <Text type="secondary" style={{ fontSize: 12 }}>
-                  {t('grok.configPath')}:
-                </Text>
-                <Text code style={{ fontSize: 12 }}>
-                  {configPath || '~/.grok/config.toml'}
-                </Text>
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<EditOutlined />}
-                  onClick={() => setRootDirectoryModalOpen(true)}
-                  style={{ padding: 0, fontSize: 12 }}
-                >
-                  {t('grok.rootPathSource.customize')}
-                </Button>
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<FolderOpenOutlined />}
-                  onClick={handleOpenFolder}
-                  style={{ padding: 0, fontSize: 12 }}
-                >
-                  {t('grok.openFolder')}
-                </Button>
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<SyncOutlined />}
-                  onClick={handleRefreshPage}
-                  style={{ padding: 0, fontSize: 12 }}
-                >
-                  {t('grok.refreshConfig')}
-                </Button>
-              </Space>
-            </div>
+        <CodingPageHeader
+          title={t('grok.title')}
+          docsUrl="https://docs.x.ai/build/overview"
+          onPreviewConfig={appliedProviderId ? handlePreviewCurrentConfig : undefined}
+          configPath={configPath || '~/.grok/config.toml'}
+          onCustomizeConfig={() => setRootDirectoryModalOpen(true)}
+          onOpenFolder={handleOpenFolder}
+          onRefresh={handleRefreshPage}
+          onMoreOptions={() => setSettingsModalOpen(true)}
+        />
 
-            <Space>
-              <Button type="text" icon={<EllipsisOutlined />} onClick={() => setSettingsModalOpen(true)}>
-                {t('common.moreOptions')}
+        <ProviderListSection
+          sectionId="grok-providers"
+          collapsed={providerListCollapsed}
+          onCollapsedChange={setProviderListCollapsed}
+          loading={loading}
+          providerCount={providers.length}
+          visibleCount={visibleProviders.length}
+          batch={providerBatch}
+          batchSelectableIds={batchSelectableIds}
+          keyword={providerKeyword}
+          onKeywordChange={setProviderKeyword}
+          sortMode={sortMode}
+          sortModes={PROVIDER_SORT_MODES}
+          onSortModeChange={setSortMode}
+          dragDisabledBySort={providerDragDisabled}
+          locateProviderId={locateProviderId}
+          onBatchTest={handleBatchTestProviders}
+          batchTesting={batchTestingProviders}
+          onOpenCommonConfig={() => setCommonConfigModalOpen(true)}
+          onAddProvider={handleAddProvider}
+          headerExtra={
+            <GatewayFailoverButton
+              cliKey="grok"
+              status={gatewayCliStatus}
+              primaryProviderNeedsGatewayProxy={primaryGatewayProviderNeedsProxy}
+              primaryProviderNeedsProxyReason={primaryGatewayProviderNeedsProxyReason}
+              onStatusChange={setGatewayCliStatus}
+            />
+          }
+          viewMode={viewMode}
+          onViewModeChange={setViewMode}
+          hint={
+            <>
+              <div>{t('grok.pageHint')}</div>
+              <div>{t('grok.pageWarning')}</div>
+            </>
+          }
+          footer={
+            <Space wrap>
+              <Button
+                type="dashed"
+                icon={<ImportOutlined />}
+                onClick={() => setImportModalOpen(true)}
+              >
+                {t('opencode.provider.importFavorite')}
               </Button>
+              {allApiHubAvailable && (
+                <Button
+                  type="dashed"
+                  icon={<AllApiHubIcon />}
+                  onClick={() => setAllApiHubImportModalOpen(true)}
+                >
+                  {t('common.allApiHub.importFromAllApiHub')}
+                </Button>
+              )}
             </Space>
-          </div>
-        </div>
-
-        {/* Provider List */}
-        <div
-          id="grok-providers"
-          data-sidebar-section="true"
-          data-sidebar-title={t('grok.provider.title')}
+          }
         >
-          <Collapse
-            style={{ marginBottom: 16 }}
-            activeKey={providerListCollapsed ? [] : ['providers']}
-            onChange={(keys) => setProviderListCollapsed(!keys.includes('providers'))}
-            items={[
-              {
-                key: 'providers',
-                label: (
-                  <Space size={8} wrap>
-                    <Text strong>
-                      <DatabaseOutlined style={{ marginRight: 8 }} />
-                      {t('grok.provider.title')}
-                    </Text>
-                    <GatewayFailoverButton
-                      cliKey="grok"
-                      status={gatewayCliStatus}
-                      primaryProviderNeedsGatewayProxy={primaryGatewayProviderNeedsProxy}
-                      primaryProviderNeedsProxyReason={primaryGatewayProviderNeedsProxyReason}
-                      onStatusChange={setGatewayCliStatus}
-                    />
-                  </Space>
-                ),
-                extra: (
-                  <Space size={4} wrap>
-                    <Button
-                      type="link"
-                      size="small"
-                      style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4 }}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (providerBatch.selectionMode) {
-                          providerBatch.exitSelection();
-                        } else {
-                          providerBatch.enterSelection();
-                        }
-                      }}
-                    >
-                      <CheckSquareOutlined style={{ fontSize: 13, lineHeight: 1 }} />
-                      <span>
-                        {providerBatch.selectionMode
-                          ? t('common.batch.exit')
-                          : t('common.batch.manage')}
-                      </span>
-                    </Button>
-                    {providerBatch.selectionMode && (
-                      <ProviderBatchToolbar
-                        hasSelection={providerBatch.hasSelection}
-                        visibleCount={batchSelectableIds.length}
-                        isAllSelected={providerBatch.isAllSelected}
-                        indeterminate={providerBatch.indeterminate}
-                        onSelectAll={providerBatch.selectAllFiltered}
-                        onBatchDelete={providerBatch.batchDelete}
-                        disabled={loading}
-                      />
-                    )}
-                    <ProviderSearchInput value={providerKeyword} onChange={setProviderKeyword} />
-                    <ProviderSortDropdown
-                      mode={sortMode}
-                      modes={PROVIDER_SORT_MODES}
-                      onChange={setSortMode}
-                    />
-                    <Button
-                      type="link"
-                      size="small"
-                      style={{ fontSize: 12 }}
-                      icon={<ThunderboltOutlined />}
-                      loading={batchTestingProviders}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleBatchTestProviders();
-                      }}
-                    >
-                      {t('common.batchTest')}
-                    </Button>
-                    <Button
-                      type="link"
-                      size="small"
-                      style={{ fontSize: 12 }}
-                      icon={<AppstoreOutlined />}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setCommonConfigModalOpen(true);
-                      }}
-                    >
-                      {t('grok.commonConfigButton')}
-                    </Button>
-                    <Button
-                      type="link"
-                      size="small"
-                      style={{ fontSize: 12 }}
-                      icon={<PlusOutlined />}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleAddProvider();
-                      }}
-                    >
-                      {t('grok.addProvider')}
-                    </Button>
-                  </Space>
-                ),
-                children: (
-                  <Spin spinning={loading}>
-                    <div
-                      style={{
-                        fontSize: 12,
-                        color: 'var(--color-text-secondary)',
-                        borderLeft: '2px solid var(--color-border)',
-                        paddingLeft: 8,
-                        marginBottom: 12,
-                      }}
-                    >
-                      <div>{t('grok.pageHint')}</div>
-                      <div>{t('grok.pageWarning')}</div>
-                    </div>
-
-                    {providers.length === 0 ? (
-                      <Empty description={t('grok.emptyText')} style={{ marginTop: 40 }} />
-                    ) : visibleProviders.length === 0 ? (
-                      <ProviderSearchEmpty />
-                    ) : (
-                      <DndContext
-                            sensors={providerBatchDragDisabled ? [] : sensors}
-                            collisionDetection={closestCenter}
-                            onDragEnd={handleDragEnd}
-                            modifiers={[restrictToVerticalAxis]}
-                          >
-                            <SortableContext
-                              items={providers.map((p) => p.id)}
-                              strategy={verticalListSortingStrategy}
-                            >
-                              <div>
-                                {visibleProviders.map((provider) => (
-                              <GrokProviderCard
-                                key={provider.id}
-                                provider={provider}
-                                isApplied={provider.id === appliedProviderId}
-                                officialAccounts={officialAccountsByProviderId[provider.id] || []}
-                                onEdit={handleEditProvider}
-                                onDelete={handleDeleteProvider}
-                                onCopy={handleCopyProvider}
-                                onShare={shareProvider}
-                                onTest={handleTestProvider}
-                                onSelect={handleSelectProvider}
-                                onToggleDisabled={handleToggleDisabled}
-                                onAddModel={handleAddModel}
-                                onEditModel={handleEditModel}
-                                onDeleteModel={(provider, modelKey) => {
-                                  void handleDeleteModel(provider, modelKey);
-                                }}
-                                onSetDefaultModel={(provider, modelKey) => {
-                                  void handleSetDefaultModel(provider, modelKey);
-                                }}
-                                onFetchModels={handleOpenFetchModels}
-                                onToggleBatchDeleteMode={handleToggleBatchDeleteMode}
-                                onBatchDeleteModels={(provider) => {
-                                  const selectedCount = (selectedModelIdsByProvider[provider.id] ?? []).length;
-                                  if (selectedCount === 0) {
-                                    return;
-                                  }
-                                  Modal.confirm({
-                                    title: t('common.model.batchDeleteConfirmTitle'),
-                                    content: t('common.model.batchDeleteConfirmContent', { count: selectedCount }),
-                                    okText: t('common.confirm'),
-                                    cancelText: t('common.cancel'),
-                                    onOk: async () => {
-                                      await handleBatchDeleteModels(provider);
-                                    },
-                                  });
-                                }}
-                                modelSelectionMode={batchDeleteProviderId === provider.id}
-                                selectedModelIds={selectedModelIdsByProvider[provider.id] ?? []}
-                                onToggleModelSelection={handleToggleModelSelection}
-                                onOfficialAccountLogin={handleStartOfficialAccountOauth}
-                                onOfficialLocalAccountSave={handleSaveOfficialLocalAccount}
-                                onOfficialAccountApply={handleApplyOfficialAccount}
-                                onOfficialAccountDelete={handleDeleteOfficialAccount}
-                                onOfficialAccountRefresh={handleRefreshOfficialAccount}
-                                onOfficialAccountRefreshToken={handleRefreshOfficialAccountToken}
-                                onOfficialAccountViewDetails={handleViewOfficialAccountDetails}
-                                refreshingOfficialAccountId={refreshingOfficialAccountId}
-                                refreshingOfficialTokenAccountId={refreshingOfficialTokenAccountId}
-                                savingOfficialAccountId={savingOfficialAccountId}
-                                connectivityStatus={connectivityStatuses[provider.id]}
-                                gatewayTakeoverActive={gatewayTakeoverActive}
-                                gatewayStatus={gatewayCliStatus}
-                                onGatewayStatusChange={async (status) => {
-                                  setGatewayCliStatus(status);
-                                  await loadConfig();
-                                }}
-                                selectable={providerBatch.selectionMode && providerBatch.isSelectable(provider.id)}
-                                selected={providerBatch.selectedIds.has(provider.id)}
-                                onSelectChange={(checked) =>
-                                  providerBatch.toggleSelect(provider.id, checked)
-                                }
-                              />
-                                ))}
-                              </div>
-                            </SortableContext>
-                          </DndContext>
-                    )}
-
-                    <div style={{ marginTop: 12 }}>
-                      <Space wrap>
-                        <Button
-                          type="dashed"
-                          icon={<ImportOutlined />}
-                          onClick={() => setImportModalOpen(true)}
-                        >
-                          {t('opencode.provider.importFavorite')}
-                        </Button>
-                        {allApiHubAvailable && (
-                          <Button
-                            type="dashed"
-                            icon={<AllApiHubIcon />}
-                            onClick={() => setAllApiHubImportModalOpen(true)}
-                          >
-                            {t('common.allApiHub.importFromAllApiHub')}
-                          </Button>
-                        )}
-                      </Space>
-                    </div>
-                  </Spin>
-                ),
-              },
-            ]}
-          />
-        </div>
+          {/* One `DndContext` serves both layouts; only the sorting strategy and
+              the drag modifier change with the view. */}
+          <DndContext
+            sensors={providerBatchDragDisabled ? [] : sensors}
+            collisionDetection={closestCenter}
+            onDragEnd={handleDragEnd}
+            modifiers={[viewMode === 'card' ? restrictToWindowEdges : restrictToVerticalAxis]}
+          >
+            <SortableContext
+              items={visibleProviders.map((provider) => provider.id)}
+              strategy={viewMode === 'card' ? rectSortingStrategy : verticalListSortingStrategy}
+            >
+              {viewMode === 'card' ? (
+                <ProviderCardGrid
+                  items={visibleProviders}
+                  getKey={(provider) => provider.id}
+                  renderItem={renderProviderCard}
+                />
+              ) : (
+                <div>{visibleProviders.map(renderProviderCard)}</div>
+              )}
+            </SortableContext>
+          </DndContext>
+        </ProviderListSection>
 
         <div
           id="grok-global-prompt"

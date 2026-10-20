@@ -52,9 +52,17 @@
 | codex | `embedded`（官方供应商卡片内；同一块内容还出现在卡片视图的详情侧栏，那一处**不折叠**） | 卡片名称行（`namePrefix` + `OfficialAccountCount`） | 卡片第二行（`metaEntries`） | 列表卡片有、默认收起 |
 | kimi | `embedded`（官方供应商卡片内；卡片布局下这块内容在**该格子的详情侧栏**，那一处不折叠） | 同上 | 同上 | 有，默认展开 |
 | zcode | `standalone`（列表里是自己的卡片，壳用 `CardShell`；卡片布局里是**一个普通格子 + 该格子自己的详情侧栏**，侧栏那份不折叠） | 列表：区块自己画（`headingTitle`）；卡片布局：格子的标题行（`namePrefix` + `OfficialAccountCount`），侧栏用面板标题 | 区块画在标题行下方（`OfficialAccountHint`） | 有，默认展开 |
-| antigravity / geminicli / grok | **仍手写**（`PENDING_MIGRATION`，3 个） | — | — | — |
+| geminicli | `embedded`（官方供应商卡片内；卡片布局下这块内容在**该格子的详情侧栏**，那一处不折叠） | 卡片名称行（`namePrefix` + `OfficialAccountCount`） | 卡片第二行（`metaEntries`，`OfficialAccountHint`） | 有，默认收起（迁移前即如此） |
+| grok | 同上 | 同上 | 同上 | 有，默认收起（迁移前即如此） |
+| antigravity | **仍手写**（`PENDING_MIGRATION`，1 个） | — | — | — |
 
-> 这三个是 2026-10-09 修守卫时才发现的：原守卫匹配的是 `anticon-swap` / `anticon-check`（渲染后的 DOM class），源码里永远不命中，所以它们从未被扫出（见 13.1 模式七十三）。迁移时按同一份映射规则接进来即可。
+> antigravity 是 2026-10-09 修守卫时才发现的：原守卫匹配的是 `anticon-swap` / `anticon-check`（渲染后的 DOM class），源码里永远不命中，所以它从未被扫出（见 13.1 模式七十三）。geminicli / grok 已于 2026-10-20 按同一份映射规则接入。
+
+### 行内的 CLI 专属动作：`renderExtraActions`
+
+- `renderExtraActions?: (account: OfficialAccountRowView) => React.ReactNode`，渲染在「刷新」之后、「详情」之前。Grok 的「刷新 Token」（重新签发 OAuth token）走这个槽——它是唯一需要第六个行内动作的 CLI。
+- **没有做成具名动作**（如 `onRefreshToken`）：那会把一个 CLI 的语义塞进共享类型，而共享类型按「行级动作的语义」定义，Grok 的 token 续签不属于任何一条公认语义。插槽返回节点，按钮的形态（图标、字号、`paddingInline`）与 loading 都由调用方自带——区块不知道也不该知道某个 CLI 有没有这个能力。
+- 调用方按行 id 回查原始账号记录；返回 `null` 即这一行不渲染。Grok 只用它渲染非 `__local__` 的行。新增消费方时保持「插槽是自由的、语义留在调用方」这条边界。
 
 守卫：`pnpm run test:official-accounts-shared`（源码棘轮，禁止再手写行级按钮）、
 `pnpm run test:codex-official-accounts`、`pnpm run test:official-account-card`（Kimi）与

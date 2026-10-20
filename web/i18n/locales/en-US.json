@@ -3468,13 +3468,6 @@
     "title": "Gemini Configuration",
     "pageHint": "Add multiple provider configs and quickly switch via \"Apply\" or the system tray menu. \"Common Config\" is shared across all providers and will be automatically merged with the provider config when applying.",
     "pageWarning": "Note: Configs are stored in the app database. Do not manually edit the local config file — it will be overwritten by the next \"Apply\" operation.",
-    "configPath": "Configuration Path",
-    "openFolder": "Open Folder",
-    "viewDocs": "Documentation",
-    "refreshConfig": "Refresh",
-    "addProvider": "Add Provider",
-    "commonConfigButton": "Common Config",
-    "emptyText": "No provider configs yet. Use the top-right button to add one.",
     "localConfigHint": "Loaded from local Gemini config and will be saved into database after editing",
     "providerDisabled": "Provider disabled",
     "providerEnabled": "Provider enabled",
@@ -3485,7 +3478,6 @@
       "addProvider": "Add Provider",
       "editProvider": "Edit Provider",
       "confirmDelete": "Are you sure you want to delete provider \"{{name}}\"?",
-      "modeOfficial": "Google Official",
       "nameRequired": "Please enter a provider name",
       "namePlaceholder": "e.g. Google Official / PackyCode",
       "modelName": "Model",
@@ -3502,11 +3494,9 @@
       "notesPlaceholder": "Optional notes",
       "applied": "Applied",
       "apply": "Apply",
-      "officialAccountsTitle": "Account List",
       "officialAccountLabel": "Account",
       "officialAccountsEmpty": "No official accounts yet. Click OAuth Login to add one.",
       "officialAccountLogin": "OAuth Login",
-      "officialAccountRefresh": "Refresh Limits",
       "officialAccountLocal": "Local official login",
       "officialAccountLocalTag": "Local",
       "officialAccountOauthTag": "OAuth",
@@ -3517,7 +3507,6 @@
       "officialAccountOauthSuccess": "Official account added",
       "officialAccountSaveSuccess": "Local official account saved",
       "officialAccountRefreshSuccess": "Official account limits refreshed",
-      "officialAccountViewDetails": "View details",
       "officialAccountDetailsTitle": "Official Account Details",
       "officialAccountPlanType": "Plan type",
       "officialAccountProjectId": "Project ID",
@@ -3537,7 +3526,10 @@
       "providerProfileHelp": "Built-in channels fill API format and Base URL, and Base URL can still be edited. Custom channels can choose the upstream API format manually.",
       "formName": "Name",
       "apiFormatOpenAIChat": "OpenAI Chat Completions",
-      "apiFormatOpenAIResponses": "OpenAI Responses"
+      "apiFormatOpenAIResponses": "OpenAI Responses",
+      "defaultModelLabel": "Primary model",
+      "model": "Model",
+      "officialAccountHint": "Switching writes this account's credentials into Gemini CLI's account store, replacing the current login; it is unavailable while the gateway takes over or proxies."
     },
     "fetchModels": {
       "button": "Fetch Models",
@@ -3566,7 +3558,6 @@
       "currentConfigTitle": "Current Gemini Config Preview"
     },
     "rootPathSource": {
-      "customize": "Custom Root Directory",
       "modal": {
         "title": "Custom Gemini Root Directory",
         "currentSource": "Current Source",
@@ -3587,6 +3578,9 @@
         "envHint": "Detected environment variable GEMINI_CLI_HOME: {{path}}",
         "shellHint": "Detected shell config GEMINI_CLI_HOME: {{path}}"
       }
+    },
+    "officialAccount": {
+      "applyHint": "Switch Gemini CLI to this account"
     }
   },
   "antigravity": {
@@ -4791,7 +4785,6 @@
     }
   },
   "grok": {
-    "addProvider": "Add Provider",
     "apply": {
       "success": "Configuration applied successfully"
     },
@@ -4806,10 +4799,8 @@
       "enablePrivacyProtection": "Privacy protection",
       "privacyProtectionHint": "Disable telemetry, codebase indexing, trace uploads, and codebase uploads."
     },
-    "commonConfigButton": "Common Config",
     "configDisabled": "Config disabled",
     "configEnabled": "Config enabled",
-    "configPath": "Configuration Path",
     "conflict": {
       "chooseAction": "What would you like to do:",
       "createdAt": "Created At",
@@ -4819,7 +4810,6 @@
       "overwrite": "Overwrite existing configuration",
       "title": "Duplicate Import Detected"
     },
-    "emptyText": "No providers configured yet. Click the button above to add.",
     "fetchModels": {
       "baseUrlRequired": "Please enter Base URL first",
       "button": "Fetch Models",
@@ -4844,15 +4834,9 @@
     "model": {
       "defaultModelPlaceholder": "Select default model",
       "selectFromProvider": "Select Model from Provider",
-      "title": "Model List",
-      "addModel": "Add Model",
-      "batchDelete": "Batch Delete",
-      "cancelBatchDelete": "Cancel Batch Delete",
-      "deleteSelected": "Delete Selected ({{count}})",
       "batchDeleteSuccess": "Deleted {{count}} model(s)",
       "addTitle": "Add model",
       "editTitle": "Edit model",
-      "emptyText": "No models yet",
       "setAsPrimarySuccess": "{{name}} has been set as the main model",
       "invalidKey": "Key cannot contain brackets",
       "duplicateKey": "This model key already exists",
@@ -4871,7 +4855,6 @@
       "otherPresets": "Other SDK Presets",
       "upstreamIdSameAsKeyHint": "Local key stays identical to the upstream model id on save."
     },
-    "openFolder": "Open Folder",
     "pageHint": "Add multiple provider configs and quickly switch via \"Apply\" or the system tray menu. \"Common Config\" is shared across all providers and will be automatically merged with the provider config when applying.",
     "pageWarning": "Note: Configs are stored in the app database. Do not manually edit the local config file — it will be overwritten by the next \"Apply\" operation.",
     "plugins": {
@@ -4992,7 +4975,6 @@
       "editProvider": "Edit Provider",
       "formName": "Name",
       "mode": "Mode",
-      "modeOfficial": "Official Subscription",
       "modelName": "Model Name",
       "modelNamePlaceholder": "e.g., grok-4.5",
       "name": "Provider Name",
@@ -5016,7 +4998,6 @@
       "officialAccountTokenExpiresAt": "Token expires at",
       "officialAccountViewDetails": "View details",
       "officialAccountsEmpty": "No official accounts yet. Click OAuth Login to add one.",
-      "officialAccountsTitle": "Account List",
       "officialBatchSkipped": "Skipped {{count}} official subscription config(s). AI Toolbox does not currently support testing their login state directly.",
       "officialConnectivityHint": "Official subscription uses Grok's current login state. AI Toolbox does not currently support direct model tests for this mode.",
       "providerProfile": "Channel",
@@ -5043,13 +5024,12 @@
       "modelNameOfficialHint": "Official default model id. You can fetch official models to help fill this field.",
       "officialAccountRefreshToken": "Refresh Token",
       "officialAccountRefreshTokenSuccess": "OAuth token refreshed",
-      "officialAccountRefreshTokenFailedReLogin": "Refresh token is invalid. Please re-login with OAuth."
+      "officialAccountRefreshTokenFailedReLogin": "Refresh token is invalid. Please re-login with OAuth.",
+      "officialAccountHint": "Switching writes this account's credentials into Grok CLI's auth.json, replacing the current login; it is unavailable while the gateway takes over or proxies."
     },
     "providerDisabled": "Provider disabled",
     "providerEnabled": "Provider enabled",
-    "refreshConfig": "Refresh Config",
     "rootPathSource": {
-      "customize": "Customize Root Directory",
       "modal": {
         "title": "Customize Grok Root Directory",
         "currentSource": "Current Source",
@@ -5072,7 +5052,9 @@
       }
     },
     "title": "Grok Configuration",
-    "viewDocs": "Documentation"
+    "officialAccount": {
+      "applyHint": "Switch Grok CLI to this account"
+    }
   },
   "ohMyPi": {
     "rootPathSource": {
@@ -5667,7 +5649,10 @@
   "claudedesktop": {
     "providers": {
       "importAllApiHubNonAnthropicProtocolDesc": "The selected provider is not an Anthropic-native endpoint but will still be imported in Anthropic Messages protocol format. Requesting Google / Gemini or OpenAI endpoints with the Anthropic format will generally fail. Prefer Anthropic-compatible endpoints, or review the protocol in the edit page after import."
-    }
+    },
+    "pageHint": "Add multiple provider configurations and switch between them with \"Apply\" or the tray menu. \"Common config\" is shared by all providers and merged into the provider config when applied.",
+    "pageWarning": "Note: configurations are stored in the app database. Do not edit the local config files manually — the next \"Apply\" overwrites them.",
+    "unsupportedPlatform": "Claude Desktop 3P config management is not supported on this platform"
   },
   "kimi": {
     "title": "Kimi Code CLI Configuration",

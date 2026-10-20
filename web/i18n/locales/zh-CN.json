@@ -3465,13 +3465,6 @@
     "title": "Gemini 配置管理",
     "pageHint": "可添加多套供应商配置并通过「应用」或系统托盘快捷菜单快速切换。「通用配置」的内容为所有供应商共享，应用时会自动与供应商配置合并写入。",
     "pageWarning": "注意：配置存储在应用数据库中，请勿手动修改本地配置文件，会被下次「应用」操作覆盖。",
-    "configPath": "配置路径",
-    "openFolder": "打开文件夹",
-    "viewDocs": "查看文档",
-    "refreshConfig": "刷新",
-    "addProvider": "添加供应商",
-    "commonConfigButton": "通用配置",
-    "emptyText": "暂无供应商配置，点击右上角按钮添加",
     "localConfigHint": "来自本地 Gemini 配置，编辑后保存到数据库",
     "providerDisabled": "供应商已禁用",
     "providerEnabled": "供应商已启用",
@@ -3482,7 +3475,6 @@
       "addProvider": "添加供应商",
       "editProvider": "编辑供应商",
       "confirmDelete": "确定要删除供应商「{{name}}」吗？",
-      "modeOfficial": "Google 官方",
       "nameRequired": "请输入供应商名称",
       "namePlaceholder": "如：Google 官方 / PackyCode",
       "modelName": "模型",
@@ -3499,11 +3491,9 @@
       "notesPlaceholder": "可选备注",
       "applied": "已应用",
       "apply": "应用",
-      "officialAccountsTitle": "账号列表",
       "officialAccountLabel": "账号",
       "officialAccountsEmpty": "暂无官方账号，点击右侧 OAuth 登录添加",
       "officialAccountLogin": "OAuth 登录",
-      "officialAccountRefresh": "刷新额度",
       "officialAccountLocal": "本地官方登录",
       "officialAccountLocalTag": "本地",
       "officialAccountOauthTag": "OAuth",
@@ -3514,7 +3504,6 @@
       "officialAccountOauthSuccess": "官方账号已添加",
       "officialAccountSaveSuccess": "本地官方账号已保存",
       "officialAccountRefreshSuccess": "官方账号额度已刷新",
-      "officialAccountViewDetails": "查看明细",
       "officialAccountDetailsTitle": "官方账号明细",
       "officialAccountPlanType": "订阅类型",
       "officialAccountProjectId": "Project ID",
@@ -3534,7 +3523,10 @@
       "providerProfileHelp": "内置渠道会填入 API 格式和 Base URL，Base URL 可按需修改；自定义渠道可手动选择上游接口协议。",
       "formName": "名称",
       "apiFormatOpenAIChat": "OpenAI Chat Completions",
-      "apiFormatOpenAIResponses": "OpenAI Responses"
+      "apiFormatOpenAIResponses": "OpenAI Responses",
+      "defaultModelLabel": "主模型",
+      "model": "模型",
+      "officialAccountHint": "切换会把该账号的登录凭据写入 Gemini CLI 的账号存储，替换当前登录；网关接管或代理模式下无法切换。"
     },
     "fetchModels": {
       "button": "获取模型",
@@ -3563,7 +3555,6 @@
       "currentConfigTitle": "当前 Gemini 配置预览"
     },
     "rootPathSource": {
-      "customize": "自定义配置目录",
       "modal": {
         "title": "自定义 Gemini 配置目录",
         "currentSource": "当前来源",
@@ -3584,6 +3575,9 @@
         "envHint": "检测到环境变量 GEMINI_CLI_HOME：{{path}}",
         "shellHint": "检测到 Shell 配置 GEMINI_CLI_HOME：{{path}}"
       }
+    },
+    "officialAccount": {
+      "applyHint": "把 Gemini CLI 切换到该账号"
     }
   },
   "antigravity": {
@@ -4788,7 +4782,6 @@
     }
   },
   "grok": {
-    "addProvider": "添加供应商",
     "apply": {
       "success": "配置应用成功"
     },
@@ -4803,10 +4796,8 @@
       "enablePrivacyProtection": "隐私保护",
       "privacyProtectionHint": "关闭遥测、代码库索引、追踪上传和代码库上传。"
     },
-    "commonConfigButton": "通用配置",
     "configDisabled": "配置已禁用",
     "configEnabled": "配置已启用",
-    "configPath": "配置文件路径",
     "conflict": {
       "chooseAction": "你想要：",
       "createdAt": "创建时间",
@@ -4816,7 +4807,6 @@
       "overwrite": "覆盖已有配置",
       "title": "检测到重复导入"
     },
-    "emptyText": "暂无供应商配置，点击上方按钮添加",
     "fetchModels": {
       "baseUrlRequired": "请先填写 Base URL",
       "button": "获取模型",
@@ -4841,15 +4831,9 @@
     "model": {
       "defaultModelPlaceholder": "选择默认模型",
       "selectFromProvider": "从供应商选择模型",
-      "title": "模型列表",
-      "addModel": "添加模型",
-      "batchDelete": "批量删除",
-      "cancelBatchDelete": "取消批量删除",
-      "deleteSelected": "删除已选 {{count}} 项",
       "batchDeleteSuccess": "已删除 {{count}} 个模型",
       "addTitle": "添加模型",
       "editTitle": "编辑模型",
-      "emptyText": "暂无模型",
       "setAsPrimarySuccess": "已将 {{name}} 设为主模型",
       "invalidKey": "Key 不能包含方括号",
       "duplicateKey": "该模型 Key 已存在",
@@ -4868,7 +4852,6 @@
       "otherPresets": "其他 SDK 预设",
       "upstreamIdSameAsKeyHint": "本地 Key 与上游模型 ID 相同，保存时自动对齐。"
     },
-    "openFolder": "打开文件夹",
     "pageHint": "可添加多套供应商配置并通过「应用」或系统托盘快捷菜单快速切换。「通用配置」的内容为所有供应商共享，应用时会自动与供应商配置合并写入。",
     "pageWarning": "注意：配置存储在应用数据库中，请勿手动修改本地配置文件，会被下次「应用」操作覆盖。",
     "plugins": {
@@ -4989,7 +4972,6 @@
       "editProvider": "编辑供应商",
       "formName": "名称",
       "mode": "模式",
-      "modeOfficial": "官方订阅",
       "modelName": "模型名称",
       "modelNamePlaceholder": "如：grok-4.5",
       "name": "供应商名称",
@@ -5013,7 +4995,6 @@
       "officialAccountTokenExpiresAt": "Token 过期时间",
       "officialAccountViewDetails": "查看明细",
       "officialAccountsEmpty": "暂无官方账号，点击右侧 OAuth 登录添加",
-      "officialAccountsTitle": "账号列表",
       "officialBatchSkipped": "已跳过 {{count}} 个官方订阅配置，AI Toolbox 目前不支持直接测试其登录态。",
       "officialConnectivityHint": "官方订阅使用 Grok 当前登录态，AI Toolbox 目前不支持直接做模型测试。",
       "providerProfile": "渠道",
@@ -5040,13 +5021,12 @@
       "modelNameOfficialHint": "官方渠道的默认模型 ID，可获取官方模型列表辅助填写。",
       "officialAccountRefreshToken": "刷新 Token",
       "officialAccountRefreshTokenSuccess": "OAuth Token 已刷新",
-      "officialAccountRefreshTokenFailedReLogin": "Refresh Token 已失效，请重新 OAuth 登录"
+      "officialAccountRefreshTokenFailedReLogin": "Refresh Token 已失效，请重新 OAuth 登录",
+      "officialAccountHint": "切换会把该账号的登录凭据写入 Grok CLI 的 auth.json，替换当前登录；网关接管或代理模式下无法切换。"
     },
     "providerDisabled": "供应商已禁用",
     "providerEnabled": "供应商已启用",
-    "refreshConfig": "刷新配置",
     "rootPathSource": {
-      "customize": "自定义配置目录",
       "modal": {
         "title": "自定义 Grok 配置目录",
         "currentSource": "当前来源",
@@ -5069,7 +5049,9 @@
       }
     },
     "title": "Grok 配置管理",
-    "viewDocs": "官方文档"
+    "officialAccount": {
+      "applyHint": "把 Grok CLI 切换到该账号"
+    }
   },
   "ohMyPi": {
     "rootPathSource": {
@@ -5664,7 +5646,10 @@
   "claudedesktop": {
     "providers": {
       "importAllApiHubNonAnthropicProtocolDesc": "检测到所选供应商不是 Anthropic 官方端点，仍会以 Anthropic Messages 协议格式导入。Google / Gemini、OpenAI 等端点用 Anthropic 格式请求通常无法成功。建议仅导入 Anthropic 兼容端点，或导入后立即进入编辑页核对协议。"
-    }
+    },
+    "pageHint": "可添加多套供应商配置并通过「应用」或系统托盘快捷菜单快速切换。「通用配置」的内容为所有供应商共享，应用时会自动与供应商配置合并写入。",
+    "pageWarning": "注意：配置存储在应用数据库中，请勿手动修改本地配置文件，会被下次「应用」操作覆盖。",
+    "unsupportedPlatform": "当前平台不支持 Claude Desktop 3P 配置管理"
   },
   "kimi": {
     "title": "Kimi Code CLI 配置管理",

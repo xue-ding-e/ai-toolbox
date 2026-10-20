@@ -1,7 +1,20 @@
 import React from 'react';
+import { Button, Modal, Space, Tooltip } from 'antd';
+import {
+  CopyOutlined,
+  DeleteOutlined,
+  EditOutlined,
+} from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
+import ProviderNameLink from '@/components/common/ProviderNameLink';
 import OpenCodeStyleCard from '@/features/coding/shared/providerCardVariants/OpenCodeStyleCard';
+import ProviderModelSection from '@/features/coding/shared/providerCardVariants/ProviderModelSection';
 import type { ProviderCardVariantProps } from '@/features/coding/shared/providerCardVariants/types';
+import {
+  ProviderCompactCard,
+  type ProviderDetailSection,
+} from '@/features/coding/shared/providerCardView';
+import type { ProviderViewMode } from '@/features/coding/shared/providerList';
 import type {
   ModelDisplayData,
   ProviderConnectivityStatusItem,
@@ -16,6 +29,11 @@ import {
 
 interface OmoNativeProviderCardProps {
   provider: OmoNativeProvider;
+  /**
+   * Which layout the page is in. `'card'` renders the compact grid cell (and
+   * its own detail sidebar); anything else renders the list card.
+   */
+  viewMode?: ProviderViewMode;
   onEdit: () => void;
   onCopy: () => void;
   onDelete: () => void;
@@ -39,6 +57,11 @@ interface OmoNativeProviderCardProps {
   dragDisabled?: boolean;
   /** Latest result of the batch connectivity test for this provider. */
   connectivityStatus?: ProviderConnectivityStatusItem;
+  /**
+   * The model `settings.json` starts with. The grid cell states it only for the
+   * provider that owns it, the same way OpenCode's cell states its default model.
+   */
+  defaultModelId?: string;
 
   /** Model catalog actions. Omit a handler to hide its button. */
   onAddModel?: () => void;
@@ -69,11 +92,13 @@ interface OmoNativeProviderCardProps {
  * are usable at once — there is no "switch to this one" action (so not the
  * Codex style either).
  *
- * The layout lives in the shared variant; this file only maps Native's storage
- * shape (`models.json` + `auth.json`) onto it.
+ * The layout lives in the shared variants; this file only maps Native's storage
+ * shape (`models.json` + `auth.json`) onto them. Both layouts are fed by the
+ * same `props` object so the two can never offer different actions.
  */
 const OmoNativeProviderCard: React.FC<OmoNativeProviderCardProps> = ({
   provider,
+  viewMode = 'list',
   onEdit,
   onCopy,
   onDelete,
@@ -83,6 +108,7 @@ const OmoNativeProviderCard: React.FC<OmoNativeProviderCardProps> = ({
   onSelectChange,
   dragDisabled = false,
   connectivityStatus,
+  defaultModelId,
   onAddModel,
   onEditModel,
   onCopyModel,
@@ -102,6 +128,7 @@ const OmoNativeProviderCard: React.FC<OmoNativeProviderCardProps> = ({
   const config = provider.config;
   const baseUrl = getStringField(config, 'baseUrl');
   const api = getStringField(config, 'api');
+  const apiType = getStringField(config, 'api');
   const entries = getOmoNativeModelEntries(config);
 
   const modelRows = React.useMemo<ModelDisplayData[]>(
@@ -115,10 +142,12 @@ const OmoNativeProviderCard: React.FC<OmoNativeProviderCardProps> = ({
     [entries],
   );
 
+  const displayName = getStringField(config, 'name') || provider.key;
+
   const props: ProviderCardVariantProps = {
     provider: {
       id: provider.key,
-      name: getStringField(config, 'name') || provider.key,
+      name: displayName,
       sdkName: omoNativeApiToNpm(api),
       baseUrl,
     },
@@ -166,7 +195,140 @@ const OmoNativeProviderCard: React.FC<OmoNativeProviderCardProps> = ({
     },
   };
 
-  return <OpenCodeStyleCard {...props} />;
+  if (viewMode !== 'card') {
+    return <OpenCodeStyleCard {...props} />;
+  }
+
+  const modelSection = props.modelSection!;
+  const defaultModelName = defaultModelId
+    ? modelRows.find((row) => row.id === defaultModelId)?.name ?? defaultModelId
+    : undefined;
+
+  /**
+   * The cell's second line: the npm package (a fact every provider has, with
+   * `@ai-sdk/openai-compatible` as the fallback), plus the model this provider
+   * starts with when it owns the default.
+   *
+   * Without the package the line would be empty for every provider that is not
+   * the default, which reads as missing data rather than "no default here"
+   * (the same reasoning as OpenCode's cell, 2026-10-19). The package carries no
+   * label because `@scope/name` names itself.
+   */
+  const cardSubtitle = [
+    { value: omoNativeApiToNpm(api) },
+    ...(defaultModelName
+      ? [{ label: t('common.model.currentPrimary'), value: defaultModelName }]
+      : []),
+  ];
+
+  const detailSections: ProviderDetailSection[] = [
+    {
+      key: 'connection',
+      title: t('common.provider.connectionTitle'),
+      fields: [
+        {
+          key: 'baseUrl',
+          label: t('omoNative.providers.baseUrl'),
+          value: baseUrl,
+          emptyText: t('common.provider.notConfigured'),
+          copyable: true,
+        },
+        {
+          key: 'api',
+          label: t('omoNative.providers.apiType'),
+          value: apiType,
+          emptyText: t('common.provider.notConfigured'),
+          copyable: true,
+        },
+        {
+          key: 'apiKey',
+          label: t('omoNative.providers.providerApiKey'),
+          value: provider.apiKey,
+          emptyText: t('common.provider.notConfigured'),
+          copyable: true,
+          elideMiddle: true,
+        },
+      ],
+    },
+    // The catalog brings its own title, toolbar and empty state.
+    {
+      key: 'catalog',
+      content: (
+        <ProviderModelSection
+          providerId={provider.key}
+          modelSection={modelSection}
+          appearance="detail"
+        />
+      ),
+    },
+  ];
+
+  /**
+   * The sidebar footer is not a `Popconfirm` host, so its delete button asks
+   * first and then runs the same handler the list card calls. The guard also
+   * lives here: without it the sidebar would be a way around the default
+   * provider's `deleteDisabledReason`.
+   */
+  const handleDeleteFromDetail = () => {
+    if (deleteDisabledReason) {
+      return;
+    }
+    Modal.confirm({
+      title: t('common.provider.deleteProvider'),
+      content: t('common.provider.confirmDelete', { name: displayName }),
+      okText: t('common.confirm'),
+      cancelText: t('common.cancel'),
+      okButtonProps: { danger: true },
+      onOk: onDelete,
+    });
+  };
+
+  return (
+    <ProviderCompactCard
+      provider={props.provider}
+      subtitle={cardSubtitle}
+      // No provider-level apply and no enable switch exists in Native, so the
+      // action row carries only the "more" menu; `'subtitle'` keeps it on the
+      // second line instead of opening an empty bordered footer bar.
+      actionPlacement="subtitle"
+      providerState={props.providerState}
+      actions={props.actions}
+      extraMenuItems={[{
+        key: 'model-test',
+        label: t('opencode.connectivity.button'),
+        disabled: testModelsDisabled,
+        onClick: onTestModels,
+      }]}
+      detail={{
+        title: <ProviderNameLink name={displayName} baseUrl={baseUrl} />,
+        sections: detailSections,
+        secondaryActions: (
+          <Space size={4} wrap>
+            <Button size="small" type="text" icon={<EditOutlined />} onClick={onEdit}>
+              {t('common.edit')}
+            </Button>
+            <Button size="small" type="text" icon={<CopyOutlined />} onClick={onCopy}>
+              {t('common.copy')}
+            </Button>
+            <Tooltip title={deleteDisabledReason}>
+              <span>
+                <Button
+                  size="small"
+                  type="text"
+                  danger
+                  icon={<DeleteOutlined />}
+                  disabled={Boolean(deleteDisabledReason)}
+                  onClick={handleDeleteFromDetail}
+                >
+                  {t('common.delete')}
+                </Button>
+              </span>
+            </Tooltip>
+          </Space>
+        ),
+      }}
+    />
+  );
 };
 
 export default OmoNativeProviderCard;

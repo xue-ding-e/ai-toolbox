@@ -1,25 +1,13 @@
 import React from 'react';
-import { Card, Space, Button, Dropdown, Tag, Typography, Switch, Tooltip, message } from 'antd';
-import type { MenuProps } from 'antd';
+import { Button, Space, Tag, Tooltip, Typography, message } from 'antd';
 import {
   ApiOutlined,
   CheckOutlined,
-  CopyOutlined,
-  DeleteOutlined,
-  DownOutlined,
-  EditOutlined,
-  EyeOutlined,
-  HolderOutlined,
   LinkOutlined,
-  MoreOutlined,
-  RightOutlined,
-  SyncOutlined,
 } from '@ant-design/icons';
 import { BarChart2, Share2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
-import { useSortable } from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
 import type { GeminiCliOfficialAccount, GeminiCliProvider, GeminiCliSettingsConfig } from '@/types/geminicli';
 import {
   engageProxyGatewaySingle,
@@ -46,19 +34,45 @@ import {
   providerNeedsGatewayProxy,
   subscribeGatewayProviderProfiles,
 } from '@/features/coding/shared/gateway';
-import { ManagementCheckbox } from '@/features/coding/shared/management';
+import ClaudeStyleCard from '@/features/coding/shared/providerCardVariants/ClaudeStyleCard';
+import {
+  renderProviderPrimaryAction,
+} from '@/features/coding/shared/providerCardVariants/providerCardActions';
+import type {
+  ProviderCardMetaEntry,
+  ProviderCardVariantProps,
+} from '@/features/coding/shared/providerCardVariants/types';
+import {
+  ProviderCompactCard,
+  type ProviderDetailSection,
+} from '@/features/coding/shared/providerCardView';
+import type { ProviderViewMode } from '@/features/coding/shared/providerList';
+import {
+  OfficialAccountCount,
+  OfficialAccountHeadingIcon,
+  OfficialAccountHint,
+  OfficialAccountsSection,
+} from '@/features/coding/shared/officialAccounts';
+import type {
+  OfficialAccountPendingAction,
+  OfficialAccountRowView,
+} from '@/features/coding/shared/officialAccounts';
 
 const { Text } = Typography;
 
 interface GeminiCliProviderCardProps {
   provider: GeminiCliProvider;
   isApplied: boolean;
+  /** Which layout the page is in; `'card'` renders the compact grid cell. */
+  viewMode?: ProviderViewMode;
   onEdit: (provider: GeminiCliProvider) => void;
   onDelete: (provider: GeminiCliProvider) => void;
   onCopy: (provider: GeminiCliProvider) => void;
   onShare: (provider: GeminiCliProvider) => void;
   onSelect: (provider: GeminiCliProvider) => void;
   onToggleDisabled: (provider: GeminiCliProvider, isDisabled: boolean) => void;
+  /** Hides the drag handle when reordering is unavailable. */
+  dragDisabled?: boolean;
   officialAccounts?: GeminiCliOfficialAccount[];
   onOfficialAccountLogin?: (provider: GeminiCliProvider) => void;
   onOfficialLocalAccountSave?: (provider: GeminiCliProvider, account: GeminiCliOfficialAccount) => void;
@@ -109,15 +123,28 @@ const extractModelName = (settingsConfig: GeminiCliSettingsConfig) => {
   return typeof modelName === 'string' ? modelName.trim() || undefined : undefined;
 };
 
+/**
+ * A Gemini CLI provider, rendered in the Claude style.
+ *
+ * Style choice follows SOP §4.2.1: the CLI stores a single `GEMINI_MODEL`
+ * rather than a model catalog, and exactly one provider is applied. Official
+ * logins live in an embedded account block (`footer`), which is the same slot
+ * Codex and Kimi use.
+ *
+ * Everything below is this CLI's own semantics — settings parsing, the gateway
+ * decisions and the account handlers. The layouts come from the shared cards.
+ */
 const GeminiCliProviderCard: React.FC<GeminiCliProviderCardProps> = ({
   provider,
   isApplied,
+  viewMode = 'list',
   onEdit,
   onDelete,
   onCopy,
   onShare,
   onSelect,
   onToggleDisabled,
+  dragDisabled = false,
   officialAccounts = [],
   onOfficialAccountLogin,
   onOfficialLocalAccountSave,
@@ -140,14 +167,6 @@ const GeminiCliProviderCard: React.FC<GeminiCliProviderCardProps> = ({
   const [engagingGatewayProxy, setEngagingGatewayProxy] = React.useState(false);
   const [restoringDirect, setRestoringDirect] = React.useState(false);
   const [switchingGatewayProvider, setSwitchingGatewayProvider] = React.useState(false);
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-    isDragging,
-  } = useSortable({ id: provider.id });
 
   const settingsConfig = React.useMemo(
     () => parseSettingsConfig(provider.settingsConfig),
@@ -191,7 +210,6 @@ const GeminiCliProviderCard: React.FC<GeminiCliProviderCardProps> = ({
     ? gatewayStatus?.provider_priorities.find((entry) => entry.provider_id === provider.id)
     : undefined;
   const isGatewayPrimary = priorityEntry?.label === 'P0';
-  const hasOfficialAccounts = isOfficialProvider && officialAccounts.length > 0;
   const shouldShowOfficialAccounts = shouldShowGeminiCliOfficialAccounts(
     provider,
     officialAccounts.length,
@@ -220,18 +238,6 @@ const GeminiCliProviderCard: React.FC<GeminiCliProviderCardProps> = ({
   const showApplyAction = !gatewayProxyActive && !isApplied && !isLocalProvider;
   const showGatewaySwitchAction = canSwitchGatewayProvider;
   const showGatewayLockedApply = gatewayProxyActive && !isApplied && !canSwitchGatewayProvider;
-  const cardBorderColor = selectable && selected
-    ? 'var(--ant-color-primary)'
-    : isGatewayPrimary
-      ? 'var(--color-status-success)'
-      : showRuntimeApplied
-        ? 'var(--ant-color-primary)'
-        : 'var(--color-border-card)';
-  const cardBackground = isGatewayPrimary
-    ? 'linear-gradient(135deg, color-mix(in srgb, var(--color-status-success) 12%, var(--color-bg-container)), var(--color-bg-container))'
-    : showRuntimeApplied
-      ? 'var(--color-bg-selected)'
-      : undefined;
 
   const refreshTrayAfterGatewayChange = () => {
     void refreshTrayMenu().catch((error) => {
@@ -290,61 +296,14 @@ const GeminiCliProviderCard: React.FC<GeminiCliProviderCardProps> = ({
     }
   };
 
-  const handleToggleDisabled = (checked: boolean) => {
-    if (showRuntimeApplied && !checked) {
+  /** The shared switch hands over the new enabled state; invert it once, here. */
+  const handleToggleDisabled = (enabled: boolean) => {
+    if (showRuntimeApplied && !enabled) {
       message.warning(t('common.disableAppliedConfigWarning'));
       return;
     }
-    onToggleDisabled(provider, !checked);
+    onToggleDisabled(provider, !enabled);
   };
-
-  const menuItems: MenuProps['items'] = [
-    ...(!isLocalProvider ? [{
-      key: 'toggle',
-      label: (
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-            <span>{t('common.enable')}</span>
-            <Text type="secondary" style={{ fontSize: 11 }}>
-              {provider.isDisabled ? t('geminicli.configDisabled') : t('geminicli.configEnabled')}
-            </Text>
-          </div>
-          <Switch checked={!provider.isDisabled} onChange={handleToggleDisabled} size="small" />
-        </div>
-      ),
-    }] : []),
-    {
-      key: 'edit',
-      label: t('common.edit'),
-      icon: <EditOutlined />,
-      onClick: () => onEdit(provider),
-    },
-    {
-      key: 'copy',
-      label: t('common.copy'),
-      icon: <CopyOutlined />,
-      onClick: () => onCopy(provider),
-    },
-    {
-      key: 'share',
-      label: t('common.share'),
-      icon: <Share2 size={14} />,
-      onClick: () => onShare(provider),
-    },
-    // Hide delete button for __local__ provider
-    ...(!isLocalProvider
-      ? [
-          { type: 'divider' as const },
-          {
-            key: 'delete',
-            label: t('common.delete'),
-            icon: <DeleteOutlined />,
-            danger: true,
-            onClick: () => onDelete(provider),
-          },
-        ]
-      : []),
-  ].filter(Boolean) as MenuProps['items'];
 
   const formatOfficialAccountLabel = (account: GeminiCliOfficialAccount) => {
     if (account.id === GEMINI_CLI_LOCAL_PROVIDER_ID) {
@@ -353,51 +312,75 @@ const GeminiCliProviderCard: React.FC<GeminiCliProviderCardProps> = ({
     return account.email || account.projectId || account.name;
   };
 
-  const renderOfficialAccounts = () => {
-    if (!shouldShowOfficialAccounts) {
-      return null;
+  const officialAccountRows = React.useMemo<OfficialAccountRowView[]>(
+    () =>
+      officialAccounts.map((account) => ({
+        id: account.id,
+        label: formatOfficialAccountLabel(account),
+        kindTag: account.id === GEMINI_CLI_LOCAL_PROVIDER_ID
+          ? t('geminicli.provider.officialAccountLocalTag')
+          : t('geminicli.provider.officialAccountOauthTag'),
+        metaLines: [
+          account.projectId,
+          account.planType,
+          account.limit5hText
+            ? `${t('geminicli.provider.officialAccountShortWindowLimitLabel', {
+                label: account.limitShortLabel || '5h',
+              })}: ${account.limit5hText}`
+            : undefined,
+          account.limitWeeklyText
+            ? `${t('geminicli.provider.officialAccountWeeklyLimitLabel')}: ${account.limitWeeklyText}`
+            : undefined,
+        ].filter((line): line is string => Boolean(line)),
+        isApplied: showOfficialRuntimeState && account.isApplied,
+        isVirtual: account.isVirtual,
+        lastError: account.lastError
+          ? t('geminicli.provider.officialAccountLastError', { message: account.lastError })
+          : undefined,
+      })),
+    [officialAccounts, showOfficialRuntimeState, t],
+  );
+
+  const findOfficialAccount = (row: OfficialAccountRowView) =>
+    officialAccounts.find((account) => account.id === row.id);
+
+  const officialAccountPending = React.useMemo<OfficialAccountPendingAction | null>(() => {
+    if (refreshingOfficialAccountId) {
+      return { accountId: refreshingOfficialAccountId, action: 'refresh' };
     }
+    if (savingOfficialAccountId) {
+      return { accountId: savingOfficialAccountId, action: 'save' };
+    }
+    return null;
+  }, [refreshingOfficialAccountId, savingOfficialAccountId]);
 
+  /**
+   * The account block.
+   *
+   * `fold` is what the list card gets; the detail sidebar renders the same
+   * section uncollapsed (`ProviderDetailPanel` opens it for reading, so a fold
+   * there would only be a header in front of the rows).
+   */
+  const renderOfficialAccounts = (fallback: 'footer' | 'detail') => {
+    if (!shouldShowOfficialAccounts) {
+      return undefined;
+    }
     return (
-      <div
-        style={{
-          marginTop: 12,
-          paddingTop: 12,
-          borderTop: '1px solid var(--color-border)',
-        }}
-      >
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 12,
-            marginBottom: accountsCollapsed ? 0 : 10,
-          }}
-        >
-          <Button
-            type="text"
-            size="small"
-            onClick={() => setAccountsCollapsed((current) => !current)}
-            style={{
-              padding: 0,
-              height: 'auto',
-              color: 'var(--color-text-secondary)',
-              fontSize: 12,
-            }}
-          >
-            <Space size={6}>
-              {accountsCollapsed ? <RightOutlined /> : <DownOutlined />}
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                {t('geminicli.provider.officialAccountsTitle')}
-              </Text>
-              <Text type="secondary" style={{ fontSize: 11 }}>
-                ({officialAccounts.length})
-              </Text>
-            </Space>
-          </Button>
-
-          {isOfficialProvider ? (
+      <OfficialAccountsSection
+        variant="embedded"
+        listTitle={t('common.officialAccount.listTitle')}
+        emptyText={t('geminicli.provider.officialAccountsEmpty')}
+        accounts={officialAccountRows}
+        {...(fallback === 'footer'
+          ? {
+              collapsed: accountsCollapsed,
+              onToggleCollapsed: () => setAccountsCollapsed((current) => !current),
+            }
+          : {})}
+        pending={officialAccountPending}
+        applyHint={t('geminicli.officialAccount.applyHint')}
+        loginAction={
+          isOfficialProvider ? (
             <Button
               type="link"
               size="small"
@@ -411,423 +394,390 @@ const GeminiCliProviderCard: React.FC<GeminiCliProviderCardProps> = ({
             <Text type="secondary" style={{ fontSize: 11 }}>
               {t('geminicli.provider.officialAccountLegacyNotice')}
             </Text>
-          )}
-        </div>
-
-        {!accountsCollapsed && (
-          <div
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 8,
-              paddingLeft: 18,
-            }}
-          >
-            {hasOfficialAccounts ? officialAccounts.map((account) => (
-              <div
-                key={account.id}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  gap: 12,
-                  padding: '6px 0',
-                  borderBottom: '1px solid var(--color-border)',
-                }}
-              >
-                <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    flexWrap: 'wrap',
-                    gap: 8,
-                    minWidth: 0,
-                    flex: 1,
-                  }}
-                >
-                  <Text
-                    strong={showOfficialRuntimeState && account.isApplied}
-                    style={{ fontSize: 12 }}
-                    ellipsis={{ tooltip: formatOfficialAccountLabel(account) }}
-                  >
-                    {formatOfficialAccountLabel(account)}
-                  </Text>
-                  <Tag style={{ margin: 0, fontSize: 10 }}>
-                    {account.id === GEMINI_CLI_LOCAL_PROVIDER_ID
-                      ? t('geminicli.provider.officialAccountLocalTag')
-                      : t('geminicli.provider.officialAccountOauthTag')}
-                  </Tag>
-                  {account.projectId && (
-                    <Text type="secondary" style={{ fontSize: 11 }}>
-                      {account.projectId}
-                    </Text>
-                  )}
-                  {account.planType && (
-                    <Text type="secondary" style={{ fontSize: 11 }}>
-                      {account.planType}
-                    </Text>
-                  )}
-                  {account.lastError ? (
-                    <Text type="danger" style={{ fontSize: 11 }}>
-                      {t('geminicli.provider.officialAccountLastError', { message: account.lastError })}
-                    </Text>
-                  ) : (
-                    <>
-                      {account.limit5hText && (
-                        <Text type="secondary" style={{ fontSize: 11 }}>
-                          {`${t('geminicli.provider.officialAccountShortWindowLimitLabel', {
-                            label: account.limitShortLabel || '5h',
-                          })}: ${account.limit5hText}`}
-                        </Text>
-                      )}
-                      {account.limitWeeklyText && (
-                        <Text type="secondary" style={{ fontSize: 11 }}>
-                          {`${t('geminicli.provider.officialAccountWeeklyLimitLabel')}: ${account.limitWeeklyText}`}
-                        </Text>
-                      )}
-                    </>
-                  )}
-                  {showOfficialRuntimeState && account.isApplied && (
-                    <AppliedTag style={{ fontSize: 10 }}>
-                      {t('geminicli.provider.applied')}
-                    </AppliedTag>
-                  )}
-                </div>
-
-                <Space size={4} wrap>
-                  <Button
-                    type="text"
-                    size="small"
-                    icon={<SyncOutlined />}
-                    onClick={() => onOfficialAccountRefresh?.(provider, account)}
-                    loading={refreshingOfficialAccountId === account.id}
-                    style={{ height: 'auto', paddingInline: 4, fontSize: 11 }}
-                  >
-                    {t('geminicli.provider.officialAccountRefresh')}
-                  </Button>
-                  <Button
-                    type="text"
-                    size="small"
-                    icon={<EyeOutlined />}
-                    onClick={() => onOfficialAccountViewDetails?.(provider, account)}
-                    style={{ height: 'auto', paddingInline: 4, fontSize: 11 }}
-                  >
-                    {t('geminicli.provider.officialAccountViewDetails')}
-                  </Button>
-                  {account.id === GEMINI_CLI_LOCAL_PROVIDER_ID ? (
-                    <Button
-                      type="text"
-                      size="small"
-                      icon={<CheckOutlined />}
-                      onClick={() => onOfficialLocalAccountSave?.(provider, account)}
-                      loading={savingOfficialAccountId === account.id}
-                      style={{ height: 'auto', paddingInline: 4, fontSize: 11 }}
-                    >
-                      {t('common.save')}
-                    </Button>
-                  ) : showOfficialRuntimeState && !account.isApplied ? (
-                    <Button
-                      type="text"
-                      size="small"
-                      icon={<CheckOutlined />}
-                      onClick={() => onOfficialAccountApply?.(provider, account)}
-                      style={{ height: 'auto', paddingInline: 4, fontSize: 11 }}
-                    >
-                      {t('geminicli.provider.apply')}
-                    </Button>
-                  ) : null}
-                  {!account.isVirtual && (
-                    <Button
-                      type="text"
-                      danger
-                      size="small"
-                      icon={<DeleteOutlined />}
-                      onClick={() => onOfficialAccountDelete?.(provider, account)}
-                      style={{ height: 'auto', paddingInline: 4, fontSize: 11 }}
-                    >
-                      {t('common.delete')}
-                    </Button>
-                  )}
-                </Space>
-              </div>
-            )) : (
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                {t('geminicli.provider.officialAccountsEmpty')}
-              </Text>
-            )}
-          </div>
-        )}
-      </div>
+          )
+        }
+        onRefresh={onOfficialAccountRefresh
+          ? (row) => {
+              const account = findOfficialAccount(row);
+              if (account) onOfficialAccountRefresh(provider, account);
+            }
+          : undefined}
+        onViewDetails={onOfficialAccountViewDetails
+          ? (row) => {
+              const account = findOfficialAccount(row);
+              if (account) onOfficialAccountViewDetails(provider, account);
+            }
+          : undefined}
+        onSaveLocal={onOfficialLocalAccountSave
+          ? (row) => {
+              const account = findOfficialAccount(row);
+              if (account) onOfficialLocalAccountSave(provider, account);
+            }
+          : undefined}
+        onApply={showOfficialRuntimeState && onOfficialAccountApply
+          ? (row) => {
+              const account = findOfficialAccount(row);
+              if (account) onOfficialAccountApply(provider, account);
+            }
+          : undefined}
+        onDelete={onOfficialAccountDelete
+          ? (row) => {
+              const account = findOfficialAccount(row);
+              if (account) onOfficialAccountDelete(provider, account);
+            }
+          : undefined}
+      />
     );
   };
 
-  return (
-    <div
-      ref={setNodeRef}
-      style={{
-        transform: CSS.Transform.toString(transform),
-        transition,
-        opacity: isDragging ? 0.5 : provider.isDisabled ? 0.6 : 1,
-      }}
-    >
-      <Card
-        size="small"
-        style={{
-          marginBottom: 12,
-          borderColor: cardBorderColor,
-          background: cardBackground,
-          boxShadow: 'var(--shadow-card-sm)',
-          transition: 'opacity 0.3s ease, border-color 0.2s ease, box-shadow 0.2s ease',
-        }}
-        styles={{ body: { padding: 16 } }}
-        onMouseEnter={(event) => {
-          event.currentTarget.style.boxShadow = 'var(--shadow-card-sm-hover)';
-        }}
-        onMouseLeave={(event) => {
-          event.currentTarget.style.boxShadow = 'var(--shadow-card-sm)';
-        }}
-      >
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-          <div style={{ flex: 1, display: 'flex', alignItems: 'flex-start', gap: 8, minWidth: 0 }}>
-            {selectable ? (
-              <div style={{ display: 'flex', alignItems: 'center', padding: '4px 0' }}>
-                <ManagementCheckbox
-                  checked={selected}
-                  ariaLabel={t('common.batch.selectItem')}
-                  onChange={onSelectChange ?? (() => {})}
-                  style={{ width: 13, height: 13 }}
-                />
-              </div>
-            ) : (
-              <div
-                {...attributes}
-                {...listeners}
-                style={{
-                  cursor: isDragging ? 'grabbing' : 'grab',
-                  color: 'var(--color-text-tertiary)',
-                  padding: '4px 0',
-                  touchAction: 'none',
-                }}
-              >
-                <HolderOutlined />
-              </div>
-            )}
-            <Space direction="vertical" size={4} style={{ width: '100%', minWidth: 0 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <ProviderNameLink
-                  name={provider.name}
-                  baseUrl={baseUrl}
-                  style={{ fontSize: 14, fontWeight: 600 }}
-                />
-                {isLocalProvider && (
-                  <Text type="secondary" style={{ fontSize: 11 }}>
-                    ({t('geminicli.localConfigHint')})
-                  </Text>
-                )}
-                {isOfficialProvider && <Tag>{t('geminicli.provider.modeOfficial')}</Tag>}
-                {isOfficialProvider && gatewayTakeoverActive && (
-                  <Tooltip title={t('gateway.takeover.officialBypassedTooltip')}>
-                    <Tag color="gold">{t('gateway.takeover.officialBypassedTag')}</Tag>
-                  </Tooltip>
-                )}
-                {showRuntimeApplied && (
-                  <AppliedTag>
-                    {t('geminicli.provider.applied')}
-                  </AppliedTag>
-                )}
-                {showProxyTag && (
-                  <ProxyTag>
-                    {t('gateway.proxy.proxyTag')}
-                  </ProxyTag>
-                )}
-                {showProxyTag && (
-                  <Tooltip title={t('gateway.proxy.statisticsTooltip')}>
-                    <BarChart2
-                      size={14}
-                      aria-label={t('gateway.proxy.statisticsTooltip')}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        navigate('/gateway/statistics');
-                      }}
-                      style={{
-                        color: 'var(--color-text-tertiary)',
-                        cursor: 'pointer',
-                        flexShrink: 0,
-                      }}
-                    />
-                  </Tooltip>
-                )}
-                {priorityEntry && (
-                  <>
-                    <span
-                      style={{
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: 4,
-                        padding: '0 6px',
-                        height: 20,
-                        borderRadius: 10,
-                        fontSize: 10,
-                        fontWeight: 500,
-                        background: 'rgba(16,185,129,0.08)',
-                        color: '#059669',
-                      }}
-                    >
-                      <span
-                        style={{
-                          width: 6,
-                          height: 6,
-                          borderRadius: '50%',
-                          background: '#10b981',
-                        }}
-                      />
-                      {t('gateway.page.modelHealthState.healthy')}
-                    </span>
-                    <Tooltip
-                      title={
-                        isGatewayPrimary
-                          ? t('gateway.failover.priorityP0')
-                          : t('gateway.failover.priorityPn', { label: priorityEntry.label })
-                      }
-                    >
-                      <span
-                        style={{
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          padding: '0 6px',
-                          height: 20,
-                          borderRadius: 4,
-                          fontSize: 10,
-                          fontWeight: 650,
-                          background: 'rgba(16,185,129,0.08)',
-                          color: '#059669',
-                        }}
-                      >
-                        {priorityEntry.label}
-                      </span>
-                    </Tooltip>
-                  </>
-                )}
-              </div>
-
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                {baseUrl && (
-                  <Text code style={{ fontSize: 11, padding: '0 4px' }}>
-                    {baseUrl}
-                  </Text>
-                )}
-                {modelName && (
-                  <Tag color="blue" style={{ fontSize: 11, margin: 0 }}>
-                    {modelName}
-                  </Tag>
-                )}
-                {maskedApiKey && (
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    API Key: {maskedApiKey}
-                  </Text>
-                )}
-                {provider.notes && (
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    {provider.notes}
-                  </Text>
-                )}
-              </div>
-            </Space>
-          </div>
-
-          <div
+  const stateTags = (
+    <>
+      {isLocalProvider && (
+        <Text type="secondary" style={{ fontSize: 11 }}>
+          ({t('geminicli.localConfigHint')})
+        </Text>
+      )}
+      {isOfficialProvider && (
+        <OfficialAccountCount count={officialAccounts.length} />
+      )}
+      {isOfficialProvider && gatewayTakeoverActive && (
+        <Tooltip title={t('gateway.takeover.officialBypassedTooltip')}>
+          <Tag color="gold">{t('gateway.takeover.officialBypassedTag')}</Tag>
+        </Tooltip>
+      )}
+      {showRuntimeApplied && (
+        <AppliedTag>{t('geminicli.provider.applied')}</AppliedTag>
+      )}
+      {showProxyTag && (
+        <ProxyTag>{t('gateway.proxy.proxyTag')}</ProxyTag>
+      )}
+      {showProxyTag && (
+        <Tooltip title={t('gateway.proxy.statisticsTooltip')}>
+          <BarChart2
+            size={14}
+            aria-label={t('gateway.proxy.statisticsTooltip')}
+            onClick={(event) => {
+              event.stopPropagation();
+              navigate('/gateway/statistics');
+            }}
             style={{
-              display: 'flex',
+              color: 'var(--color-text-tertiary)',
+              cursor: 'pointer',
+              flexShrink: 0,
+            }}
+          />
+        </Tooltip>
+      )}
+      {priorityEntry && (
+        <>
+          <span
+            style={{
+              display: 'inline-flex',
               alignItems: 'center',
-              justifyContent: 'flex-end',
-              gap: 8,
+              gap: 4,
+              padding: '0 6px',
+              height: 20,
+              borderRadius: 10,
+              fontSize: 10,
+              fontWeight: 500,
+              background: 'rgba(16,185,129,0.08)',
+              color: '#059669',
             }}
           >
-            {canShowGatewayProxyButton && (
-              <Tooltip title={t('gateway.proxy.singleHint')}>
-                <Button
-                  type="link"
-                  size="small"
-                  icon={<ApiOutlined />}
-                  onClick={handleEngageGatewayProxy}
-                  loading={engagingGatewayProxy}
-                >
-                  {t('gateway.proxy.singleButton')}
-                </Button>
-              </Tooltip>
-            )}
-            {canShowRestoreDirectButton && (
-              <Tooltip title={t('gateway.proxy.restoreDirectHint')}>
-                <Button
-                  type="link"
-                  size="small"
-                  onClick={handleRestoreDirect}
-                  loading={restoringDirect}
-                >
-                  {t('gateway.proxy.restoreDirectButton')}
-                </Button>
-              </Tooltip>
-            )}
-            {canShowRestoreDirectUnavailable && (
-              <Tooltip title={restoreDirectUnavailableTitle}>
-                <Button
-                  type="link"
-                  size="small"
-                  disabled
-                >
-                  {t('gateway.proxy.restoreDirectButton')}
-                </Button>
-              </Tooltip>
-            )}
-            {showApplyAction && (
-              <Button
-                type="link"
-                size="small"
-                icon={<CheckOutlined />}
-                onClick={() => onSelect(provider)}
-                disabled={provider.isDisabled}
-              >
-                {t('geminicli.provider.apply')}
+            <span
+              style={{
+                width: 6,
+                height: 6,
+                borderRadius: '50%',
+                background: '#10b981',
+              }}
+            />
+            {t('gateway.page.modelHealthState.healthy')}
+          </span>
+          <Tooltip
+            title={
+              isGatewayPrimary
+                ? t('gateway.failover.priorityP0')
+                : t('gateway.failover.priorityPn', { label: priorityEntry.label })
+            }
+          >
+            <span
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                padding: '0 6px',
+                height: 20,
+                borderRadius: 4,
+                fontSize: 10,
+                fontWeight: 650,
+                background: 'rgba(16,185,129,0.08)',
+                color: '#059669',
+              }}
+            >
+              {priorityEntry.label}
+            </span>
+          </Tooltip>
+        </>
+      )}
+    </>
+  );
+
+  /**
+   * The second line.
+   *
+   * The official card has no endpoint and no key (it authenticates through the
+   * CLI's own login), and what a reader of *that* card needs is what switching
+   * accounts does — the same choice Codex made. A custom card states the
+   * endpoint, the model, the masked key and notes.
+   */
+  const metaEntries = React.useMemo<ProviderCardMetaEntry[]>(() => {
+    if (isOfficialProvider) {
+      return [{
+        kind: 'text',
+        value: <OfficialAccountHint>{t('geminicli.provider.officialAccountHint')}</OfficialAccountHint>,
+      }];
+    }
+    const entries: ProviderCardMetaEntry[] = [];
+    if (baseUrl) {
+      entries.push({ kind: 'code', value: baseUrl });
+    }
+    if (modelName) {
+      entries.push({ kind: 'tag', value: modelName, color: 'blue' });
+    }
+    if (maskedApiKey) {
+      entries.push({ kind: 'text', value: `API Key: ${maskedApiKey}` });
+    }
+    if (provider.notes) {
+      entries.push({ kind: 'text', value: provider.notes });
+    }
+    return entries;
+  }, [baseUrl, isOfficialProvider, maskedApiKey, modelName, provider.notes, t]);
+
+  const gatewayActions = (
+    <>
+      {canShowGatewayProxyButton && (
+        <Tooltip title={t('gateway.proxy.singleHint')}>
+          <Button
+            type="link"
+            size="small"
+            icon={<ApiOutlined />}
+            onClick={handleEngageGatewayProxy}
+            loading={engagingGatewayProxy}
+          >
+            {t('gateway.proxy.singleButton')}
+          </Button>
+        </Tooltip>
+      )}
+      {canShowRestoreDirectButton && (
+        <Tooltip title={t('gateway.proxy.restoreDirectHint')}>
+          <Button
+            type="link"
+            size="small"
+            onClick={handleRestoreDirect}
+            loading={restoringDirect}
+          >
+            {t('gateway.proxy.restoreDirectButton')}
+          </Button>
+        </Tooltip>
+      )}
+      {canShowRestoreDirectUnavailable && (
+        <Tooltip title={restoreDirectUnavailableTitle}>
+          <Button type="link" size="small" disabled>
+            {t('gateway.proxy.restoreDirectButton')}
+          </Button>
+        </Tooltip>
+      )}
+      {showGatewaySwitchAction && (
+        <Tooltip
+          title={
+            gatewayFailoverActive
+              ? t('gateway.proxy.switchPrimaryFailoverHint')
+              : t('gateway.proxy.switchPrimaryHint')
+          }
+        >
+          <Button
+            type="link"
+            size="small"
+            icon={<CheckOutlined />}
+            onClick={handleSwitchGatewayProvider}
+            loading={switchingGatewayProvider}
+          >
+            {gatewayFailoverActive
+              ? t('gateway.proxy.switchPrimaryP0Button')
+              : t('gateway.proxy.switchPrimaryButton')}
+          </Button>
+        </Tooltip>
+      )}
+      {showGatewayLockedApply && (
+        <Tooltip title={t('gateway.proxy.applyLockedTooltip')}>
+          <span>
+            <Button type="link" size="small" icon={<CheckOutlined />} disabled>
+              {t('geminicli.provider.apply')}
+            </Button>
+          </span>
+        </Tooltip>
+      )}
+    </>
+  );
+
+  const props: ProviderCardVariantProps = {
+    provider: {
+      id: provider.id,
+      name: isOfficialProvider ? t('common.officialAccount.headingTitle') : provider.name,
+      baseUrl,
+    },
+    providerState: {
+      isDisabled: provider.isDisabled,
+      onToggleDisabled: isLocalProvider ? undefined : handleToggleDisabled,
+      draggable: !selectable && !dragDisabled,
+      sortableId: provider.id,
+      selectable,
+      selected,
+      onSelectChange,
+      dimmed: provider.isDisabled,
+      accent: isGatewayPrimary
+        ? 'gatewayPrimary'
+        : showRuntimeApplied
+          ? 'applied'
+          : undefined,
+    },
+    actions: {
+      onEdit: () => onEdit(provider),
+      onCopy: () => onCopy(provider),
+      onShare: () => onShare(provider),
+      onDelete: isLocalProvider ? undefined : () => onDelete(provider),
+      enabledStateLabel: provider.isDisabled
+        ? t('geminicli.configDisabled')
+        : t('geminicli.configEnabled'),
+      gatewayActions,
+      primaryAction: showApplyAction
+        ? {
+            label: t('geminicli.provider.apply'),
+            icon: <CheckOutlined />,
+            onClick: () => onSelect(provider),
+            disabled: provider.isDisabled,
+          }
+        : undefined,
+    },
+    namePrefix: isOfficialProvider ? <OfficialAccountHeadingIcon /> : undefined,
+    nameTags: stateTags,
+    metaEntries,
+    // The name row doubles as the heading of the account block: `🔗 官方账号 (n)`.
+    // `nameTags` carries the count (`OfficialAccountCount`), `namePrefix` the glyph.
+    footer: renderOfficialAccounts('footer'),
+  };
+
+  if (viewMode !== 'card') {
+    return <ClaudeStyleCard {...props} />;
+  }
+
+  /**
+   * The cell's second line states one thing. For an ordinary provider that is
+   * its model; for the official card it is the account the CLI is currently
+   * using — applied account → the login on disk (`isVirtual`) → "not signed
+   * in". The line is reserved unconditionally by the shared card, so leaving it
+   * blank would read as a broken cell (the same rule Codex, Kimi and ZCode
+   * follow).
+   */
+  const currentLoginRow = showOfficialRuntimeState
+    ? officialAccountRows.find((row) => row.isApplied) ?? officialAccountRows.find((row) => row.isVirtual)
+    : undefined;
+  const cardSubtitle = isOfficialProvider
+    ? [{
+        label: t('common.officialAccount.currentLogin'),
+        value: currentLoginRow?.label ?? t('common.officialAccount.currentLoginNone'),
+      }]
+    : modelName
+      ? [{ label: t('geminicli.provider.defaultModelLabel'), value: modelName }]
+      : undefined;
+
+  const detailSections: ProviderDetailSection[] = [{
+    key: 'connection',
+    title: t('common.provider.connectionTitle'),
+    fields: [
+      {
+        key: 'baseUrl',
+        label: t('geminicli.provider.baseUrl'),
+        value: baseUrl,
+        emptyText: t('common.provider.notConfigured'),
+        copyable: true,
+      },
+      {
+        key: 'apiKey',
+        label: t('geminicli.provider.apiKey'),
+        value: env.GEMINI_API_KEY || env.GOOGLE_API_KEY,
+        emptyText: t('common.provider.notConfigured'),
+        copyable: true,
+        elideMiddle: true,
+      },
+      {
+        key: 'model',
+        label: t('geminicli.provider.model'),
+        value: modelName,
+        emptyText: t('common.provider.notConfigured'),
+      },
+    ],
+  }];
+
+  const detailOfficialAccounts = renderOfficialAccounts('detail');
+  if (detailOfficialAccounts) {
+    detailSections.push({ key: 'officialAccounts', content: detailOfficialAccounts });
+  }
+  if (provider.notes) {
+    detailSections.push({
+      key: 'notes',
+      title: t('common.provider.notes'),
+      fields: [{ key: 'notes', label: t('common.provider.notes'), value: provider.notes }],
+    });
+  }
+
+  return (
+    <ProviderCompactCard
+      provider={props.provider}
+      subtitle={cardSubtitle}
+      // One fact and the action set (gateway / apply): the same shape Codex's
+      // cell uses, so the action row rides the second line instead of opening
+      // a mostly empty footer bar.
+      actionPlacement="subtitle"
+      providerState={props.providerState}
+      actions={props.actions}
+      namePrefix={props.namePrefix}
+      nameTags={stateTags}
+      detail={{
+        title: (
+          <ProviderNameLink
+            name={isOfficialProvider ? t('common.officialAccount.headingTitle') : provider.name}
+            baseUrl={baseUrl}
+          />
+        ),
+        statusTags: stateTags,
+        sections: detailSections,
+        primaryActions: (
+          <>
+            {gatewayActions}
+            {renderProviderPrimaryAction(props.actions?.primaryAction)}
+          </>
+        ),
+        secondaryActions: (
+          <Space size={4} wrap>
+            <Button size="small" type="text" onClick={() => onEdit(provider)}>
+              {t('common.edit')}
+            </Button>
+            <Button size="small" type="text" onClick={() => onCopy(provider)}>
+              {t('common.copy')}
+            </Button>
+            <Button size="small" type="text" icon={<Share2 size={14} aria-hidden="true" />} onClick={() => onShare(provider)}>
+              {t('common.share')}
+            </Button>
+            {!isLocalProvider && (
+              <Button size="small" type="text" danger onClick={() => onDelete(provider)}>
+                {t('common.delete')}
               </Button>
             )}
-            {showGatewaySwitchAction && (
-              <Tooltip
-                title={
-                  gatewayFailoverActive
-                    ? t('gateway.proxy.switchPrimaryFailoverHint')
-                    : t('gateway.proxy.switchPrimaryHint')
-                }
-              >
-                <Button
-                  type="link"
-                  size="small"
-                  icon={<CheckOutlined />}
-                  onClick={handleSwitchGatewayProvider}
-                  loading={switchingGatewayProvider}
-                >
-                  {gatewayFailoverActive
-                    ? t('gateway.proxy.switchPrimaryP0Button')
-                    : t('gateway.proxy.switchPrimaryButton')}
-                </Button>
-              </Tooltip>
-            )}
-            {showGatewayLockedApply && (
-              <Tooltip title={t('gateway.proxy.applyLockedTooltip')}>
-                <span>
-                  <Button type="link" size="small" icon={<CheckOutlined />} disabled>
-                    {t('geminicli.provider.apply')}
-                  </Button>
-                </span>
-              </Tooltip>
-            )}
-            <Dropdown menu={{ items: menuItems }} trigger={['click']}>
-              <Button type="text" size="small" icon={<MoreOutlined />} />
-            </Dropdown>
-          </div>
-        </div>
-        {renderOfficialAccounts()}
-      </Card>
-    </div>
+          </Space>
+        ),
+      }}
+    />
   );
 };
 

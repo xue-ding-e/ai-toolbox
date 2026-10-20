@@ -1,24 +1,16 @@
 import React from 'react';
-import { Button, Collapse, Descriptions, Empty, Modal, Space, Spin, Typography, message } from 'antd';
+import { Button, Descriptions, Modal, Typography, message } from 'antd';
 import {
-  AppstoreOutlined,
-  CheckSquareOutlined,
   CopyOutlined,
   DatabaseOutlined,
-  EditOutlined,
-  EllipsisOutlined,
   ExclamationCircleOutlined,
-  EyeOutlined,
   FileTextOutlined,
-  FolderOpenOutlined,
   ImportOutlined,
   MessageOutlined,
-  PlusOutlined,
-  SyncOutlined,
 } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { invoke } from '@tauri-apps/api/core';
-import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener';
+import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import {
   DndContext,
   KeyboardSensor,
@@ -31,10 +23,11 @@ import {
 import {
   SortableContext,
   arrayMove,
+  rectSortingStrategy,
   sortableKeyboardCoordinates,
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
-import { restrictToVerticalAxis } from '@dnd-kit/modifiers';
+import { restrictToVerticalAxis, restrictToWindowEdges } from '@dnd-kit/modifiers';
 import JsonPreviewModal from '@/components/common/JsonPreviewModal';
 import SectionSidebarLayout, {
   type SidebarSectionMarker,
@@ -58,15 +51,15 @@ import { GlobalPromptSettings } from '@/features/coding/shared/prompt';
 import { SessionManagerPanel } from '@/features/coding/shared/sessionManager';
 import {
   PROVIDER_SORT_MODES,
-  ProviderBatchToolbar,
-  ProviderSearchEmpty,
-  ProviderSearchInput,
-  ProviderSortDropdown,
   filterProviderItems,
   sortProviderItems,
   useProviderBatchSelection,
   useProviderListSort,
+  useProviderListViewPrefs,
 } from '@/features/coding/shared/providerList';
+import { ProviderCardGrid } from '@/features/coding/shared/providerCardView';
+import CodingPageHeader from '@/features/coding/shared/CodingPageHeader';
+import ProviderListSection from '@/features/coding/shared/ProviderListSection';
 import { TRAY_CONFIG_REFRESH_EVENT, DEEP_LINK_IMPORT_COMPLETED } from '@/constants/configEvents';
 import { useSettingsStore } from '@/stores';
 import { refreshTrayMenu } from '@/services/appApi';
@@ -118,7 +111,7 @@ import {
   shouldLoadGeminiCliOfficialAccounts,
 } from '../utils/localProvider';
 
-const { Title, Text, Link } = Typography;
+const { Text } = Typography;
 const ACCOUNT_DETAILS_EMPTY_VALUE = '-';
 
 function maskTokenPreview(tokenKind: 'access' | 'refresh', account: GeminiCliOfficialAccount): string {
@@ -472,6 +465,7 @@ const GeminiCliPage: React.FC = () => {
   };
 
   const { sortMode, setSortMode, lastUsedAt, noteProviderUsed } = useProviderListSort('geminicli');
+  const { viewMode, setViewMode } = useProviderListViewPrefs('geminicli');
   const [providerKeyword, setProviderKeyword] = React.useState('');
   // Search and non-custom sort modes bypass sort_index, so dragging would
   // write a stale custom order — dnd is only enabled in custom mode.
@@ -531,6 +525,50 @@ const GeminiCliPage: React.FC = () => {
     onBatchDelete: handleBatchDeleteProviders,
   });
   const providerBatchDragDisabled = providerDragDisabled || providerBatch.selectionMode;
+
+  /**
+   * The locate target: the applied provider, unless that is the `__local__`
+   * bridge (which the UI never treats as a managed applied preset, so pointing
+   * the locate ring at it would report a state the rest of the page denies).
+   */
+  const locateProviderId = appliedProviderId === GEMINI_CLI_LOCAL_PROVIDER_ID
+    ? ''
+    : appliedProviderId;
+
+  /** One provider's card props, shared by both layouts. */
+  const renderProviderCard = (provider: GeminiCliProvider) => (
+    <GeminiCliProviderCard
+      key={provider.id}
+      provider={provider}
+      viewMode={viewMode}
+      isApplied={provider.id === appliedProviderId}
+      dragDisabled={providerDragDisabled}
+      onEdit={handleEditProvider}
+      onDelete={handleDeleteProvider}
+      onCopy={handleCopyProvider}
+      onShare={handleShareProvider}
+      onSelect={handleSelectProvider}
+      onToggleDisabled={handleToggleDisabled}
+      selectable={providerBatch.selectionMode && providerBatch.isSelectable(provider.id)}
+      selected={providerBatch.selectedIds.has(provider.id)}
+      onSelectChange={(checked) => providerBatch.toggleSelect(provider.id, checked)}
+      officialAccounts={officialAccountsByProviderId[provider.id] || []}
+      onOfficialAccountLogin={handleStartOfficialAccountOauth}
+      onOfficialLocalAccountSave={handleSaveOfficialLocalAccount}
+      onOfficialAccountApply={handleApplyOfficialAccount}
+      onOfficialAccountDelete={handleDeleteOfficialAccount}
+      onOfficialAccountRefresh={handleRefreshOfficialAccount}
+      onOfficialAccountViewDetails={handleViewOfficialAccountDetails}
+      refreshingOfficialAccountId={refreshingOfficialAccountId}
+      savingOfficialAccountId={savingOfficialAccountId}
+      gatewayTakeoverActive={gatewayTakeoverActive}
+      gatewayStatus={gatewayCliStatus}
+      onGatewayStatusChange={async (status) => {
+        setGatewayCliStatus(status);
+        await loadConfig();
+      }}
+    />
+  );
 
   const handleSelectProvider = async (provider: GeminiCliProvider) => {
     try {
@@ -797,259 +835,88 @@ const GeminiCliPage: React.FC = () => {
       }}
     >
       <div>
-        <div style={{ marginBottom: 16 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-            <div>
-              <div style={{ marginBottom: 8 }}>
-                <Title level={4} style={{ margin: 0, display: 'inline-block', marginRight: 8 }}>
-                  {t('geminicli.title')}
-                </Title>
-                <Link
-                  type="secondary"
-                  style={{ fontSize: 12 }}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    void openUrl('https://github.com/google-gemini/gemini-cli');
-                  }}
-                >
-                  {t('geminicli.viewDocs')}
-                </Link>
-                {appliedProviderId && (
-                  <Link
-                    type="secondary"
-                    style={{ fontSize: 12, marginLeft: 16 }}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      void handlePreviewCurrentConfig();
-                    }}
-                  >
-                    <EyeOutlined /> {t('common.previewConfig')}
-                  </Link>
-                )}
-              </div>
-              <Space size="small" wrap>
-                <Text type="secondary" style={{ fontSize: 12 }}>
-                  {t('geminicli.configPath')}:
-                </Text>
-                <Text code style={{ fontSize: 12 }}>
-                  {configPath || '~/.gemini/settings.json'}
-                </Text>
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<EditOutlined />}
-                  onClick={() => setRootDirectoryModalOpen(true)}
-                  style={{ padding: 0, fontSize: 12 }}
-                >
-                  {t('geminicli.rootPathSource.customize')}
-                </Button>
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<FolderOpenOutlined />}
-                  onClick={() => void handleOpenFolder()}
-                  style={{ padding: 0, fontSize: 12 }}
-                >
-                  {t('geminicli.openFolder')}
-                </Button>
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<SyncOutlined />}
-                  onClick={() => void loadConfig()}
-                  style={{ padding: 0, fontSize: 12 }}
-                >
-                  {t('geminicli.refreshConfig')}
-                </Button>
-              </Space>
-            </div>
+        <CodingPageHeader
+          title={t('geminicli.title')}
+          docsUrl="https://github.com/google-gemini/gemini-cli"
+          onPreviewConfig={appliedProviderId ? () => void handlePreviewCurrentConfig() : undefined}
+          configPath={configPath || '~/.gemini/settings.json'}
+          onCustomizeConfig={() => setRootDirectoryModalOpen(true)}
+          onOpenFolder={() => void handleOpenFolder()}
+          onRefresh={() => void loadConfig()}
+          onMoreOptions={() => setSettingsModalOpen(true)}
+        />
 
-            <Space>
-              <Button type="text" icon={<EllipsisOutlined />} onClick={() => setSettingsModalOpen(true)}>
-                {t('common.moreOptions')}
+        <ProviderListSection
+          sectionId="geminicli-providers"
+          collapsed={providerListCollapsed}
+          onCollapsedChange={setProviderListCollapsed}
+          loading={loading}
+          providerCount={providers.length}
+          visibleCount={visibleProviders.length}
+          batch={providerBatch}
+          batchSelectableIds={batchSelectableIds}
+          keyword={providerKeyword}
+          onKeywordChange={setProviderKeyword}
+          sortMode={sortMode}
+          sortModes={PROVIDER_SORT_MODES}
+          onSortModeChange={setSortMode}
+          dragDisabledBySort={providerDragDisabled}
+          locateProviderId={locateProviderId}
+          onOpenCommonConfig={() => setCommonConfigModalOpen(true)}
+          onAddProvider={handleAddProvider}
+          headerExtra={
+            <GatewayFailoverButton
+              cliKey="gemini"
+              status={gatewayCliStatus}
+              primaryProviderNeedsGatewayProxy={primaryGatewayProviderNeedsProxy}
+              primaryProviderNeedsProxyReason={primaryGatewayProviderNeedsProxyReason}
+              onStatusChange={setGatewayCliStatus}
+            />
+          }
+          viewMode={viewMode}
+          onViewModeChange={setViewMode}
+          hint={
+            <>
+              <div>{t('geminicli.pageHint')}</div>
+              <div>{t('geminicli.pageWarning')}</div>
+            </>
+          }
+          footer={
+            ccSwitchAvailable ? (
+              <Button
+                type="dashed"
+                icon={<ImportOutlined />}
+                onClick={() => setCcSwitchImportModalOpen(true)}
+              >
+                {t('common.ccSwitch.importFromCcSwitch')}
               </Button>
-            </Space>
-          </div>
-        </div>
-
-        <div
-          id="geminicli-providers"
-          data-sidebar-section="true"
-          data-sidebar-title={t('geminicli.provider.title')}
+            ) : undefined
+          }
         >
-          <Collapse
-            style={{ marginBottom: 16 }}
-            activeKey={providerListCollapsed ? [] : ['providers']}
-            onChange={(keys) => setProviderListCollapsed(!keys.includes('providers'))}
-            items={[
-              {
-                key: 'providers',
-                label: (
-                  <Space size={8} wrap>
-                    <Text strong>
-                      <DatabaseOutlined style={{ marginRight: 8 }} />
-                      {t('geminicli.provider.title')}
-                    </Text>
-                    <GatewayFailoverButton
-                      cliKey="gemini"
-                      status={gatewayCliStatus}
-                      primaryProviderNeedsGatewayProxy={primaryGatewayProviderNeedsProxy}
-                      primaryProviderNeedsProxyReason={primaryGatewayProviderNeedsProxyReason}
-                      onStatusChange={setGatewayCliStatus}
-                    />
-                  </Space>
-                ),
-                extra: (
-                  <Space size={4} wrap>
-                    <Button
-                      type="link"
-                      size="small"
-                      style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4 }}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (providerBatch.selectionMode) {
-                          providerBatch.exitSelection();
-                        } else {
-                          providerBatch.enterSelection();
-                        }
-                      }}
-                    >
-                      <CheckSquareOutlined style={{ fontSize: 13, lineHeight: 1 }} />
-                      <span>
-                        {providerBatch.selectionMode
-                          ? t('common.batch.exit')
-                          : t('common.batch.manage')}
-                      </span>
-                    </Button>
-                    {providerBatch.selectionMode && (
-                      <ProviderBatchToolbar
-                        hasSelection={providerBatch.hasSelection}
-                        visibleCount={batchSelectableIds.length}
-                        isAllSelected={providerBatch.isAllSelected}
-                        indeterminate={providerBatch.indeterminate}
-                        onSelectAll={providerBatch.selectAllFiltered}
-                        onBatchDelete={providerBatch.batchDelete}
-                        disabled={loading}
-                      />
-                    )}
-                    <ProviderSearchInput value={providerKeyword} onChange={setProviderKeyword} />
-                    <ProviderSortDropdown
-                      mode={sortMode}
-                      modes={PROVIDER_SORT_MODES}
-                      onChange={setSortMode}
-                    />
-                    <Button
-                      type="link"
-                      size="small"
-                      style={{ fontSize: 12 }}
-                      icon={<AppstoreOutlined />}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        setCommonConfigModalOpen(true);
-                      }}
-                    >
-                      {t('geminicli.commonConfigButton')}
-                    </Button>
-                    <Button
-                      type="link"
-                      size="small"
-                      style={{ fontSize: 12 }}
-                      icon={<PlusOutlined />}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        handleAddProvider();
-                      }}
-                    >
-                      {t('geminicli.addProvider')}
-                    </Button>
-                  </Space>
-                ),
-                children: (
-                  <Spin spinning={loading}>
-                    <div
-                      style={{
-                        fontSize: 12,
-                        color: 'var(--color-text-secondary)',
-                        borderLeft: '2px solid var(--color-border)',
-                        paddingLeft: 8,
-                        marginBottom: 12,
-                      }}
-                    >
-                      <div>{t('geminicli.pageHint')}</div>
-                      <div>{t('geminicli.pageWarning')}</div>
-                    </div>
-
-                    {providers.length === 0 ? (
-                      <Empty description={t('geminicli.emptyText')} style={{ marginTop: 40 }} />
-                    ) : visibleProviders.length === 0 ? (
-                      <ProviderSearchEmpty />
-                    ) : (
-                      <DndContext
-                            sensors={providerBatchDragDisabled ? [] : sensors}
-                            collisionDetection={closestCenter}
-                            onDragEnd={handleDragEnd}
-                            modifiers={[restrictToVerticalAxis]}
-                          >
-                            <SortableContext
-                              items={providers.map((provider) => provider.id)}
-                              strategy={verticalListSortingStrategy}
-                            >
-                              <div>
-                                {visibleProviders.map((provider) => (
-                              <GeminiCliProviderCard
-                                key={provider.id}
-                                provider={provider}
-                                isApplied={provider.id === appliedProviderId}
-                                onEdit={handleEditProvider}
-                                onDelete={handleDeleteProvider}
-                                onCopy={handleCopyProvider}
-                                onShare={handleShareProvider}
-                                onSelect={handleSelectProvider}
-                                onToggleDisabled={handleToggleDisabled}
-                                selectable={providerBatch.selectionMode && providerBatch.isSelectable(provider.id)}
-                                selected={providerBatch.selectedIds.has(provider.id)}
-                                onSelectChange={(checked) =>
-                                  providerBatch.toggleSelect(provider.id, checked)
-                                }
-                                officialAccounts={officialAccountsByProviderId[provider.id] || []}
-                                onOfficialAccountLogin={handleStartOfficialAccountOauth}
-                                onOfficialLocalAccountSave={handleSaveOfficialLocalAccount}
-                                onOfficialAccountApply={handleApplyOfficialAccount}
-                                onOfficialAccountDelete={handleDeleteOfficialAccount}
-                                onOfficialAccountRefresh={handleRefreshOfficialAccount}
-                                onOfficialAccountViewDetails={handleViewOfficialAccountDetails}
-                                refreshingOfficialAccountId={refreshingOfficialAccountId}
-                                savingOfficialAccountId={savingOfficialAccountId}
-                                gatewayTakeoverActive={gatewayTakeoverActive}
-                                gatewayStatus={gatewayCliStatus}
-                                onGatewayStatusChange={async (status) => {
-                                  setGatewayCliStatus(status);
-                                  await loadConfig();
-                                }}
-                              />
-                                ))}
-                              </div>
-                            </SortableContext>
-                          </DndContext>
-                    )}
-
-                    {ccSwitchAvailable && (
-                      <div style={{ marginTop: 12 }}>
-                        <Button
-                          type="dashed"
-                          icon={<ImportOutlined />}
-                          onClick={() => setCcSwitchImportModalOpen(true)}
-                        >
-                          {t('common.ccSwitch.importFromCcSwitch')}
-                        </Button>
-                      </div>
-                    )}
-                  </Spin>
-                ),
-              },
-            ]}
-          />
-        </div>
+          {/* One `DndContext` serves both layouts; only the sorting strategy and
+              the drag modifier change with the view. */}
+          <DndContext
+            sensors={providerBatchDragDisabled ? [] : sensors}
+            collisionDetection={closestCenter}
+            onDragEnd={handleDragEnd}
+            modifiers={[viewMode === 'card' ? restrictToWindowEdges : restrictToVerticalAxis]}
+          >
+            <SortableContext
+              items={visibleProviders.map((provider) => provider.id)}
+              strategy={viewMode === 'card' ? rectSortingStrategy : verticalListSortingStrategy}
+            >
+              {viewMode === 'card' ? (
+                <ProviderCardGrid
+                  items={visibleProviders}
+                  getKey={(provider) => provider.id}
+                  renderItem={renderProviderCard}
+                />
+              ) : (
+                <div>{visibleProviders.map(renderProviderCard)}</div>
+              )}
+            </SortableContext>
+          </DndContext>
+        </ProviderListSection>
 
         <div
           id="geminicli-global-prompt"

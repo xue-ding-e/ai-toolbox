@@ -48,8 +48,6 @@ const SHARED_SECTION_IMPORT = 'shared/officialAccounts';
  */
 const PENDING_MIGRATION = new Set([
   'antigravity/components/AntigravityProviderCard.tsx',
-  'geminicli/components/GeminiCliProviderCard.tsx',
-  'grok/components/GrokProviderCard.tsx',
 ]);
 
 /** The shared implementation itself; it is not a consumer. */

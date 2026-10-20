@@ -17,7 +17,7 @@
 
 | 区块 | 组件 | 数据源 |
 |---|---|---|
-| 供应商列表 | `OmoNativeProvidersSection`（`ProviderListSection` + `OpenCodeStyleCard`） | `models.json` 的 `providers` + `auth.json` |
+| 供应商列表 | `OmoNativeProvidersSection`（`ProviderListSection` + `OpenCodeStyleCard`；卡片视图 `ProviderCompactCard`） | `models.json` 的 `providers` + `auth.json` |
 | 引擎内建渠道 | `OmoNativeBuiltinProvidersSection`（共享 `OfficialProviderCard`）+ 标题栏 `auth.json` 入口 | `omo --list-models` + `omo auth check --json`，**只读**；**只列已配置凭据的**。`auth.json` 入口打开 `OmoNativeAuthConfigModal`（**应用内可编辑**，不跳资源管理器） |
 | 扩展 | `OmoNativeExtensionsSection`（共享 `CliExtensionsSection`，`i18nPrefix="omoNative"`） | `settings.json` 的 packages / extensions 过滤器 + `omo list` |
 | 全局提示词 | 共享 `GlobalPromptSettings` | `<agentDir>/AGENTS.md` |
@@ -78,6 +78,8 @@
 ## 核心设计决策（Why）
 
 - **供应商卡片用 `OpenCodeStyleCard`**，判定依据是 §0.1.1 的两个定性：`models.json` 有 per-provider 模型目录（→ 非 Claude 式）；多个 provider 同时可用、没有「切换到这个」的动作（→ 非 Codex 式，**卡片上没有头部「应用」按钮**）。
+- **供应商列表有列表 / 卡片两种布局（2026-10-20 补卡片视图）**：布局偏好走 `useProviderListViewPrefs('omo_native')`，页面把 `viewMode` / `onViewModeChange` 传给 `ProviderListSection`；两种布局共用 `OmoNativeProvidersSection` 里的同一个 `renderProviderCard(provider)`，网格为 `ProviderCardGrid`，`SortableContext` 策略切 `rectSortingStrategy`、`DndContext` modifier 切 `restrictToWindowEdges`。`OmoNativeProviderCard` 的 `'card'` 分支渲染 `ProviderCompactCard`：第二行是裸 npm 包名（`omoNativeApiToNpm`），本 provider 是「模型设置」的默认渠道时追加 `当前主模型: <modelId>`（`defaultModelId` 由页面传入）；`actionPlacement="subtitle"`、不传 `cellControl`（Native 没有 per-provider 的应用 / 启用控件），动作行只放「更多」，菜单额外项是「模型测试」；详情侧栏是连接信息（baseUrl / API 类型 / API Key，copyable）+ 模型目录（`ProviderModelSection appearance="detail"`），footer 次要动作是编辑 / 复制 / 删除。
+- **删除保护的第三个入口是「更多」菜单**（2026-10-20）：`providerCardMenu.tsx` 现在在 `deleteDisabledReason` 存在时把菜单里的「删除」置灰并把原因放进 `title`，与列表卡的置灰按钮、详情侧栏的置灰按钮同一判据。此前菜单绕过它——默认渠道可以在卡片视图里被删掉。
 - **供应商列表支持拖拽排序，顺序存在 `models.json` 的「键序」上**。`providers` 是 JSON 对象，靠 `serde_json` 的 `preserve_order` 保序；`reorder_omo_native_providers` 按给定 key 重建这个对象。**读取端 `list_*` 绝不能再按 key 排序**——那样用户拖完一刷新就跳回字母序，表现成「拖拽没生效」（2026-10-07 修过一次）。只在 `custom` 排序模式且无搜索词时允许拖（其余模式展示顺序 ≠ 存储顺序）。模型行的拖拽由 `ModelListSection` **自带的** `DndContext` 处理，与外层这个无关。
 - **供应商编辑弹窗是独立的 `OmoNativeProviderFormModal.tsx`**（水平布局 + `labelCol`/`wrapperCol`），与其余 CLI 的 `*ProviderFormModal.tsx` 同构，也因此被 `scripts/verify-form-modal-layout.mjs` 覆盖。**不套 `ProviderFormSections`**：那个组件无条件渲染「备注」，而本模块的 provider 存在引擎文件里、没有备注字段可存（网关三件套同理，本 CLI 不在网关支持列表内）。
 - **模型目录的操作放模型列表工具栏，不放卡片头部**：「连通性测试」与「获取模型」是针对**模型目录**的操作，走 `ModelListSection` 的 `onTest` / `onFetchModels`（与 ZCode / Codex 一致）。它们曾经挂在卡片头部的 `extraActions` 里，语义上像是针对这张卡片的操作。
@@ -141,6 +143,7 @@
 
 - 打开本页：页头显示引擎状态目录；**五个区块**（供应商 / 引擎内建渠道 / 全局提示词 / 其他配置 / 会话管理）都在，侧栏五项都能跳转。
 - 供应商：能新建 / 编辑 / 复制 / 删除；编辑弹窗是**水平布局**（标签在左）；卡片第二行是 `ID • SDK • 端点`；模型折叠区能增删改模型、能进入模型批量删除模式；连通性测试与获取模型可用。
+- 卡片视图：点工具栏的布局切换 → 网格里的格子第二行是 npm 包名（默认渠道追加「当前主模型」），「更多」菜单里默认渠道的删除置灰、其余可用；点格子开详情侧栏，连接信息与模型目录齐全；切回列表布局后持久化生效。
 - 默认渠道：在「模型设置」选一个自定义渠道作默认 → 该卡片删除按钮置灰（hover 显示「该渠道已设为默认，不可删除」），批量选择模式下它没有复选框、「全选」也不含它；把默认换成别的渠道后按钮恢复可点。
 - 排序：切到「自定义」并清空搜索后，卡片左侧出现拖拽把手；拖完重载页面顺序不变（顺序落在 `models.json` 的键序上）。
 - 引擎内建渠道：区块内先转圈约 8 秒（后端在跑逐个凭据检查，区块默认展开，加载在页面挂载时就开始），然后只列出已配置凭据的渠道；未配置的一个都不出现。列表不含 `models.json` 里的自定义 provider。本机实测只有 `anthropic`（来自环境变量）。

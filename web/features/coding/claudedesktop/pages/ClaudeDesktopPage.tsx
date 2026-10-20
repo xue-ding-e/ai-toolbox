@@ -1,25 +1,17 @@
 import React from 'react';
 import { useProviderSharing } from '@/features/coding/shared/providerShare';
 import AllApiHubIcon from '@/components/common/AllApiHubIcon';
-import { Typography, Button, Space, Empty, message, Modal, Spin, Collapse } from 'antd';
+import { Typography, Button, Space, message, Modal } from 'antd';
 import {
-  PlusOutlined,
-  FolderOpenOutlined,
   DatabaseOutlined,
-  SyncOutlined,
   ExclamationCircleOutlined,
-  AppstoreOutlined,
   ImportOutlined,
-  LinkOutlined,
   FileTextOutlined,
   MessageOutlined,
-  EyeOutlined,
-  EllipsisOutlined,
-  CheckSquareOutlined,
 } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { invoke } from '@tauri-apps/api/core';
-import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener';
+import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import FileConfigPreviewModal from '@/components/common/FileConfigPreviewModal';
 import SidebarSettingsModal from '@/components/common/SidebarSettingsModal';
 import {
@@ -34,10 +26,11 @@ import {
 import {
   SortableContext,
   sortableKeyboardCoordinates,
+  rectSortingStrategy,
   verticalListSortingStrategy,
   arrayMove,
 } from '@dnd-kit/sortable';
-import { restrictToVerticalAxis } from '@dnd-kit/modifiers';
+import { restrictToVerticalAxis, restrictToWindowEdges } from '@dnd-kit/modifiers';
 import type {
   ClaudeDesktopFormValues,
   ClaudeDesktopModelRoutes,
@@ -65,15 +58,15 @@ import { SessionManagerPanel } from '@/features/coding/shared/sessionManager';
 import {
   PROVIDER_SORT_MODES,
   backupProvidersBeforeDelete,
-  ProviderBatchToolbar,
-  ProviderSearchEmpty,
-  ProviderSearchInput,
-  ProviderSortDropdown,
   filterProviderItems,
   sortProviderItems,
   useProviderBatchSelection,
   useProviderListSort,
+  useProviderListViewPrefs,
 } from '@/features/coding/shared/providerList';
+import { ProviderCardGrid } from '@/features/coding/shared/providerCardView';
+import CodingPageHeader from '@/features/coding/shared/CodingPageHeader';
+import ProviderListSection from '@/features/coding/shared/ProviderListSection';
 import { useRefreshStore, useSettingsStore } from '@/stores';
 import {
   engageProxyGatewayFailover,
@@ -125,9 +118,7 @@ import {
   parseClaudeSettingsConfig,
   stripClaudeOneMMarker,
 } from '../../claudecode/utils/claudeModelConfig';
-import styles from './ClaudeDesktopPage.module.less';
-
-const { Title, Text, Link } = Typography;
+const { Text } = Typography;
 
 const DEFAULT_BASE_URL = 'https://api.anthropic.com/v1';
 
@@ -526,6 +517,7 @@ const ClaudeDesktopPage: React.FC = () => {
   };
 
   const { sortMode, setSortMode, lastUsedAt, noteProviderUsed } = useProviderListSort('claudedesktop');
+  const { viewMode, setViewMode } = useProviderListViewPrefs('claudedesktop');
   const [providerKeyword, setProviderKeyword] = React.useState('');
   // Search and non-custom sort modes bypass sort_index, so dragging would
   // write a stale custom order — dnd is only enabled in custom mode.
@@ -591,6 +583,39 @@ const ClaudeDesktopPage: React.FC = () => {
     onBatchDelete: handleBatchDeleteProviders,
   });
   const providerBatchDragDisabled = providerDragDisabled || providerBatch.selectionMode;
+
+  /**
+   * One provider's card props, for whichever layout draws it.
+   *
+   * Both layouts go through this single expression so the list card and the
+   * grid cell cannot disagree about what a provider offers or which state tags
+   * it wears.
+   */
+  const renderProviderCard = (provider: ClaudeDesktopProvider) => (
+    <ClaudeDesktopProviderCard
+      key={provider.id}
+      provider={provider}
+      viewMode={viewMode}
+      isApplied={provider.id === appliedProviderId && provider.isApplied}
+      dragDisabled={providerDragDisabled}
+      onEdit={handleEditProvider}
+      onDelete={handleDeleteProvider}
+      onCopy={handleCopyProvider}
+      onShare={shareProvider}
+      onTest={handleTestProvider}
+      onSelect={handleSelectProvider}
+      onToggleDisabled={handleToggleDisabled}
+      selectable={providerBatch.selectionMode && providerBatch.isSelectable(provider.id)}
+      selected={providerBatch.selectedIds.has(provider.id)}
+      onSelectChange={(checked) => providerBatch.toggleSelect(provider.id, checked)}
+      gatewayTakeoverActive={gatewayTakeoverActive}
+      gatewayStatus={gatewayCliStatus}
+      onGatewayStatusChange={async (status) => {
+        setGatewayCliStatus(status);
+        await loadConfig();
+      }}
+    />
+  );
 
   const handleSelectProvider = async (provider: ClaudeDesktopProvider) => {
     try {
@@ -955,268 +980,117 @@ const ClaudeDesktopPage: React.FC = () => {
       }}
     >
       <div>
-        <div style={{ marginBottom: 16 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-            <div>
-              <div style={{ marginBottom: 8 }}>
-                <Title level={4} style={{ margin: 0, display: 'inline-block', marginRight: 8 }}>
-                  Claude Desktop
-                </Title>
-                <Link
-                  type="secondary"
-                  style={{ fontSize: 12 }}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    openUrl('https://support.anthropic.com/en/collections/8485703-claude-desktop');
-                  }}
-                >
-                  <LinkOutlined /> 官方文档
-                </Link>
-                <Link
-                  type="secondary"
-                  style={{ fontSize: 12, marginLeft: 16 }}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    void handlePreviewCurrentConfig();
-                  }}
-                >
-                  <EyeOutlined /> 预览配置
-                </Link>
-              </div>
-              <Space size={12} wrap>
-                {pathInfo && !pathInfo.supported ? (
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    {pathInfo.message || '当前平台不支持 Claude Desktop 3P 配置管理'}
-                  </Text>
-                ) : (
-                  <Space size={4}>
-                    <Text type="secondary" style={{ fontSize: 12 }}>
-                      配置文件路径:
-                    </Text>
-                    <Text code style={{ fontSize: 12 }}>
-                      {pathInfo?.normalConfigPath || ''}
-                    </Text>
-                  </Space>
-                )}
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<FolderOpenOutlined />}
-                  onClick={handleOpenFolder}
-                  style={{ padding: 0, fontSize: 12 }}
-                >
-                  {t('claudecode.openFolder')}
-                </Button>
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<SyncOutlined />}
-                  onClick={handleRefreshPage}
-                  style={{ padding: 0, fontSize: 12 }}
-                >
-                  {t('claudecode.refreshConfig')}
-                </Button>
-              </Space>
-            </div>
+        <CodingPageHeader
+          title="Claude Desktop"
+          docsUrl="https://support.anthropic.com/en/collections/8485703-claude-desktop"
+          onPreviewConfig={() => void handlePreviewCurrentConfig()}
+          configPath={pathInfo?.normalConfigPath ?? ''}
+          onOpenFolder={handleOpenFolder}
+          onRefresh={handleRefreshPage}
+          onMoreOptions={() => setSettingsModalOpen(true)}
+        />
+        {pathInfo && !pathInfo.supported && (
+          <div style={{ marginTop: -8, marginBottom: 12 }}>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              {pathInfo.message || t('claudedesktop.unsupportedPlatform')}
+            </Text>
+          </div>
+        )}
 
-            <Space>
-              <Button type="text" icon={<EllipsisOutlined />} onClick={() => setSettingsModalOpen(true)}>
-                {t('common.moreOptions')}
+        <ProviderListSection
+          sectionId="claudedesktop-providers"
+          collapsed={providerListCollapsed}
+          onCollapsedChange={setProviderListCollapsed}
+          loading={loading}
+          providerCount={providers.length}
+          visibleCount={visibleProviders.length}
+          batch={providerBatch}
+          batchSelectableIds={batchSelectableIds}
+          keyword={providerKeyword}
+          onKeywordChange={setProviderKeyword}
+          sortMode={sortMode}
+          sortModes={PROVIDER_SORT_MODES}
+          onSortModeChange={setSortMode}
+          dragDisabledBySort={providerDragDisabled}
+          locateProviderId={appliedProviderId}
+          onOpenCommonConfig={() => setCommonConfigModalOpen(true)}
+          onAddProvider={handleAddProvider}
+          headerExtra={
+            <GatewayFailoverButton
+              cliKey="claude_desktop"
+              status={gatewayCliStatus}
+              onStatusChange={setGatewayCliStatus}
+            />
+          }
+          viewMode={viewMode}
+          onViewModeChange={setViewMode}
+          hint={
+            <>
+              <div>{t('claudedesktop.pageHint')}</div>
+              <div>{t('claudedesktop.pageWarning')}</div>
+            </>
+          }
+          footer={
+            <Space wrap>
+              <Button
+                type="dashed"
+                icon={<ImportOutlined />}
+                onClick={() => setImportModalOpen(true)}
+              >
+                {t('opencode.provider.importFavorite')}
+              </Button>
+              {allApiHubAvailable && (
+                <Button
+                  type="dashed"
+                  icon={<AllApiHubIcon />}
+                  onClick={() => setAllApiHubImportModalOpen(true)}
+                >
+                  {t('common.allApiHub.importFromAllApiHub')}
+                </Button>
+              )}
+              {ccSwitchAvailable && (
+                <Button
+                  type="dashed"
+                  icon={<ImportOutlined />}
+                  onClick={() => setCcSwitchImportModalOpen(true)}
+                >
+                  {t('common.ccSwitch.importFromCcSwitch')}
+                </Button>
+              )}
+              <Button
+                type="dashed"
+                icon={<ImportOutlined />}
+                onClick={handleImportFromClaude}
+              >
+                从 Claude Code 导入
               </Button>
             </Space>
-          </div>
-        </div>
-
-        <div
-          id="claudedesktop-providers"
-          data-sidebar-section="true"
-          data-sidebar-title="供应商"
+          }
         >
-          <Collapse
-            style={{ marginBottom: 16 }}
-            activeKey={providerListCollapsed ? [] : ['providers']}
-            onChange={(keys) => setProviderListCollapsed(!keys.includes('providers'))}
-            items={[
-              {
-                key: 'providers',
-                label: (
-                  <Space size={8} wrap>
-                    <Text strong>
-                      <DatabaseOutlined style={{ marginRight: 8 }} />
-                      供应商列表
-                    </Text>
-                    <GatewayFailoverButton
-                      cliKey="claude_desktop"
-                      status={gatewayCliStatus}
-                      onStatusChange={setGatewayCliStatus}
-                    />
-                  </Space>
-                ),
-                extra: (
-                  <Space size={4} wrap>
-                    <Button
-                      type="link"
-                      size="small"
-                      style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4 }}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (providerBatch.selectionMode) {
-                          providerBatch.exitSelection();
-                        } else {
-                          providerBatch.enterSelection();
-                        }
-                      }}
-                    >
-                      <CheckSquareOutlined style={{ fontSize: 13, lineHeight: 1 }} />
-                      <span>
-                        {providerBatch.selectionMode
-                          ? t('common.batch.exit')
-                          : t('common.batch.manage')}
-                      </span>
-                    </Button>
-                    {providerBatch.selectionMode && (
-                      <ProviderBatchToolbar
-                        hasSelection={providerBatch.hasSelection}
-                        visibleCount={batchSelectableIds.length}
-                        isAllSelected={providerBatch.isAllSelected}
-                        indeterminate={providerBatch.indeterminate}
-                        onSelectAll={providerBatch.selectAllFiltered}
-                        onBatchDelete={providerBatch.batchDelete}
-                        disabled={loading}
-                      />
-                    )}
-                    <ProviderSearchInput value={providerKeyword} onChange={setProviderKeyword} />
-                    <ProviderSortDropdown
-                      mode={sortMode}
-                      modes={PROVIDER_SORT_MODES}
-                      onChange={setSortMode}
-                    />
-                    <Button
-                      type="link"
-                      size="small"
-                      style={{ fontSize: 12 }}
-                      icon={<AppstoreOutlined />}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setCommonConfigModalOpen(true);
-                      }}
-                    >
-                      通用配置
-                    </Button>
-                    <Button
-                      type="link"
-                      size="small"
-                      style={{ fontSize: 12 }}
-                      icon={<PlusOutlined />}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleAddProvider();
-                      }}
-                    >
-                      新增供应商
-                    </Button>
-                  </Space>
-                ),
-                children: (
-                  <Spin spinning={loading}>
-                    <div className={styles.pageHint}>
-                      <div>
-                        可添加多套供应商配置并通过「应用」或系统托盘快捷菜单快速切换。「通用配置」的内容为所有供应商共享，应用时会自动与供应商配置合并写入。
-                      </div>
-                      <div>注意：配置存储在应用数据库中，请勿手动修改本地配置文件，会被下次「应用」操作覆盖。</div>
-                    </div>
-
-                    {providers.length === 0 ? (
-                      <Empty
-                        description="尚未配置供应商，点击上方“新增供应商”或从下方导入"
-                        style={{ marginTop: 40 }}
-                      />
-                    ) : visibleProviders.length === 0 ? (
-                      <ProviderSearchEmpty />
-                    ) : (
-                      <DndContext
-                        sensors={providerBatchDragDisabled ? [] : sensors}
-                        collisionDetection={closestCenter}
-                        modifiers={[restrictToVerticalAxis]}
-                        onDragEnd={handleDragEnd}
-                      >
-                        <SortableContext
-                          items={providers.map((p) => p.id)}
-                          strategy={verticalListSortingStrategy}
-                        >
-                          <div>
-                            {visibleProviders.map((provider) => (
-                              <ClaudeDesktopProviderCard
-                                key={provider.id}
-                                provider={provider}
-                                isApplied={provider.id === appliedProviderId && provider.isApplied}
-                                onEdit={handleEditProvider}
-                                onDelete={handleDeleteProvider}
-                                onCopy={handleCopyProvider}
-                                onShare={shareProvider}
-                                onTest={handleTestProvider}
-                                onSelect={handleSelectProvider}
-                                onToggleDisabled={handleToggleDisabled}
-                                selectable={providerBatch.selectionMode && providerBatch.isSelectable(provider.id)}
-                                selected={providerBatch.selectedIds.has(provider.id)}
-                                onSelectChange={(checked) =>
-                                  providerBatch.toggleSelect(provider.id, checked)
-                                }
-                                gatewayTakeoverActive={gatewayTakeoverActive}
-                                gatewayStatus={gatewayCliStatus}
-                                onGatewayStatusChange={async (status) => {
-                                  setGatewayCliStatus(status);
-                                  await loadConfig();
-                                }}
-                              />
-                            ))}
-                          </div>
-                        </SortableContext>
-                      </DndContext>
-                    )}
-
-                    <div style={{ marginTop: 12 }}>
-                      <Space wrap>
-                        <Button
-                          type="dashed"
-                          icon={<ImportOutlined />}
-                          onClick={() => setImportModalOpen(true)}
-                        >
-                          {t('opencode.provider.importFavorite')}
-                        </Button>
-                        {allApiHubAvailable && (
-                          <Button
-                            type="dashed"
-                            icon={<AllApiHubIcon />}
-                            onClick={() => setAllApiHubImportModalOpen(true)}
-                          >
-                            {t('common.allApiHub.importFromAllApiHub')}
-                          </Button>
-                        )}
-                        {ccSwitchAvailable && (
-                          <Button
-                            type="dashed"
-                            icon={<ImportOutlined />}
-                            onClick={() => setCcSwitchImportModalOpen(true)}
-                          >
-                            {t('common.ccSwitch.importFromCcSwitch')}
-                          </Button>
-                        )}
-                        <Button
-                          type="dashed"
-                          icon={<ImportOutlined />}
-                          onClick={handleImportFromClaude}
-                        >
-                          从 Claude Code 导入
-                        </Button>
-                      </Space>
-                    </div>
-                  </Spin>
-                ),
-              },
-            ]}
-          />
-        </div>
+          {/* One `DndContext` serves both layouts; only the sorting strategy and
+              the drag modifier change with the view. */}
+          <DndContext
+            sensors={providerBatchDragDisabled ? [] : sensors}
+            collisionDetection={closestCenter}
+            modifiers={[viewMode === 'card' ? restrictToWindowEdges : restrictToVerticalAxis]}
+            onDragEnd={handleDragEnd}
+          >
+            <SortableContext
+              items={visibleProviders.map((provider) => provider.id)}
+              strategy={viewMode === 'card' ? rectSortingStrategy : verticalListSortingStrategy}
+            >
+              {viewMode === 'card' ? (
+                <ProviderCardGrid
+                  items={visibleProviders}
+                  getKey={(provider) => provider.id}
+                  renderItem={renderProviderCard}
+                />
+              ) : (
+                <div>{visibleProviders.map(renderProviderCard)}</div>
+              )}
+            </SortableContext>
+          </DndContext>
+        </ProviderListSection>
 
         <div
           id="claudedesktop-global-prompt"

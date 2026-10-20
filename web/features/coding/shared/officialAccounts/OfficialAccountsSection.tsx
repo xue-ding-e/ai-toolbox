@@ -107,6 +107,7 @@ const OfficialAccountsSection: React.FC<OfficialAccountsSectionProps> = ({
   onRefresh,
   onViewDetails,
   onDelete,
+  renderExtraActions,
 }) => {
   const { t } = useTranslation();
   const embedded = variant === 'embedded';
@@ -309,6 +310,9 @@ const OfficialAccountsSection: React.FC<OfficialAccountsSectionProps> = ({
                       {t('common.officialAccount.refresh')}
                     </Button>
                   )}
+                  {/* CLI-specific actions sit beside the icons of the same kind
+                      — they act on this row, not on the block. */}
+                  {renderExtraActions?.(account)}
                   {onViewDetails && (
                     <Button
                       type="text"

@@ -1,29 +1,14 @@
 import React from 'react';
-import './GrokProviderCard.less';
-import { Card, Space, Button, Dropdown, Tag, Typography, Switch, Tooltip, message, Collapse, Empty } from 'antd';
+import { Button, Space, Tag, Tooltip, Typography, message } from 'antd';
 import {
   ApiOutlined,
   CheckOutlined,
-  EditOutlined,
-  DeleteOutlined,
-  CopyOutlined,
-  MoreOutlined,
-  HolderOutlined,
-  DownOutlined,
-  RightOutlined,
-  LinkOutlined,
-  SyncOutlined,
-  EyeOutlined,
   KeyOutlined,
-  PlusOutlined,
-  CloudDownloadOutlined,
+  LinkOutlined,
 } from '@ant-design/icons';
-import type { MenuProps } from 'antd';
 import { BarChart2, Share2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
-import { useSortable } from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
 import type { GrokOfficialAccount, GrokProvider, GrokSettingsConfig } from '@/types/grok';
 import {
   engageProxyGatewaySingle,
@@ -54,10 +39,24 @@ import {
   openAiApiFormatFromBaseUrl,
   subscribeGatewayProviderProfiles,
 } from '@/features/coding/shared/gateway';
-import ProviderConnectivityStatus from '@/features/coding/shared/providerConnectivity/ProviderConnectivityStatus';
-import { ManagementCheckbox } from '@/features/coding/shared/management';
+import CodexStyleCard, {
+  InlineConnectivityButton,
+} from '@/features/coding/shared/providerCardVariants/CodexStyleCard';
+import {
+  renderProviderPrimaryAction,
+} from '@/features/coding/shared/providerCardVariants/providerCardActions';
+import ProviderModelSection from '@/features/coding/shared/providerCardVariants/ProviderModelSection';
+import type {
+  ProviderCardMetaEntry,
+  ProviderCardModels,
+  ProviderCardVariantProps,
+} from '@/features/coding/shared/providerCardVariants/types';
+import {
+  ProviderCompactCard,
+  type ProviderDetailSection,
+} from '@/features/coding/shared/providerCardView';
+import type { ProviderViewMode } from '@/features/coding/shared/providerList';
 import type { ModelDisplayData, ProviderConnectivityStatusItem } from '@/components/common/ProviderCard/types';
-import ModelItem from '@/components/common/ModelItem';
 import {
   GROK_LOCAL_PROVIDER_ID,
   isGrokLocalProviderId,
@@ -67,12 +66,24 @@ import {
   getGrokProviderCatalogModels,
   getGrokProviderDefaultModelKey,
 } from '../utils/grokProviderModels';
+import {
+  OfficialAccountCount,
+  OfficialAccountHeadingIcon,
+  OfficialAccountHint,
+  OfficialAccountsSection,
+} from '@/features/coding/shared/officialAccounts';
+import type {
+  OfficialAccountPendingAction,
+  OfficialAccountRowView,
+} from '@/features/coding/shared/officialAccounts';
 
 const { Text } = Typography;
 
 interface GrokProviderCardProps {
   provider: GrokProvider;
   isApplied: boolean;
+  /** Which layout the page is in; `'card'` renders the compact grid cell. */
+  viewMode?: ProviderViewMode;
   onEdit: (provider: GrokProvider) => void;
   onDelete: (provider: GrokProvider) => void;
   onCopy: (provider: GrokProvider) => void;
@@ -80,6 +91,8 @@ interface GrokProviderCardProps {
   onTest: (provider: GrokProvider) => void;
   onSelect: (provider: GrokProvider) => void;
   onToggleDisabled: (provider: GrokProvider, isDisabled: boolean) => void;
+  /** Hides the drag handle when reordering is unavailable. */
+  dragDisabled?: boolean;
   onAddModel?: (provider: GrokProvider) => void;
   onEditModel?: (provider: GrokProvider, modelKey: string) => void;
   onDeleteModel?: (provider: GrokProvider, modelKey: string) => void;
@@ -112,9 +125,20 @@ interface GrokProviderCardProps {
   onSelectChange?: (checked: boolean) => void;
 }
 
+/**
+ * A Grok provider, rendered in the Codex style.
+ *
+ * Style choice follows SOP §4.2.1: `settingsConfig.modelCatalog` is a real
+ * model catalog, and exactly one provider is applied — so the card carries a
+ * model section and an 应用 action, unlike the OpenCode style.
+ *
+ * The gateway decisions, the catalog mapping and the official-account handlers
+ * stay here; the layout and the account/row chrome come from the shared layer.
+ */
 const GrokProviderCard: React.FC<GrokProviderCardProps> = ({
   provider,
   isApplied,
+  viewMode = 'list',
   onEdit,
   onDelete,
   onCopy,
@@ -122,6 +146,7 @@ const GrokProviderCard: React.FC<GrokProviderCardProps> = ({
   onTest,
   onSelect,
   onToggleDisabled,
+  dragDisabled = false,
   onAddModel,
   onEditModel,
   onDeleteModel,
@@ -157,22 +182,6 @@ const GrokProviderCard: React.FC<GrokProviderCardProps> = ({
   const [engagingGatewayProxy, setEngagingGatewayProxy] = React.useState(false);
   const [restoringDirect, setRestoringDirect] = React.useState(false);
   const [switchingGatewayProvider, setSwitchingGatewayProvider] = React.useState(false);
-
-  // 拖拽排序
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-    isDragging,
-  } = useSortable({ id: provider.id });
-
-  const sortableStyle = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    opacity: isDragging ? 0.5 : (provider.isDisabled ? 0.6 : 1),
-  };
 
   // Parse settingsConfig JSON string
   const settingsConfig: GrokSettingsConfig = React.useMemo(() => {
@@ -295,7 +304,6 @@ const GrokProviderCard: React.FC<GrokProviderCardProps> = ({
     ? gatewayStatus?.provider_priorities.find((entry) => entry.provider_id === provider.id)
     : undefined;
   const isGatewayPrimary = priorityEntry?.label === 'P0';
-  const hasOfficialAccounts = isOfficialProvider && officialAccounts.length > 0;
   const displayModelName = modelName && reasoningEffort
     ? `${modelName} (${reasoningEffort})`
     : modelName;
@@ -332,33 +340,16 @@ const GrokProviderCard: React.FC<GrokProviderCardProps> = ({
   const showGatewaySwitchAction = canSwitchGatewayProvider;
   const showGatewayLockedApply = gatewayProxyActive && !isApplied && !canSwitchGatewayProvider;
   const applyWithProxyDisabled = provider.isDisabled || !gatewayCanApplyProxy;
-  // Match Claude: size the action rail from actual action flags, not applied chrome.
-  const actionAreaWidth =
-    showApplyWithProxyAction
-      ? 160
-      : showApplyAction || showGatewaySwitchAction || showGatewayLockedApply || canShowGatewayProxyButton || canShowRestoreDirectButton || canShowRestoreDirectUnavailable
-        ? 140
-        : 40;
 
-  const handleToggleDisabled = (checked: boolean) => {
-    if (showRuntimeApplied && !checked) {
+  /** The shared switch hands over the new enabled state; invert it once, here. */
+  const handleToggleDisabled = (enabled: boolean) => {
+    if (showRuntimeApplied && !enabled) {
       message.warning(t('common.disableAppliedConfigWarning'));
       return;
     }
-    onToggleDisabled(provider, !checked);
+    onToggleDisabled(provider, !enabled);
   };
-  const cardBorderColor = selectable && selected
-    ? 'var(--ant-color-primary)'
-    : isGatewayPrimary
-      ? 'var(--color-status-success)'
-      : showRuntimeApplied
-        ? 'var(--ant-color-primary)'
-        : 'var(--color-border-card)';
-  const cardBackground = isGatewayPrimary
-    ? 'linear-gradient(135deg, color-mix(in srgb, var(--color-status-success) 12%, var(--color-bg-container)), var(--color-bg-container))'
-    : showRuntimeApplied
-      ? 'var(--color-bg-selected)'
-      : undefined;
+
   const shouldShowOfficialAccounts = shouldShowGrokOfficialAccounts(
     provider,
     officialAccounts.length,
@@ -445,51 +436,72 @@ const GrokProviderCard: React.FC<GrokProviderCardProps> = ({
     }
   };
 
-  const renderOfficialAccounts = () => {
-    if (!shouldShowOfficialAccounts) {
-      return null;
+  const officialAccountRows = React.useMemo<OfficialAccountRowView[]>(
+    () =>
+      officialAccounts.map((account) => ({
+        id: account.id,
+        label: formatOfficialAccountLabel(account),
+        kindTag: account.id === GROK_LOCAL_PROVIDER_ID
+          ? t('grok.provider.officialAccountLocalTag')
+          : t('grok.provider.officialAccountOauthTag'),
+        metaLines: [
+          account.planType,
+          account.limitWeeklyText
+            ? `${t('grok.provider.officialAccountWeeklyLimitLabel')}: ${account.limitWeeklyText}`
+            : undefined,
+          account.limitMonthlyText
+            ? `${t('grok.provider.officialAccountMonthlyLimitLabel')}: ${account.limitMonthlyText}`
+            : undefined,
+        ].filter((line): line is string => Boolean(line)),
+        isApplied: showOfficialRuntimeState && account.isApplied,
+        // Grok never synthesizes a virtual (disk-only) login row; the local
+        // bridge account is a stored record like any other.
+        isVirtual: false,
+        lastError: account.lastError
+          ? t('grok.provider.officialAccountLastError', { message: account.lastError })
+          : undefined,
+      })),
+    [officialAccounts, showOfficialRuntimeState, t],
+  );
+
+  const findOfficialAccount = (row: OfficialAccountRowView) =>
+    officialAccounts.find((account) => account.id === row.id);
+
+  const officialAccountPending = React.useMemo<OfficialAccountPendingAction | null>(() => {
+    if (refreshingOfficialAccountId) {
+      return { accountId: refreshingOfficialAccountId, action: 'refresh' };
     }
+    if (savingOfficialAccountId) {
+      return { accountId: savingOfficialAccountId, action: 'save' };
+    }
+    return null;
+  }, [refreshingOfficialAccountId, savingOfficialAccountId]);
 
+  /**
+   * The account block. `fold` is the list card's folding block; the detail
+   * sidebar draws the same section uncollapsed (`ProviderDetailPanel` is opened
+   * to read those rows, so a fold there would only be a header in the way).
+   */
+  const renderOfficialAccounts = (fallback: 'footer' | 'detail') => {
+    if (!shouldShowOfficialAccounts) {
+      return undefined;
+    }
     return (
-      <div
-        style={{
-          marginTop: 12,
-          paddingTop: 12,
-          borderTop: '1px solid var(--color-border)',
-        }}
-      >
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 12,
-            marginBottom: accountsCollapsed ? 0 : 10,
-          }}
-        >
-          <Button
-            type="text"
-            size="small"
-            onClick={() => setAccountsCollapsed((current) => !current)}
-            style={{
-              padding: 0,
-              height: 'auto',
-              color: 'var(--color-text-secondary)',
-              fontSize: 12,
-            }}
-          >
-            <Space size={6}>
-              {accountsCollapsed ? <RightOutlined /> : <DownOutlined />}
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                {t('grok.provider.officialAccountsTitle')}
-              </Text>
-              <Text type="secondary" style={{ fontSize: 11 }}>
-                ({officialAccounts.length})
-              </Text>
-            </Space>
-          </Button>
-
-          {isOfficialProvider ? (
+      <OfficialAccountsSection
+        variant="embedded"
+        listTitle={t('common.officialAccount.listTitle')}
+        emptyText={t('grok.provider.officialAccountsEmpty')}
+        accounts={officialAccountRows}
+        {...(fallback === 'footer'
+          ? {
+              collapsed: accountsCollapsed,
+              onToggleCollapsed: () => setAccountsCollapsed((current) => !current),
+            }
+          : {})}
+        pending={officialAccountPending}
+        applyHint={t('grok.officialAccount.applyHint')}
+        loginAction={
+          isOfficialProvider ? (
             <Button
               type="link"
               size="small"
@@ -503,645 +515,499 @@ const GrokProviderCard: React.FC<GrokProviderCardProps> = ({
             <Text type="secondary" style={{ fontSize: 11 }}>
               {t('grok.provider.officialAccountLegacyNotice')}
             </Text>
-          )}
-        </div>
-
-        {!accountsCollapsed && (
-          <div
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 8,
-              paddingLeft: 18,
-            }}
-          >
-            {hasOfficialAccounts ? officialAccounts.map((account) => (
-              <div
-                key={account.id}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  gap: 12,
-                  padding: '6px 0',
-                  borderBottom: '1px solid var(--color-border)',
-                }}
-              >
-                <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    flexWrap: 'wrap',
-                    gap: 8,
-                    minWidth: 0,
-                    flex: 1,
-                  }}
+          )
+        }
+        onRefresh={onOfficialAccountRefresh
+          ? (row) => {
+              const account = findOfficialAccount(row);
+              if (account) onOfficialAccountRefresh(provider, account);
+            }
+          : undefined}
+        onViewDetails={onOfficialAccountViewDetails
+          ? (row) => {
+              const account = findOfficialAccount(row);
+              if (account) onOfficialAccountViewDetails(provider, account);
+            }
+          : undefined}
+        onSaveLocal={onOfficialLocalAccountSave
+          ? (row) => {
+              const account = findOfficialAccount(row);
+              if (account) onOfficialLocalAccountSave(provider, account);
+            }
+          : undefined}
+        onApply={showOfficialRuntimeState && onOfficialAccountApply
+          ? (row) => {
+              const account = findOfficialAccount(row);
+              if (account) onOfficialAccountApply(provider, account);
+            }
+          : undefined}
+        onDelete={onOfficialAccountDelete
+          ? (row) => {
+              const account = findOfficialAccount(row);
+              if (account) onOfficialAccountDelete(provider, account);
+            }
+          : undefined}
+        // Grok's sixth row action — re-mint the OAuth token — has no named slot
+        // in the shared section (it is the only CLI that needs one), so it rides
+        // the free-form slot. The button keeps its own spinner.
+        renderExtraActions={onOfficialAccountRefreshToken
+          ? (row) => {
+              const account = findOfficialAccount(row);
+              if (!account || account.id === GROK_LOCAL_PROVIDER_ID) {
+                return null;
+              }
+              return (
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<KeyOutlined />}
+                  loading={refreshingOfficialTokenAccountId === account.id}
+                  style={{ fontSize: 12, height: 'auto', paddingInline: 4 }}
+                  onClick={() => onOfficialAccountRefreshToken(provider, account)}
                 >
-                  <Text
-                    strong={showOfficialRuntimeState && account.isApplied}
-                    style={{ fontSize: 12 }}
-                    ellipsis={{ tooltip: formatOfficialAccountLabel(account) }}
-                  >
-                    {formatOfficialAccountLabel(account)}
-                  </Text>
-                  <Tag style={{ margin: 0, fontSize: 10 }}>
-                    {account.id === GROK_LOCAL_PROVIDER_ID
-                      ? t('grok.provider.officialAccountLocalTag')
-                      : t('grok.provider.officialAccountOauthTag')}
-                  </Tag>
-                  {account.planType && (
-                    <Text type="secondary" style={{ fontSize: 11 }}>
-                      {account.planType}
-                    </Text>
-                  )}
-                  {account.lastError ? (
-                    <Text type="danger" style={{ fontSize: 11 }}>
-                      {t('grok.provider.officialAccountLastError', { message: account.lastError })}
-                    </Text>
-                  ) : (
-                    <>
-                      {account.limitWeeklyText && (
-                        <Text type="secondary" style={{ fontSize: 11 }}>
-                          {`${t('grok.provider.officialAccountWeeklyLimitLabel')}: ${account.limitWeeklyText}`}
-                        </Text>
-                      )}
-                      {account.limitMonthlyText && (
-                        <Text type="secondary" style={{ fontSize: 11 }}>
-                          {`${t('grok.provider.officialAccountMonthlyLimitLabel')}: ${account.limitMonthlyText}`}
-                        </Text>
-                      )}
-                    </>
-                  )}
-                  {showOfficialRuntimeState && account.isApplied && (
-                    <AppliedTag style={{ fontSize: 10 }}>
-                      {t('grok.provider.applied')}
-                    </AppliedTag>
-                  )}
-                </div>
-
-                <Space size={4} wrap>
-                  <Button
-                    type="text"
-                    size="small"
-                    icon={<SyncOutlined />}
-                    onClick={() => onOfficialAccountRefresh?.(provider, account)}
-                    loading={refreshingOfficialAccountId === account.id}
-                    style={{ height: 'auto', paddingInline: 4, fontSize: 11 }}
-                  >
-                    {t('grok.provider.officialAccountRefresh')}
-                  </Button>
-                  {account.id !== GROK_LOCAL_PROVIDER_ID && (
-                    <Button
-                      type="text"
-                      size="small"
-                      icon={<KeyOutlined />}
-                      onClick={() => onOfficialAccountRefreshToken?.(provider, account)}
-                      loading={refreshingOfficialTokenAccountId === account.id}
-                      style={{ height: 'auto', paddingInline: 4, fontSize: 11 }}
-                    >
-                      {t('grok.provider.officialAccountRefreshToken')}
-                    </Button>
-                  )}
-                  <Button
-                    type="text"
-                    size="small"
-                    icon={<EyeOutlined />}
-                    onClick={() => onOfficialAccountViewDetails?.(provider, account)}
-                    style={{ height: 'auto', paddingInline: 4, fontSize: 11 }}
-                  >
-                    {t('grok.provider.officialAccountViewDetails')}
-                  </Button>
-                  {account.id === GROK_LOCAL_PROVIDER_ID ? (
-                    <Button
-                      type="text"
-                      size="small"
-                      icon={<CheckOutlined />}
-                      onClick={() => onOfficialLocalAccountSave?.(provider, account)}
-                      loading={savingOfficialAccountId === account.id}
-                      style={{ height: 'auto', paddingInline: 4, fontSize: 11 }}
-                    >
-                      {t('common.save')}
-                    </Button>
-                  ) : showOfficialRuntimeState && !account.isApplied ? (
-                    <Button
-                      type="text"
-                      size="small"
-                      icon={<CheckOutlined />}
-                      onClick={() => onOfficialAccountApply?.(provider, account)}
-                      style={{ height: 'auto', paddingInline: 4, fontSize: 11 }}
-                    >
-                      {t('grok.provider.apply')}
-                    </Button>
-                  ) : null}
-                  {(
-                    <Button
-                      type="text"
-                      danger
-                      size="small"
-                      icon={<DeleteOutlined />}
-                      onClick={() => onOfficialAccountDelete?.(provider, account)}
-                      style={{ height: 'auto', paddingInline: 4, fontSize: 11 }}
-                    >
-                      {t('common.delete')}
-                    </Button>
-                  )}
-                </Space>
-              </div>
-            )) : (
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                {t('grok.provider.officialAccountsEmpty')}
-              </Text>
-            )}
-          </div>
-        )}
-      </div>
+                  {t('grok.provider.officialAccountRefreshToken')}
+                </Button>
+              );
+            }
+          : undefined}
+      />
     );
   };
 
-  const menuItems: MenuProps['items'] = [
-    ...(!isLocalProvider ? [{
-      key: 'toggle',
-      label: (
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-            <span>{t('common.enable')}</span>
-            <Text type="secondary" style={{ fontSize: 11 }}>
-              {provider.isDisabled ? t('grok.configDisabled') : t('grok.configEnabled')}
-            </Text>
-          </div>
-          <Switch
-            checked={!provider.isDisabled}
-            onChange={handleToggleDisabled}
-            size="small"
-          />
-        </div>
-      ),
-    }] : []),
-    {
-      key: 'edit',
-      label: t('common.edit'),
-      icon: <EditOutlined />,
-      onClick: () => onEdit(provider),
-    },
-    {
-      key: 'copy',
-      label: t('common.copy'),
-      icon: <CopyOutlined />,
-      onClick: () => onCopy(provider),
-    },
-    ...(onShare ? [{
-      key: 'share', label: t('common.share'), icon: <Share2 size={14} />,
-      onClick: () => onShare(provider),
-    }] : []),
-    // Hide delete button for __local__ provider
-    ...(!isLocalProvider
-      ? [
-          {
-            type: 'divider' as const,
-          },
-          {
-            key: 'delete',
-            label: t('common.delete'),
-            icon: <DeleteOutlined />,
-            danger: true,
-            onClick: () => onDelete(provider),
-          },
-        ]
-      : []),
-  ].filter(Boolean) as MenuProps['items'];
-
-  return (
-    <div ref={setNodeRef} style={sortableStyle}>
-      <Card
-        size="small"
-        style={{
-          marginBottom: 12,
-          borderColor: cardBorderColor,
-          background: cardBackground,
-          boxShadow: 'var(--shadow-card-sm)',
-          transition: 'opacity 0.3s ease, border-color 0.2s ease, box-shadow 0.2s ease',
-        }}
-        styles={{ body: { padding: 16 } }}
-        onMouseEnter={(e) => {
-          e.currentTarget.style.boxShadow = 'var(--shadow-card-sm-hover)';
-        }}
-        onMouseLeave={(e) => {
-          e.currentTarget.style.boxShadow = 'var(--shadow-card-sm)';
-        }}
-      >
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-          <div style={{ flex: 1, display: 'flex', alignItems: 'flex-start', gap: 8 }}>
-            {selectable ? (
-              <div style={{ display: 'flex', alignItems: 'center', padding: '4px 0' }}>
-                <ManagementCheckbox
-                  checked={selected}
-                  ariaLabel={t('common.batch.selectItem')}
-                  onChange={onSelectChange ?? (() => {})}
-                  style={{ width: 13, height: 13 }}
-                />
-              </div>
-            ) : (
-              <div
-                {...attributes}
-                {...listeners}
-                style={{
-                  cursor: isDragging ? 'grabbing' : 'grab',
-                  color: 'var(--color-text-tertiary)',
-                  padding: '4px 0',
-                  touchAction: 'none',
-                }}
-              >
-                <HolderOutlined />
-              </div>
-            )}
-            <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 4 }}>
-              {/* Provider name and status */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <ProviderConnectivityStatus item={connectivityStatus} />
-                <ProviderNameLink
-                  name={provider.name}
-                  baseUrl={baseUrl}
-                  style={{ fontSize: 14, fontWeight: 600 }}
-                />
-                {isLocalProvider && (
-                  <Text type="secondary" style={{ fontSize: 11 }}>
-                    ({t('grok.localConfigHint')})
-                  </Text>
-                )}
-                {isOfficialProvider && (
-                  <Tag>{t('grok.provider.modeOfficial')}</Tag>
-                )}
-                {isOfficialProvider && gatewayTakeoverActive && (
-                  <Tooltip title={t('gateway.takeover.officialBypassedTooltip')}>
-                    <Tag color="gold">{t('gateway.takeover.officialBypassedTag')}</Tag>
-                  </Tooltip>
-                )}
-                {showRuntimeApplied && (
-                  <AppliedTag>
-                    {t('grok.provider.applied')}
-                  </AppliedTag>
-                )}
-                {showProxyTag && (
-                  <ProxyTag>
-                    {t('gateway.proxy.proxyTag')}
-                  </ProxyTag>
-                )}
-                {showProxyTag && (
-                  <Tooltip title={t('gateway.proxy.statisticsTooltip')}>
-                    <BarChart2
-                      size={14}
-                      aria-label={t('gateway.proxy.statisticsTooltip')}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        navigate('/gateway/statistics');
-                      }}
-                      style={{
-                        color: 'var(--color-text-tertiary)',
-                        cursor: 'pointer',
-                        flexShrink: 0,
-                      }}
-                    />
-                  </Tooltip>
-                )}
-                {priorityEntry && (
-                  <>
-                    <span
-                      style={{
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: 4,
-                        padding: '0 6px',
-                        height: 20,
-                        borderRadius: 10,
-                        fontSize: 10,
-                        fontWeight: 500,
-                        background: 'rgba(16,185,129,0.08)',
-                        color: '#059669',
-                      }}
-                    >
-                      <span
-                        style={{
-                          width: 6,
-                          height: 6,
-                          borderRadius: '50%',
-                          background: '#10b981',
-                        }}
-                      />
-                      {t('gateway.page.modelHealthState.healthy')}
-                    </span>
-                    <Tooltip
-                      title={
-                        isGatewayPrimary
-                          ? t('gateway.failover.priorityP0')
-                          : t('gateway.failover.priorityPn', { label: priorityEntry.label })
-                      }
-                    >
-                      <span
-                        style={{
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          padding: '0 6px',
-                          height: 20,
-                          borderRadius: 4,
-                          fontSize: 10,
-                          fontWeight: 650,
-                          background: 'rgba(16,185,129,0.08)',
-                          color: '#059669',
-                        }}
-                      >
-                        {priorityEntry.label}
-                      </span>
-                    </Tooltip>
-                  </>
-                )}
-              </div>
-
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                  {baseUrl && (
-                    <Text code style={{ fontSize: 11, padding: '0 4px' }}>
-                      {baseUrl}
-                    </Text>
-                  )}
-                  {displayModelName && (
-                    <Tag color="blue" style={{ fontSize: 11, margin: 0 }}>
-                      {displayModelName}
-                    </Tag>
-                  )}
-                  {apiFormatLabel && (
-                    <Tag color="purple" style={{ fontSize: 11, margin: 0 }}>
-                      {apiFormatLabel}
-                    </Tag>
-                  )}
-                  {(baseUrl || modelName || apiFormatLabel) && maskedApiKey && (
-                    <Text type="secondary" style={{ fontSize: 12 }}>|</Text>
-                  )}
-                  {maskedApiKey && (
-                    <Text type="secondary" style={{ fontSize: 12 }}>
-                      API Key: {maskedApiKey}
-                    </Text>
-                  )}
-                  {(baseUrl || modelName || apiFormatLabel || maskedApiKey) && provider.notes && (
-                    <Text type="secondary" style={{ fontSize: 12 }}>|</Text>
-                  )}
-                  {provider.notes && (
-                    <Text type="secondary" style={{ fontSize: 12 }}>
-                      {provider.notes}
-                    </Text>
-                  )}
-              </div>
-            </div>
-          </div>
-
-          {/* Action buttons */}
-          <div
+  const stateTags = (
+    <>
+      {isLocalProvider && (
+        <Text type="secondary" style={{ fontSize: 11 }}>
+          ({t('grok.localConfigHint')})
+        </Text>
+      )}
+      {isOfficialProvider && (
+        <OfficialAccountCount count={officialAccounts.length} />
+      )}
+      {isOfficialProvider && gatewayTakeoverActive && (
+        <Tooltip title={t('gateway.takeover.officialBypassedTooltip')}>
+          <Tag color="gold">{t('gateway.takeover.officialBypassedTag')}</Tag>
+        </Tooltip>
+      )}
+      {showRuntimeApplied && (
+        <AppliedTag>{t('grok.provider.applied')}</AppliedTag>
+      )}
+      {showProxyTag && (
+        <ProxyTag>{t('gateway.proxy.proxyTag')}</ProxyTag>
+      )}
+      {showProxyTag && (
+        <Tooltip title={t('gateway.proxy.statisticsTooltip')}>
+          <BarChart2
+            size={14}
+            aria-label={t('gateway.proxy.statisticsTooltip')}
+            onClick={(event) => {
+              event.stopPropagation();
+              navigate('/gateway/statistics');
+            }}
             style={{
-              display: 'flex',
+              color: 'var(--color-text-tertiary)',
+              cursor: 'pointer',
+              flexShrink: 0,
+            }}
+          />
+        </Tooltip>
+      )}
+      {priorityEntry && (
+        <>
+          <span
+            style={{
+              display: 'inline-flex',
               alignItems: 'center',
-              justifyContent: 'flex-end',
-              gap: 8,
-              width: actionAreaWidth,
-              whiteSpace: 'nowrap',
+              gap: 4,
+              padding: '0 6px',
+              height: 20,
+              borderRadius: 10,
+              fontSize: 10,
+              fontWeight: 500,
+              background: 'rgba(16,185,129,0.08)',
+              color: '#059669',
             }}
           >
-            {canShowGatewayProxyButton && (
-              <Tooltip title={t('gateway.proxy.singleHint')}>
-                <Button
-                  type="link"
-                  size="small"
-                  icon={<ApiOutlined />}
-                  onClick={handleEngageGatewayProxy}
-                  loading={engagingGatewayProxy}
-                >
-                  {t('gateway.proxy.singleButton')}
-                </Button>
-              </Tooltip>
-            )}
-            {canShowRestoreDirectButton && (
-              <Tooltip title={t('gateway.proxy.restoreDirectHint')}>
-                <Button
-                  type="link"
-                  size="small"
-                  onClick={handleRestoreDirect}
-                  loading={restoringDirect}
-                >
-                  {t('gateway.proxy.restoreDirectButton')}
-                </Button>
-              </Tooltip>
-            )}
-            {canShowRestoreDirectUnavailable && (
-              <Tooltip title={restoreDirectUnavailableTitle}>
-                <Button
-                  type="link"
-                  size="small"
-                  disabled
-                >
-                  {t('gateway.proxy.restoreDirectButton')}
-                </Button>
-              </Tooltip>
-            )}
-            {showDirectApplyAction && (
-              <Button
-                type="link"
-                size="small"
-                icon={<CheckOutlined />}
-                onClick={() => onSelect(provider)}
-                disabled={provider.isDisabled}
-              >
-                {t('grok.provider.apply')}
+            <span
+              style={{
+                width: 6,
+                height: 6,
+                borderRadius: '50%',
+                background: '#10b981',
+              }}
+            />
+            {t('gateway.page.modelHealthState.healthy')}
+          </span>
+          <Tooltip
+            title={
+              isGatewayPrimary
+                ? t('gateway.failover.priorityP0')
+                : t('gateway.failover.priorityPn', { label: priorityEntry.label })
+            }
+          >
+            <span
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                padding: '0 6px',
+                height: 20,
+                borderRadius: 4,
+                fontSize: 10,
+                fontWeight: 650,
+                background: 'rgba(16,185,129,0.08)',
+                color: '#059669',
+              }}
+            >
+              {priorityEntry.label}
+            </span>
+          </Tooltip>
+        </>
+      )}
+    </>
+  );
+
+  /**
+   * The second line. The official card states what switching accounts does
+   * instead of an endpoint/key/model it does not have (same choice as Codex and
+   * Kimi); a custom card states endpoint, model, protocol, masked key and notes.
+   */
+  const metaEntries = React.useMemo<ProviderCardMetaEntry[]>(() => {
+    if (isOfficialProvider) {
+      return [{
+        kind: 'text',
+        value: <OfficialAccountHint>{t('grok.provider.officialAccountHint')}</OfficialAccountHint>,
+      }];
+    }
+    const entries: ProviderCardMetaEntry[] = [];
+    if (baseUrl) {
+      entries.push({ kind: 'code', value: baseUrl });
+    }
+    if (displayModelName) {
+      entries.push({ kind: 'tag', value: displayModelName, color: 'blue' });
+    }
+    if (apiFormatLabel) {
+      entries.push({ kind: 'tag', value: apiFormatLabel, color: 'purple' });
+    }
+    if (maskedApiKey) {
+      entries.push({ kind: 'text', value: `API Key: ${maskedApiKey}` });
+    }
+    if (provider.notes) {
+      entries.push({ kind: 'text', value: provider.notes });
+    }
+    return entries;
+  }, [apiFormatLabel, baseUrl, displayModelName, isOfficialProvider, maskedApiKey, provider.notes, t]);
+
+  const gatewayActions = (
+    <>
+      {canShowGatewayProxyButton && (
+        <Tooltip title={t('gateway.proxy.singleHint')}>
+          <Button
+            type="link"
+            size="small"
+            icon={<ApiOutlined />}
+            onClick={handleEngageGatewayProxy}
+            loading={engagingGatewayProxy}
+          >
+            {t('gateway.proxy.singleButton')}
+          </Button>
+        </Tooltip>
+      )}
+      {canShowRestoreDirectButton && (
+        <Tooltip title={t('gateway.proxy.restoreDirectHint')}>
+          <Button
+            type="link"
+            size="small"
+            onClick={handleRestoreDirect}
+            loading={restoringDirect}
+          >
+            {t('gateway.proxy.restoreDirectButton')}
+          </Button>
+        </Tooltip>
+      )}
+      {canShowRestoreDirectUnavailable && (
+        <Tooltip title={restoreDirectUnavailableTitle}>
+          <Button type="link" size="small" disabled>
+            {t('gateway.proxy.restoreDirectButton')}
+          </Button>
+        </Tooltip>
+      )}
+      {showApplyWithProxyAction && (
+        <Tooltip
+          title={
+            gatewayCanApplyProxy
+              ? t('gateway.proxy.applyWithProxyHint')
+              : t('gateway.proxy.applyWithProxyDisabledTooltip')
+          }
+        >
+          <span>
+            <Button
+              type="link"
+              size="small"
+              icon={<CheckOutlined />}
+              onClick={handleApplyWithGatewayProxy}
+              disabled={applyWithProxyDisabled}
+              loading={engagingGatewayProxy}
+            >
+              {t('gateway.proxy.applyWithProxyButton')}
+            </Button>
+          </span>
+        </Tooltip>
+      )}
+      {showGatewaySwitchAction && (
+        <Tooltip
+          title={
+            gatewayFailoverActive
+              ? t('gateway.proxy.switchPrimaryFailoverHint')
+              : t('gateway.proxy.switchPrimaryHint')
+          }
+        >
+          <Button
+            type="link"
+            size="small"
+            icon={<CheckOutlined />}
+            onClick={handleSwitchGatewayProvider}
+            loading={switchingGatewayProvider}
+          >
+            {gatewayFailoverActive
+              ? t('gateway.proxy.switchPrimaryP0Button')
+              : t('gateway.proxy.switchPrimaryButton')}
+          </Button>
+        </Tooltip>
+      )}
+      {showGatewayLockedApply && (
+        <Tooltip title={t('gateway.proxy.applyLockedTooltip')}>
+          <span>
+            <Button type="link" size="small" icon={<CheckOutlined />} disabled>
+              {t('grok.provider.apply')}
+            </Button>
+          </span>
+        </Tooltip>
+      )}
+    </>
+  );
+
+  const modelSection: ProviderCardModels | undefined = showModelList
+    ? {
+        models: modelListItems,
+        // The catalog is edited, not reordered: `defaultModelKey` points at a
+        // row, so row order carries no meaning in `settingsConfig`.
+        modelsDraggable: false,
+        modelSelectionMode,
+        selectedModelIds,
+        onToggleModelSelection: onToggleModelSelection
+          ? (modelId, isSelected) => onToggleModelSelection(provider, modelId, isSelected)
+          : undefined,
+        onToggleBatchDeleteMode: onToggleBatchDeleteMode
+          ? () => onToggleBatchDeleteMode(provider)
+          : undefined,
+        onBatchDeleteModels: onBatchDeleteModels
+          ? () => onBatchDeleteModels(provider)
+          : undefined,
+        onTestModels: () => onTest(provider),
+        testModelsDisabled: !canRunConnectivityTest,
+        testModelsDisabledTooltip: isOfficialProvider
+          ? t('grok.provider.officialConnectivityHint')
+          : t('common.modelMissing'),
+        onFetchModels: onFetchModels ? () => onFetchModels(provider) : undefined,
+        onAddModel: onAddModel ? () => onAddModel(provider) : undefined,
+        onEditModel: onEditModel ? (modelId) => onEditModel(provider, modelId) : undefined,
+        onDeleteModel: onDeleteModel ? (modelId) => onDeleteModel(provider, modelId) : undefined,
+        onSetPrimaryModel: onSetDefaultModel ? (modelId) => onSetDefaultModel(provider, modelId) : undefined,
+      }
+    : undefined;
+
+  const props: ProviderCardVariantProps = {
+    provider: {
+      id: provider.id,
+      name: isOfficialProvider ? t('common.officialAccount.headingTitle') : provider.name,
+      baseUrl,
+    },
+    providerState: {
+      isDisabled: provider.isDisabled,
+      onToggleDisabled: isLocalProvider ? undefined : handleToggleDisabled,
+      draggable: !selectable && !dragDisabled,
+      sortableId: provider.id,
+      connectivityStatus,
+      selectable,
+      selected,
+      onSelectChange,
+      dimmed: provider.isDisabled,
+      accent: isGatewayPrimary
+        ? 'gatewayPrimary'
+        : showRuntimeApplied
+          ? 'applied'
+          : undefined,
+    },
+    actions: {
+      onEdit: () => onEdit(provider),
+      onCopy: () => onCopy(provider),
+      onShare: onShare ? () => onShare(provider) : undefined,
+      onDelete: isLocalProvider ? undefined : () => onDelete(provider),
+      enabledStateLabel: provider.isDisabled
+        ? t('grok.configDisabled')
+        : t('grok.configEnabled'),
+      gatewayActions,
+      primaryAction: showDirectApplyAction
+        ? {
+            label: t('grok.provider.apply'),
+            icon: <CheckOutlined />,
+            onClick: () => onSelect(provider),
+            disabled: provider.isDisabled,
+          }
+        : undefined,
+    },
+    namePrefix: isOfficialProvider ? <OfficialAccountHeadingIcon /> : undefined,
+    nameTags: stateTags,
+    metaEntries,
+    inlineActions: isOfficialProvider ? undefined : (
+      <InlineConnectivityButton
+        onClick={() => onTest(provider)}
+        disabled={!canRunConnectivityTest}
+        tooltip={t('grok.provider.officialConnectivityHint')}
+      />
+    ),
+    footer: renderOfficialAccounts('footer'),
+    modelSection,
+  };
+
+  if (viewMode !== 'card') {
+    return <CodexStyleCard {...props} />;
+  }
+
+  /**
+   * The cell's second line states one thing: the model the CLI starts with, or
+   * — for the official card — the account it is currently using, in all three
+   * states (applied → the login on disk → "not signed in"). The line is always
+   * reserved by the shared card, so a blank one reads as a broken cell.
+   */
+  const currentLoginRow = showOfficialRuntimeState
+    ? officialAccountRows.find((row) => row.isApplied) ?? officialAccountRows.find((row) => row.isVirtual)
+    : undefined;
+  const cardSubtitle = isOfficialProvider
+    ? [{
+        label: t('common.officialAccount.currentLogin'),
+        value: currentLoginRow?.label ?? t('common.officialAccount.currentLoginNone'),
+      }]
+    : displayModelName
+      ? [{ label: t('common.model.currentPrimary'), value: displayModelName }]
+      : undefined;
+
+  const detailSections: ProviderDetailSection[] = [{
+    key: 'connection',
+    title: t('common.provider.connectionTitle'),
+    fields: [
+      {
+        key: 'baseUrl',
+        label: t('grok.provider.baseUrl'),
+        value: baseUrl,
+        emptyText: t('common.provider.notConfigured'),
+        copyable: true,
+      },
+      {
+        key: 'apiFormat',
+        label: t('grok.provider.apiFormat'),
+        value: apiFormatLabel ?? undefined,
+      },
+      {
+        key: 'apiKey',
+        label: t('grok.provider.apiKey'),
+        value: apiKey,
+        emptyText: t('common.provider.notConfigured'),
+        copyable: true,
+        elideMiddle: true,
+      },
+    ],
+  }];
+
+  if (modelSection) {
+    detailSections.push({
+      key: 'catalog',
+      content: (
+        <ProviderModelSection
+          providerId={provider.id}
+          modelSection={modelSection}
+          appearance="detail"
+        />
+      ),
+    });
+  }
+  const detailOfficialAccounts = renderOfficialAccounts('detail');
+  if (detailOfficialAccounts) {
+    detailSections.push({ key: 'officialAccounts', content: detailOfficialAccounts });
+  }
+  if (provider.notes) {
+    detailSections.push({
+      key: 'notes',
+      title: t('common.provider.notes'),
+      fields: [{ key: 'notes', label: t('common.provider.notes'), value: provider.notes }],
+    });
+  }
+
+  return (
+    <ProviderCompactCard
+      provider={props.provider}
+      subtitle={cardSubtitle}
+      // One fact plus the pair of primary actions, so the action row rides the
+      // second line (Codex's grid cell shape) instead of a footer bar.
+      actionPlacement="subtitle"
+      providerState={props.providerState}
+      actions={props.actions}
+      namePrefix={props.namePrefix}
+      nameTags={stateTags}
+      extraMenuItems={[{
+        key: 'connectivity',
+        label: t('opencode.connectivity.button'),
+        icon: <ApiOutlined />,
+        disabled: !canRunConnectivityTest,
+        onClick: () => onTest(provider),
+      }]}
+      detail={{
+        title: (
+          <ProviderNameLink
+            name={isOfficialProvider ? t('common.officialAccount.headingTitle') : provider.name}
+            baseUrl={baseUrl}
+          />
+        ),
+        statusTags: stateTags,
+        sections: detailSections,
+        primaryActions: (
+          <>
+            {gatewayActions}
+            {renderProviderPrimaryAction(props.actions?.primaryAction)}
+          </>
+        ),
+        secondaryActions: (
+          <Space size={4} wrap>
+            <Button
+              size="small"
+              type="text"
+              icon={<ApiOutlined />}
+              onClick={() => onTest(provider)}
+              disabled={!canRunConnectivityTest}
+              title={isOfficialProvider ? t('grok.provider.officialConnectivityHint') : undefined}
+            >
+              {t('opencode.connectivity.button')}
+            </Button>
+            <Button size="small" type="text" onClick={() => onEdit(provider)}>
+              {t('common.edit')}
+            </Button>
+            <Button size="small" type="text" onClick={() => onCopy(provider)}>
+              {t('common.copy')}
+            </Button>
+            {onShare && (
+              <Button size="small" type="text" icon={<Share2 size={14} aria-hidden="true" />} onClick={() => onShare(provider)}>
+                {t('common.share')}
               </Button>
             )}
-            {showApplyWithProxyAction && (
-              <Tooltip
-                title={
-                  gatewayCanApplyProxy
-                    ? t('gateway.proxy.applyWithProxyHint')
-                    : t('gateway.proxy.applyWithProxyDisabledTooltip')
-                }
-              >
-                <span>
-                  <Button
-                    type="link"
-                    size="small"
-                    icon={<CheckOutlined />}
-                    onClick={handleApplyWithGatewayProxy}
-                    disabled={applyWithProxyDisabled}
-                    loading={engagingGatewayProxy}
-                  >
-                    {t('gateway.proxy.applyWithProxyButton')}
-                  </Button>
-                </span>
-              </Tooltip>
+            {!isLocalProvider && (
+              <Button size="small" type="text" danger onClick={() => onDelete(provider)}>
+                {t('common.delete')}
+              </Button>
             )}
-            {showGatewaySwitchAction && (
-              <Tooltip
-                title={
-                  gatewayFailoverActive
-                    ? t('gateway.proxy.switchPrimaryFailoverHint')
-                    : t('gateway.proxy.switchPrimaryHint')
-                }
-              >
-                <Button
-                  type="link"
-                  size="small"
-                  icon={<CheckOutlined />}
-                  onClick={handleSwitchGatewayProvider}
-                  loading={switchingGatewayProvider}
-                >
-                  {gatewayFailoverActive
-                    ? t('gateway.proxy.switchPrimaryP0Button')
-                    : t('gateway.proxy.switchPrimaryButton')}
-                </Button>
-              </Tooltip>
-            )}
-            {showGatewayLockedApply && (
-              <Tooltip title={t('gateway.proxy.applyLockedTooltip')}>
-                <span>
-                  <Button type="link" size="small" icon={<CheckOutlined />} disabled>
-                    {t('grok.provider.apply')}
-                  </Button>
-                </span>
-              </Tooltip>
-            )}
-            <Dropdown menu={{ items: menuItems }} trigger={['click']}>
-              <Button type="text" size="small" icon={<MoreOutlined />} />
-            </Dropdown>
-          </div>
-      </div>
-        {renderOfficialAccounts()}
-        {showModelList && (
-          <Collapse
-            defaultActiveKey={[]}
-            ghost
-            className="grok-model-list-collapse"
-            style={{ marginTop: 12, background: 'transparent' }}
-            items={[{
-              key: `models-${provider.id}`,
-              label: (
-                <div
-                  style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    width: '100%',
-                    background: 'transparent',
-                  }}
-                >
-                  <Text strong style={{ fontSize: 13 }}>
-                    {t('grok.model.title')} ({modelListItems.length})
-                  </Text>
-                  <Space size={0} onClick={(event) => event.stopPropagation()}>
-                    {onToggleBatchDeleteMode && (
-                      <Button
-                        size="small"
-                        type="text"
-                        icon={<DeleteOutlined />}
-                        style={{ fontSize: 12 }}
-                        onClick={() => onToggleBatchDeleteMode(provider)}
-                      >
-                        {modelSelectionMode
-                          ? t('grok.model.cancelBatchDelete')
-                          : t('grok.model.batchDelete')}
-                      </Button>
-                    )}
-                    {modelSelectionMode && onBatchDeleteModels && (
-                      <Button
-                        size="small"
-                        type="text"
-                        danger
-                        style={{ fontSize: 12 }}
-                        disabled={selectedModelIds.length === 0}
-                        onClick={() => onBatchDeleteModels(provider)}
-                      >
-                        {t('grok.model.deleteSelected', { count: selectedModelIds.length })}
-                      </Button>
-                    )}
-                    <Tooltip
-                      title={
-                        !canRunConnectivityTest
-                          ? (isOfficialProvider
-                            ? t('grok.provider.officialConnectivityHint')
-                            : t('common.modelMissing'))
-                          : ''
-                      }
-                    >
-                      <span>
-                        <Button
-                          size="small"
-                          type="text"
-                          style={{ fontSize: 12 }}
-                          onClick={() => onTest(provider)}
-                          disabled={!canRunConnectivityTest}
-                        >
-                          <ApiOutlined style={{ marginRight: 4 }} />
-                          {t('opencode.connectivity.button')}
-                        </Button>
-                      </span>
-                    </Tooltip>
-                    {onFetchModels && (
-                      <Button
-                        size="small"
-                        type="text"
-                        style={{ fontSize: 12 }}
-                        onClick={() => onFetchModels(provider)}
-                      >
-                        <CloudDownloadOutlined style={{ marginRight: 4 }} />
-                        {t('grok.fetchModels.button')}
-                      </Button>
-                    )}
-                    {onAddModel && (
-                      <Button
-                        size="small"
-                        type="text"
-                        style={{ fontSize: 12 }}
-                        onClick={() => onAddModel(provider)}
-                      >
-                        <PlusOutlined style={{ marginRight: 0 }} />
-                        {t('grok.model.addModel')}
-                      </Button>
-                    )}
-                  </Space>
-                </div>
-              ),
-              children: (
-                <div style={{ background: 'transparent' }}>
-                  {modelListItems.length > 0 ? (
-                    <Space orientation="vertical" style={{ width: '100%' }} size={4}>
-                      {modelListItems.map((model) => (
-                        <ModelItem
-                          key={model.id}
-                          model={model}
-                          transparentBackground
-                          selectionMode={modelSelectionMode}
-                          selected={selectedModelIds.includes(model.id)}
-                          onSelectChange={onToggleModelSelection
-                            ? (selected) => onToggleModelSelection(provider, model.id, selected)
-                            : undefined}
-                          onEdit={!modelSelectionMode && onEditModel
-                            ? () => onEditModel(provider, model.id)
-                            : undefined}
-                          onDelete={!modelSelectionMode && onDeleteModel
-                            ? () => onDeleteModel(provider, model.id)
-                            : undefined}
-                          onSetPrimary={!modelSelectionMode && onSetDefaultModel
-                            ? () => onSetDefaultModel(provider, model.id)
-                            : undefined}
-                        />
-                      ))}
-                    </Space>
-                  ) : (
-                    <Empty
-                      image={Empty.PRESENTED_IMAGE_SIMPLE}
-                      description={t('grok.model.emptyText')}
-                      style={{ margin: '8px 0', background: 'transparent' }}
-                    />
-                  )}
-                </div>
-              ),
-            }]}
-          />
-        )}
-    </Card>
-    </div>
+          </Space>
+        ),
+      }}
+    />
   );
 };
 

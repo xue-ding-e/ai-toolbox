@@ -243,6 +243,8 @@ const OmoNativePage: React.FC = () => {
           // 「模型设置」的默认渠道不可删（与 Pi 同规则）：这个 key 由页面转交，
           // 两处读的是同一份 `settings.json` 视图，改完默认值立即生效。
           defaultProviderKey={runtimeConfig?.modelSettings.providerKey}
+          // 卡片视图的格子陈述「当前主模型」，读的是同一个默认指针。
+          defaultModelId={runtimeConfig?.modelSettings.modelId}
         />
 
         <OmoNativeBuiltinProvidersSection

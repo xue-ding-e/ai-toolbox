@@ -56,9 +56,11 @@ const EXEMPT_FILES = new Map([
  * `providerCardVariants` style; the check fails if an entry no longer violates.
  */
 const PENDING_MIGRATION = new Set([
-  'claudedesktop/components/ClaudeDesktopProviderCard.tsx',
-  'geminicli/components/GeminiCliProviderCard.tsx',
-  'grok/components/GrokProviderCard.tsx',
+  // Empty since 2026-10-20: the last three bespoke cards (Claude Desktop,
+  // Gemini CLI, Grok) now render the shared variants. Keep the set here — the
+  // ratchet still needs somewhere to record a future file that legitimately
+  // cannot migrate yet, and the "listed but already clean" check below only
+  // fires for entries.
 ]);
 
 /**

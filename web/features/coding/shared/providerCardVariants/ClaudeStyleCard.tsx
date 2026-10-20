@@ -1,5 +1,5 @@
 import React from 'react';
-import { Button, Dropdown, Space, Typography } from 'antd';
+import { Button, Dropdown, Space, Tag, Typography } from 'antd';
 import { MoreOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import ProviderNameLink from '@/components/common/ProviderNameLink';
@@ -38,6 +38,7 @@ const ClaudeStyleCard: React.FC<ProviderCardVariantProps> = ({
   provider,
   providerState,
   actions,
+  namePrefix,
   nameTags,
   metaEntries,
   inlineActions,
@@ -81,6 +82,7 @@ const ClaudeStyleCard: React.FC<ProviderCardVariantProps> = ({
         <div style={{ minWidth: 0, flex: 1 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <ProviderConnectivityStatus item={connectivityStatus} />
+            {namePrefix}
             <ProviderNameLink
               name={provider.name}
               baseUrl={provider.baseUrl}
@@ -89,7 +91,7 @@ const ClaudeStyleCard: React.FC<ProviderCardVariantProps> = ({
             {nameTags}
           </div>
 
-          {metaEntries && metaEntries.length > 0 && (
+          {(metaEntries?.length || inlineActions) && (
             // 8, not 4: the Claude-style cards always had a 4px stack gap
             // *plus* a 4px offset on this row (`Space direction="vertical"
             // size={4}` around a row that carried its own `marginTop: 4`), in
@@ -99,7 +101,7 @@ const ClaudeStyleCard: React.FC<ProviderCardVariantProps> = ({
             // two and Claude Code silently lost half its title-to-subtitle
             // gap (2026-10-08 report).
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px 16px', flexWrap: 'wrap', marginTop: 8 }}>
-              {metaEntries.map((entry, index) => (
+              {metaEntries?.map((entry, index) => (
                 // One entry renders as one flex item, so the gap separates
                 // bindings but never splits a label from its value, and
                 // `alignItems: center` lines the label up with the code box.
@@ -109,7 +111,11 @@ const ClaudeStyleCard: React.FC<ProviderCardVariantProps> = ({
                       {entry.label}
                     </Text>
                   )}
-                  {entry.kind === 'code' ? (
+                  {entry.kind === 'tag' ? (
+                    <Tag color={entry.color ?? 'blue'} style={{ fontSize: 11, margin: 0 }}>
+                      {entry.value}
+                    </Tag>
+                  ) : entry.kind === 'code' ? (
                     <Text code style={{ fontSize: 12 }}>
                       {entry.value}
                     </Text>
@@ -123,8 +129,6 @@ const ClaudeStyleCard: React.FC<ProviderCardVariantProps> = ({
               {inlineActions}
             </div>
           )}
-
-          {footer && <div style={{ marginTop: 8 }}>{footer}</div>}
         </div>
 
         <Space size={0} style={{ whiteSpace: 'nowrap' }}>
@@ -144,6 +148,14 @@ const ClaudeStyleCard: React.FC<ProviderCardVariantProps> = ({
           )}
         </Space>
       </div>
+
+      {/* Below the header row, not inside it — the same rule the Codex style
+          follows. The header is two columns (content beside the action links),
+          so a block rendered inside its left column stops short of the card's
+          right edge by the width of those links. The official-account list is
+          the block that exposed this on the Codex style (2026-10-08, ~160px of
+          empty space), and Gemini's account footer would reproduce it here. */}
+      {footer && <div style={{ marginTop: 8 }}>{footer}</div>}
     </CardShell>
   );
 };

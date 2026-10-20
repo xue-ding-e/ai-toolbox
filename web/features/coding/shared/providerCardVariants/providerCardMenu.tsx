@@ -104,6 +104,14 @@ export function buildProviderCardMenuItems({
             label: t('common.delete', { defaultValue: '删除' }),
             icon: <DeleteOutlined />,
             danger: true,
+            // The list cards grey out their delete button when the record is
+            // protected (a default provider, a bridge record), and the compact
+            // card's detail sidebar does the same. The menu is the third entry
+            // point and used to be the way around both: a live 删除 here deleted
+            // what the other two refused to. `title` is antd's tooltip, which
+            // is where the reason is already shown on the other two surfaces.
+            disabled: Boolean(actions.deleteDisabledReason),
+            title: actions.deleteDisabledReason,
           },
         ]
       : []),

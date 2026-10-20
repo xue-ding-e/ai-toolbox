@@ -120,4 +120,15 @@ export interface OfficialAccountsSectionProps {
   onRefresh?: (account: OfficialAccountRowView) => void;
   onViewDetails?: (account: OfficialAccountRowView) => void;
   onDelete?: (account: OfficialAccountRowView) => void;
+  /**
+   * CLI-specific row actions, rendered right after 刷新 and before 详情.
+   *
+   * A render slot rather than another named action: Grok is the only CLI whose
+   * account rows carry a sixth action (refresh the OAuth token), and naming it
+   * would put Grok's semantics into a type every host shares. The handler keeps
+   * its own `loading`, since only the caller knows which state marks which row.
+   * The slot receives the resolved row, not the CLI's record: look the record up
+   * by `account.id` inside the mapping layer.
+   */
+  renderExtraActions?: (account: OfficialAccountRowView) => React.ReactNode;
 }
