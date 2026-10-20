@@ -617,6 +617,10 @@ async fn write_streaming_body(
     // client-facing error event instead of being misclassified as incomplete.
     let mut usage_collector =
         SseUsageCollector::with_provider_type(response.provider_type.as_deref());
+    // Hosted-tool markers are scanned on the bytes actually forwarded, so the
+    // detail dialog can say whether the upstream really ran a native tool. This
+    // is independent of body storage, which is off by default.
+    let mut used_tool_scanner = super::observations::UsedToolScanner::new();
     response.response_body_bytes = 0;
     response.body.clear();
     let idle_timeout_secs = response
@@ -712,6 +716,7 @@ async fn write_streaming_body(
         response.response_body_bytes = response
             .response_body_bytes
             .saturating_add(chunk.len() as u64);
+        used_tool_scanner.push_chunk(&chunk);
         append_body_snapshot(response, &chunk, settings);
         let chunk_header = format!("{:X}\r\n", chunk.len());
         let chunk_write_result: std::io::Result<()> = async {
@@ -840,6 +845,9 @@ async fn write_streaming_body(
         response.token_usage = usage_collector.finish(cli_key);
     }
     response.stream_outcome = outcome;
+    response
+        .observations
+        .observe_used_markers(used_tool_scanner.kinds());
     write_result
 }
 

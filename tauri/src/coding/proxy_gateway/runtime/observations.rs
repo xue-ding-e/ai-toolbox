@@ -29,7 +29,6 @@ pub(super) const TOOL_MCP: &str = "mcp";
 pub(super) const TOOL_LOCAL_SHELL: &str = "local_shell";
 
 /// Rewrite kinds recorded on the request side.
-pub(super) const REWRITE_MODEL: &str = "model";
 pub(super) const REWRITE_PROMPT_CACHE_KEY: &str = "prompt_cache_key";
 pub(super) const REWRITE_SERVICE_TIER: &str = "service_tier";
 pub(super) const REWRITE_CCH_STRIPPED: &str = "billing_cch_stripped";
@@ -37,7 +36,6 @@ pub(super) const REWRITE_CAPSULE_EXPANDED: &str = "compaction_capsule_expanded";
 pub(super) const REWRITE_COMPACTION_SUMMARIZED: &str = "compaction_summarized";
 pub(super) const REWRITE_NATIVE_TOOL_FILTERED: &str = "native_tool_filtered";
 pub(super) const REWRITE_LOSSY_CONVERSION: &str = "lossy_conversion";
-pub(super) const REWRITE_PRIVATE_FIELDS: &str = "private_fields_stripped";
 
 /// Bounds that keep a malformed or hostile request from bloating the JSONL
 /// detail. Both lists are diagnostics, not a ledger.
@@ -144,10 +142,6 @@ impl RequestObservations {
             self.push_rewrite(REWRITE_NATIVE_TOOL_FILTERED, Some(kind));
         }
     }
-
-    pub(super) fn is_empty(&self) -> bool {
-        self.native_tools.is_empty() && self.rewrites.is_empty()
-    }
 }
 
 fn truncate(value: String, max_chars: usize) -> String {
@@ -168,7 +162,12 @@ pub(super) fn declared_tools(protocol: AiProtocol, body: &Value) -> Vec<GatewayN
     let mut kinds: Vec<&'static str> = Vec::new();
     match protocol {
         AiProtocol::OpenAiResponses => {
-            for tool in body.get("tools").and_then(Value::as_array).into_iter().flatten() {
+            for tool in body
+                .get("tools")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
                 let Some(tool_type) = tool.get("type").and_then(Value::as_str) else {
                     continue;
                 };
@@ -178,7 +177,12 @@ pub(super) fn declared_tools(protocol: AiProtocol, body: &Value) -> Vec<GatewayN
             }
         }
         AiProtocol::AnthropicMessages => {
-            for tool in body.get("tools").and_then(Value::as_array).into_iter().flatten() {
+            for tool in body
+                .get("tools")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
                 let Some(tool_type) = tool.get("type").and_then(Value::as_str) else {
                     continue;
                 };
@@ -188,7 +192,12 @@ pub(super) fn declared_tools(protocol: AiProtocol, body: &Value) -> Vec<GatewayN
             }
         }
         AiProtocol::GeminiNative => {
-            for tool in body.get("tools").and_then(Value::as_array).into_iter().flatten() {
+            for tool in body
+                .get("tools")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
                 for (key, kind) in [
                     ("googleSearch", TOOL_WEB_SEARCH),
                     ("google_search", TOOL_WEB_SEARCH),
@@ -307,18 +316,23 @@ fn responses_used_kind(item_type: &str) -> Option<&'static str> {
     }
 }
 
-fn anthropic_used_kind(object: &serde_json::Map<String, Value>, item_type: &str) -> Option<&'static str> {
+fn anthropic_used_kind(
+    object: &serde_json::Map<String, Value>,
+    item_type: &str,
+) -> Option<&'static str> {
     match item_type {
         "web_search_tool_result" => Some(TOOL_WEB_SEARCH),
         "mcp_tool_use" | "mcp_tool_result" => Some(TOOL_MCP),
         // `server_tool_use` is generic; the embedded name says which tool.
-        "server_tool_use" => object
-            .get("name")
-            .and_then(Value::as_str)
-            .and_then(|name| match name {
-                "web_search" => Some(TOOL_WEB_SEARCH),
-                _ => None,
-            }),
+        "server_tool_use" => {
+            object
+                .get("name")
+                .and_then(Value::as_str)
+                .and_then(|name| match name {
+                    "web_search" => Some(TOOL_WEB_SEARCH),
+                    _ => None,
+                })
+        }
         _ => None,
     }
 }
@@ -329,7 +343,10 @@ fn dedupe_records(
 ) -> Vec<GatewayNativeToolRecord> {
     let mut records = Vec::new();
     for kind in kinds {
-        if records.iter().any(|record: &GatewayNativeToolRecord| record.kind == kind) {
+        if records
+            .iter()
+            .any(|record: &GatewayNativeToolRecord| record.kind == kind)
+        {
             continue;
         }
         if records.len() >= MAX_TOOL_RECORDS {
@@ -437,7 +454,10 @@ mod tests {
         assert!(!observations.native_tools[0].forwarded);
         assert_eq!(observations.rewrites.len(), 1);
         assert_eq!(observations.rewrites[0].kind, REWRITE_NATIVE_TOOL_FILTERED);
-        assert_eq!(observations.rewrites[0].detail.as_deref(), Some(TOOL_WEB_SEARCH));
+        assert_eq!(
+            observations.rewrites[0].detail.as_deref(),
+            Some(TOOL_WEB_SEARCH)
+        );
     }
 
     #[test]

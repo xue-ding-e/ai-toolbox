@@ -472,8 +472,28 @@ export interface GatewayProviderAttempt {
   total_attempt_count: number;
 }
 
+/**
+ * One native/hosted tool seen on the request. Detail-only: the list endpoint
+ * reads the compact SQLite summary, which never carries these markers.
+ */
+export interface GatewayNativeToolRecord {
+  /** Canonical kind shared by every protocol (`web_search`, `mcp`, …). */
+  kind: string;
+  declared: boolean;
+  forwarded: boolean;
+  used: boolean;
+}
+
+/** One gateway-side rewrite applied to the outbound request. Detail-only. */
+export interface GatewayRequestRewrite {
+  kind: string;
+  detail?: string | null;
+}
+
 export interface GatewayRequestLogDetail extends GatewayRequestLogSummary {
   privacy?: GatewayPrivacyDetail | null;
+  native_tools?: GatewayNativeToolRecord[];
+  rewrites?: GatewayRequestRewrite[];
   websocket?: {
     connection_id: string;
     response_id: string | null;

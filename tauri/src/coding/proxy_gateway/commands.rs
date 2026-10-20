@@ -14,13 +14,13 @@ use super::types::{
     DataSourceBreakdownInput, DataSourceBreakdownItem, GatewayAggregateBareModel,
     GatewayAggregateConfig, GatewayCliKey, GatewayCliTakeoverStatus,
     GatewayConnectivityTestRequest, GatewayConnectivityTestResponse, GatewayModelHealthItem,
-    GatewayModelStats, GatewayPaginatedRequestLogs, GatewayProjectStats, GatewayProviderStats, GatewayProxyMode,
-    GatewayRequestLogDetail, GatewayRequestLogFilters, GatewaySessionUsageImportInput,
-    GatewaySessionUsageImportResult, GatewaySubagentCatalog, GatewayUsageSummary,
-    GatewayUsageSummaryByCli, GatewayUsageTool, GatewayUsageTrendPoint, ModelPricing,
-    ProxyGatewayHealthCheckResult, ProxyGatewayPortCheckInput, ProxyGatewayPortCheckResult,
-    ProxyGatewayRequestLogListInput, ProxyGatewaySettings, ProxyGatewayStatus,
-    ProxyGatewayStopPreflight,
+    GatewayModelStats, GatewayPaginatedRequestLogs, GatewayProjectStats, GatewayProviderStats,
+    GatewayProxyMode, GatewayRequestLogDetail, GatewayRequestLogFilters,
+    GatewaySessionUsageImportInput, GatewaySessionUsageImportResult, GatewaySubagentCatalog,
+    GatewayUsageSummary, GatewayUsageSummaryByCli, GatewayUsageTool, GatewayUsageTrendPoint,
+    ModelPricing, ProxyGatewayHealthCheckResult, ProxyGatewayPortCheckInput,
+    ProxyGatewayPortCheckResult, ProxyGatewayRequestLogListInput, ProxyGatewaySettings,
+    ProxyGatewayStatus, ProxyGatewayStopPreflight,
 };
 use super::usage_stats;
 use crate::db::helpers::db_list;
@@ -909,6 +909,11 @@ fn build_request_log_detail_export(detail: &GatewayRequestLogDetail) -> Value {
         "provider_attempts": provider_attempts_value,
         "websocket": websocket_value,
         "privacy": detail.privacy,
+        // Detail-only markers: absent from the SQLite summary on purpose.
+        "observations": {
+            "native_tools": detail.native_tools,
+            "rewrites": detail.rewrites,
+        },
         "request": {
             "headers": redact_header_map(detail.request_headers.as_ref()),
             "body_before_conversion": redact_body(detail.request_body.as_deref()),

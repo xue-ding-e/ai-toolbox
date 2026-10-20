@@ -30,6 +30,13 @@ pub(super) struct RunningGateway {
 }
 
 impl RunningGateway {
+    /// Gateway data directory, for reading the request-log files it wrote.
+    pub(super) fn paths(&self) -> ProxyGatewayPaths {
+        ProxyGatewayPaths::new(self._directory.path())
+    }
+}
+
+impl RunningGateway {
     pub(super) fn new(upstream_url: &str, provider_type: &str, logging: BodyLogging) -> Self {
         Self::new_for_api_format(upstream_url, provider_type, logging, "openai_chat")
     }
@@ -136,10 +143,7 @@ impl Drop for RunningGateway {
     }
 }
 
-pub(super) async fn read_mock_request(
-    socket: &mut TcpStream,
-    expected_path_prefix: &str,
-) -> Value {
+pub(super) async fn read_mock_request(socket: &mut TcpStream, expected_path_prefix: &str) -> Value {
     let mut bytes = Vec::new();
     let mut buffer = [0; 2048];
     let header_end = loop {

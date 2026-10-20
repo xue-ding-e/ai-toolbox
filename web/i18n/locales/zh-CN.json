@@ -297,6 +297,13 @@
         "sessionDurationHint": "本地 Session 记录没有网关 HTTP 计时，这里显示解析器按转录时间戳估算的端到端耗时：多数工具取「触发本次请求的用户消息/工具结果」到「回复写入」的间隔（含排队与首字等待，也含两段输出之间等待工具执行的时间）；ZCode、Grok、Muse Code、Qwen Code 等直接读取调用自带的耗时字段；Antigravity 用上游返回的首字延迟加流式时长。不足 0.2 秒或超过 30 分钟的配对视为时间戳异常，显示 -。",
         "effortHint": "最终上游请求中明确设置的思考强度；未设置时不推断模型默认值。",
         "serviceTierHint": "OpenAI 的 Fast/Ultrafast 服务档：优先取上游响应确认的档位，上游未确认时回退请求体声明的档位。是否额外计费由该供应商的计费配置（Fast / Ultrafast 倍率）决定，未配置时按标准价记账。",
+        "observations": {
+          "nativeTools": "原生工具",
+          "rewrites": "网关改写",
+          "declared": "已声明",
+          "forwarded": "已转发",
+          "used": "已调用"
+        },
         "compaction": {
           "native": "原生压缩",
           "fallback": "回退压缩",

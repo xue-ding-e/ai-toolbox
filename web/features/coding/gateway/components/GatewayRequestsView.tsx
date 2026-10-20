@@ -880,6 +880,35 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
               </div>
             </>
           )}
+          {(detail.native_tools?.length ?? 0) > 0 && (
+            <>
+              <span>{t('gateway.page.requests.observations.nativeTools')}</span>
+              <div className={styles.detailStack}>
+                {detail.native_tools!.map((tool) => (
+                  <strong key={tool.kind}>
+                    {tool.kind} · {[
+                      tool.declared ? t('gateway.page.requests.observations.declared') : null,
+                      tool.forwarded ? t('gateway.page.requests.observations.forwarded') : null,
+                      tool.used ? t('gateway.page.requests.observations.used') : null,
+                    ].filter(Boolean).join(' · ')}
+                  </strong>
+                ))}
+              </div>
+            </>
+          )}
+          {(detail.rewrites?.length ?? 0) > 0 && (
+            <>
+              <span>{t('gateway.page.requests.observations.rewrites')}</span>
+              <div className={styles.detailStack}>
+                {detail.rewrites!.map((rewrite, index) => (
+                  <strong key={`${rewrite.kind}-${index}`} title={rewrite.detail ?? undefined}>
+                    {rewrite.kind}
+                    {rewrite.detail ? <span className={styles.detailSubtitle}> · {rewrite.detail}</span> : null}
+                  </strong>
+                ))}
+              </div>
+            </>
+          )}
         </div>
       );
     }

@@ -61,8 +61,8 @@ use futures_util::StreamExt;
 use http_body_util::BodyExt;
 use reqwest::header::{
     HeaderMap, HeaderName, HeaderValue, ACCEPT, ACCEPT_ENCODING, AUTHORIZATION, CONNECTION,
-    CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, HOST, PROXY_AUTHENTICATE, PROXY_AUTHORIZATION, TE,
-    TRAILER, TRANSFER_ENCODING, UPGRADE,
+    CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, HOST, PROXY_AUTHENTICATE, PROXY_AUTHORIZATION,
+    TE, TRAILER, TRANSFER_ENCODING, UPGRADE,
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -323,9 +323,9 @@ impl UpstreamResponse {
     fn bytes_stream(self) -> super::http_io::DebugBodyStream {
         match self {
             // One chunk, exactly as the body was reassembled.
-            Self::Buffered { body, .. } => Box::pin(futures_util::stream::once(async move {
-                Ok(body)
-            })),
+            Self::Buffered { body, .. } => {
+                Box::pin(futures_util::stream::once(async move { Ok(body) }))
+            }
             Self::Reqwest(response) => {
                 let body_stream = response.bytes_stream().map(|chunk| {
                     chunk
@@ -1633,6 +1633,7 @@ async fn send_upstream_request(
     let pipeline = prepared_upstream_body.pipeline;
     let pipeline_context = prepared_upstream_body.pipeline_context;
     let xai_namespace_restore_map = prepared_upstream_body.xai_namespace_restore_map;
+    let observations = prepared_upstream_body.observations;
     if should_filter_known_invalid_responses_ciphers(
         responses_encrypted_content_rectifier_enabled,
         provider.target_protocol,
@@ -1754,9 +1755,7 @@ async fn send_upstream_request(
         } else {
             let encoding = get_content_encoding_from_header_map(response.headers());
             let raw_body = response
-                .bytes_with_timeout(Some(Duration::from_secs(
-                    non_streaming_timeout_secs.max(1),
-                )))
+                .bytes_with_timeout(Some(Duration::from_secs(non_streaming_timeout_secs.max(1))))
                 .await
                 .map_err(|mut error| {
                     error.upstream_request_body = Some(upstream_body_snapshot.clone());
@@ -1810,6 +1809,7 @@ async fn send_upstream_request(
                 compact_compat,
                 remote_compaction,
                 xai_namespace_restore_map.clone(),
+                observations.clone(),
             )
             .await;
         }
@@ -1905,6 +1905,7 @@ async fn send_upstream_request(
             // never have served it natively.
             RemoteCompactionCompat::Fallback,
             xai_namespace_restore_map.clone(),
+            retried.observations,
         )
         .await;
     }
@@ -2008,6 +2009,7 @@ async fn send_upstream_request(
                 let rectified_lossy_warnings = rectified.lossy_warnings;
                 let rectified_pipeline = rectified.pipeline;
                 let rectified_pipeline_context = rectified.pipeline_context;
+                let rectified_observations = rectified.observations;
                 let response = send_request_once(
                     &client,
                     method.clone(),
@@ -2041,6 +2043,7 @@ async fn send_upstream_request(
                     compact_compat,
                     remote_compaction,
                     xai_namespace_restore_map.clone(),
+                    rectified_observations,
                 )
                 .await;
             }
@@ -2094,6 +2097,7 @@ async fn send_upstream_request(
                         compact_compat,
                         remote_compaction,
                         xai_namespace_restore_map.clone(),
+                        observations.clone(),
                     )
                     .await;
                 }
@@ -2139,6 +2143,7 @@ async fn send_upstream_request(
                     compact_compat,
                     remote_compaction,
                     xai_namespace_restore_map.clone(),
+                    observations.clone(),
                 )
                 .await;
             }
@@ -2183,6 +2188,7 @@ async fn send_upstream_request(
                     compact_compat,
                     remote_compaction,
                     xai_namespace_restore_map.clone(),
+                    observations.clone(),
                 )
                 .await;
             }
@@ -2211,6 +2217,7 @@ async fn send_upstream_request(
             // written by either side, so the label stays absent. The turn is
             // still identifiable as a compaction turn by its path and category.
             None,
+            observations,
         ));
     }
 
@@ -2232,6 +2239,7 @@ async fn send_upstream_request(
         compact_compat,
         remote_compaction,
         xai_namespace_restore_map,
+        observations,
     )
     .await
 }
@@ -2390,6 +2398,7 @@ async fn build_gateway_response(
     compact_compat: CodexResponsesCompactCompat,
     remote_compaction: RemoteCompactionCompat,
     xai_namespace_restore_map: HashMap<String, NamespacedName>,
+    mut observations: super::observations::RequestObservations,
 ) -> Result<DebugHttpResponse, GatewayForwardError> {
     let status = response.status();
     let mut response_headers = filtered_response_headers(response.headers());
@@ -2470,21 +2479,27 @@ async fn build_gateway_response(
                 // protocol shape) — the raw bytes above are SSE text and carry
                 // no `usage` to find.
                 body = build_remote_compaction_response_body(&body, &target_response_body)
-                .map_err(|message| GatewayForwardError {
-                    // A 2xx whose summary cannot be sealed is an upstream failure, not
-                    // a client schema rejection. `GatewayParse` would answer 400 and
-                    // throw away the retry Codex classifies from the error; this class
-                    // retries the same provider, then fails over, and reports 502.
-                    message,
-                    kind: GatewayFailureKind::EmptyResponse,
-                    upstream_request_body: Some(upstream_body_snapshot.clone()),
-                    upstream_response_body: Some(upstream_response_body.clone()),
-                    upstream_response_body_bytes,
-                })?;
+                    .map_err(|message| GatewayForwardError {
+                        // A 2xx whose summary cannot be sealed is an upstream failure, not
+                        // a client schema rejection. `GatewayParse` would answer 400 and
+                        // throw away the retry Codex classifies from the error; this class
+                        // retries the same provider, then fails over, and reports 502.
+                        message,
+                        kind: GatewayFailureKind::EmptyResponse,
+                        upstream_request_body: Some(upstream_body_snapshot.clone()),
+                        upstream_response_body: Some(upstream_response_body.clone()),
+                        upstream_response_body_bytes,
+                    })?;
             }
         }
         if should_restore_xai_namespaces {
             body = restore_xai_namespace_json_body(&body, &xai_namespace_restore_map);
+        }
+        // Hosted-tool usage is read before the client-facing reverse pass: a
+        // cross-protocol reply may already have dropped the marker, and the
+        // question is what the upstream actually ran.
+        if let Ok(target_value) = serde_json::from_slice::<Value>(&target_response_body) {
+            observations.observe_used(provider.target_protocol, &target_value);
         }
         // Client-facing reverse middleware (same request-scoped pipeline + context).
         body = apply_provider_pipeline_outbound_response(
@@ -2567,7 +2582,7 @@ async fn build_gateway_response(
             // overwrites `stream_outcome` once it has consumed the stream.
             source_protocol,
             stream_outcome: GatewayStreamOutcome::NotStreaming,
-            observations: Default::default(),
+            observations,
             note: format!(
                 "aggregated {} streaming response from provider id={} name={}",
                 aggregate_kind.label(),
@@ -2708,6 +2723,13 @@ async fn build_gateway_response(
         }
     };
     let upstream_response_body_bytes = upstream_response_body.len() as u64;
+    // Hosted-tool usage is read from the upstream's own body, before any
+    // conversion can drop a marker this dialect does not share.
+    if (200..400).contains(&status.as_u16()) {
+        if let Ok(upstream_value) = serde_json::from_slice::<Value>(&upstream_response_body) {
+            observations.observe_used(provider.target_protocol, &upstream_value);
+        }
+    }
     let mut body = upstream_response_body.clone();
     if (200..400).contains(&status.as_u16()) && provider_kind == Some(ProviderBodyCompat::Ollama) {
         body = convert_ollama_chat_response_to_openai_chat(&body).map_err(|message| {
@@ -2771,16 +2793,17 @@ async fn build_gateway_response(
         .flatten();
     if remote_compaction.is_compaction_turn() && served {
         if !native_compaction {
-            body = build_remote_compaction_response_body(&body, &upstream_response_body)
-            .map_err(|message| GatewayForwardError {
-                // Same class as the aggregated path above: the upstream answered, but
-                // not with a summary this Gateway can hand to Codex.
-                message,
-                kind: GatewayFailureKind::EmptyResponse,
-                upstream_request_body: Some(upstream_body_snapshot.clone()),
-                upstream_response_body: Some(upstream_response_body.clone()),
-                upstream_response_body_bytes,
-            })?;
+            body = build_remote_compaction_response_body(&body, &upstream_response_body).map_err(
+                |message| GatewayForwardError {
+                    // Same class as the aggregated path above: the upstream answered, but
+                    // not with a summary this Gateway can hand to Codex.
+                    message,
+                    kind: GatewayFailureKind::EmptyResponse,
+                    upstream_request_body: Some(upstream_body_snapshot.clone()),
+                    upstream_response_body: Some(upstream_response_body.clone()),
+                    upstream_response_body_bytes,
+                },
+            )?;
         }
         set_response_content_type(&mut response_headers, "application/json");
     }
@@ -2834,11 +2857,7 @@ async fn build_gateway_response(
         status.as_u16(),
         &mut response_headers,
     );
-    let response_body_bytes = if is_streaming {
-        0
-    } else {
-        body.len() as u64
-    };
+    let response_body_bytes = if is_streaming { 0 } else { body.len() as u64 };
 
     let gateway_response = DebugHttpResponse {
         privacy: None,
@@ -2878,7 +2897,7 @@ async fn build_gateway_response(
         failover: false,
         source_protocol: source_protocol_from_route(route),
         stream_outcome: GatewayStreamOutcome::NotStreaming,
-        observations: Default::default(),
+        observations,
         note: format!(
             "forwarded to provider id={} name={}",
             provider.id, provider.name
@@ -4965,6 +4984,7 @@ fn buffered_gateway_response(
     upstream_response_body: Option<Vec<u8>>,
     upstream_url: String,
     compaction_mode: Option<String>,
+    observations: super::observations::RequestObservations,
 ) -> DebugHttpResponse {
     let token_usage = from_response_body_with_provider_type(
         provider.cli_key,
@@ -5022,7 +5042,7 @@ fn buffered_gateway_response(
         failover: false,
         source_protocol: source_protocol_from_route(route),
         stream_outcome: GatewayStreamOutcome::NotStreaming,
-        observations: Default::default(),
+        observations,
         note: format!(
             "forwarded to provider id={} name={}",
             provider.id, provider.name
@@ -5106,6 +5126,7 @@ fn streaming_first_chunk_failure_response(
     failure_response.attempt_count = attempt_count;
     failure_response.provider_attempt_count = provider_attempt_count;
     failure_response.failover = failover;
+    failure_response.observations = response.observations;
     failure_response
 }
 
@@ -5150,6 +5171,9 @@ fn empty_success_failure_response(
     failure_response.attempt_count = attempt_count;
     failure_response.provider_attempt_count = provider_attempt_count;
     failure_response.failover = failover;
+    // The request-side markers were already collected before the failure, and a
+    // failed request is exactly where a user wants to see what was rewritten.
+    failure_response.observations = response.observations;
     failure_response
 }
 
@@ -5372,8 +5396,12 @@ fn build_remote_compaction_response_body(
     let summary = codex_remote_compaction::extract_summary_text(&converted).map_err(|error| {
         use codex_remote_compaction::CompactionSummaryError;
         match error {
-            CompactionSummaryError::Truncated => "Upstream truncated the compaction summary".to_string(),
-            CompactionSummaryError::Empty => "Upstream returned an empty compaction summary".to_string(),
+            CompactionSummaryError::Truncated => {
+                "Upstream truncated the compaction summary".to_string()
+            }
+            CompactionSummaryError::Empty => {
+                "Upstream returned an empty compaction summary".to_string()
+            }
             // Reachable on a 2xx whose own status says the turn failed: the
             // forced-stream aggregator hands an upstream `response.failed` back
             // as a body, by which time the 200 headers are already out.
@@ -6427,6 +6455,8 @@ struct PreparedUpstreamBody {
     /// Request-scoped only: flat tool name → namespace identity for native xAI
     /// Responses passthrough restore. Empty when not applicable.
     xai_namespace_restore_map: HashMap<String, NamespacedName>,
+    /// Native-tool and rewrite markers for the JSONL request detail.
+    observations: super::observations::RequestObservations,
 }
 
 /// Prepare a Responses event using the same model/provider policy as HTTP,
@@ -6437,7 +6467,7 @@ pub(super) fn prepare_websocket_request(
     context: &GatewayRuntimeContext,
     apply_failover_model_mapping: bool,
     remote_compaction: RemoteCompactionCompat,
-) -> Result<(Vec<u8>, String, HashMap<String, NamespacedName>), String> {
+) -> Result<PreparedWebSocketRequest, String> {
     let original: Value =
         serde_json::from_slice(&request.body).map_err(|error| error.to_string())?;
     let requested_model = original.get("model").and_then(Value::as_str).unwrap_or("");
@@ -6473,7 +6503,7 @@ pub(super) fn prepare_websocket_compaction_retry(
     provider: &UpstreamProvider,
     context: &GatewayRuntimeContext,
     upstream_model: &str,
-) -> Result<Vec<u8>, String> {
+) -> Result<PreparedWebSocketRequest, String> {
     prepare_websocket_request_with_model(
         request,
         provider,
@@ -6481,7 +6511,15 @@ pub(super) fn prepare_websocket_compaction_retry(
         upstream_model.to_string(),
         RemoteCompactionCompat::Fallback,
     )
-    .map(|(body, _, _)| body)
+}
+
+/// A prepared `response.create` frame plus the request-side markers collected
+/// while it was built.
+pub(super) struct PreparedWebSocketRequest {
+    pub(super) body: Vec<u8>,
+    pub(super) upstream_model: String,
+    pub(super) xai_namespace_restore_map: HashMap<String, NamespacedName>,
+    pub(super) observations: super::observations::RequestObservations,
 }
 
 fn prepare_websocket_request_with_model(
@@ -6490,7 +6528,7 @@ fn prepare_websocket_request_with_model(
     context: &GatewayRuntimeContext,
     upstream_model: String,
     remote_compaction: RemoteCompactionCompat,
-) -> Result<(Vec<u8>, String, HashMap<String, NamespacedName>), String> {
+) -> Result<PreparedWebSocketRequest, String> {
     let original: Value =
         serde_json::from_slice(&request.body).map_err(|error| error.to_string())?;
     let requested_model = original.get("model").and_then(Value::as_str).unwrap_or("");
@@ -6533,11 +6571,12 @@ fn prepare_websocket_request_with_model(
             object.insert(key.to_string(), value.clone());
         }
     }
-    Ok((
-        serde_json::to_vec(&payload).map_err(|error| error.to_string())?,
+    Ok(PreparedWebSocketRequest {
+        body: serde_json::to_vec(&payload).map_err(|error| error.to_string())?,
         upstream_model,
-        prepared.xai_namespace_restore_map,
-    ))
+        xai_namespace_restore_map: prepared.xai_namespace_restore_map,
+        observations: prepared.observations,
+    })
 }
 
 pub(super) fn websocket_provider_url(
@@ -6581,6 +6620,7 @@ fn build_upstream_body_for_provider(
                     pipeline: Pipeline::default(),
                     pipeline_context: PipelineContext::default(),
                     xai_namespace_restore_map: HashMap::new(),
+                    observations: super::observations::RequestObservations::default(),
                 })
                 .map_err(|error| GatewayForwardError {
                     message: error.to_string(),
@@ -6597,8 +6637,17 @@ fn build_upstream_body_for_provider(
             pipeline: Pipeline::default(),
             pipeline_context: PipelineContext::default(),
             xai_namespace_restore_map: HashMap::new(),
+            observations: super::observations::RequestObservations::default(),
         });
     };
+    // Declared tools are read from the body the client sent, before any
+    // gateway rewrite. The forwarded side is read again at the end, from the
+    // body actually sent upstream, so a declaration the gateway filtered is
+    // visible in the detail dialog.
+    let mut observations = super::observations::RequestObservations::default();
+    if let Some(source_protocol) = source_protocol {
+        observations.observe_declared(source_protocol, &value);
+    }
     let pipeline = build_provider_pipeline(
         provider_meta,
         conversion_route,
@@ -6682,16 +6731,20 @@ fn build_upstream_body_for_provider(
     // meaningless context for one that does not. Items written by anyone else
     // are left untouched.
     if remote_compaction.expands_capsules() {
-        codex_remote_compaction::expand_compaction_capsules(&mut value);
+        if codex_remote_compaction::expand_compaction_capsules(&mut value) > 0 {
+            observations.push_rewrite(super::observations::REWRITE_CAPSULE_EXPANDED, None);
+        }
     }
     if remote_compaction.is_summarize() {
         // The upstream must see a plain summarization turn: Codex's
         // `compaction_trigger` is a private control item no third-party provider
         // understands, and its base instructions would otherwise make the model
         // resume the coding task instead of summarizing it.
-        if let Some(summary_request) = codex_remote_compaction::build_compaction_summary_request(&value)
+        if let Some(summary_request) =
+            codex_remote_compaction::build_compaction_summary_request(&value)
         {
             value = summary_request;
+            observations.push_rewrite(super::observations::REWRITE_COMPACTION_SUMMARIZED, None);
         }
     }
     let rewritten_body = serde_json::to_vec(&value).map_err(|error| GatewayForwardError {
@@ -6737,7 +6790,15 @@ fn build_upstream_body_for_provider(
         }
     }
     if target_protocol == AiProtocol::OpenAiResponses {
-        upstream_body = apply_openai_responses_prompt_cache_key_fallback(request, &upstream_body)?;
+        upstream_body = apply_openai_responses_prompt_cache_key_fallback(request, &upstream_body)
+            .inspect(|body| {
+            if body.len() != upstream_body.len() || body.as_slice() != upstream_body.as_slice() {
+                observations.push_rewrite(
+                    super::observations::REWRITE_PROMPT_CACHE_KEY,
+                    Some("injected from the session id".to_string()),
+                );
+            }
+        })?;
     }
     // Capture Chat prompt_cache_key before outbound strip so allowlisted providers can reinject.
     let chat_prompt_cache_key_before_strip = if target_protocol == AiProtocol::OpenAiChat {
@@ -6752,12 +6813,19 @@ fn build_upstream_body_for_provider(
         request.body.clone(),
     )?;
     if target_protocol == AiProtocol::OpenAiChat {
+        let before_reinject = upstream_body.clone();
         upstream_body = apply_openai_chat_prompt_cache_key_reinject(
             request,
             provider_meta,
             &upstream_body,
             chat_prompt_cache_key_before_strip,
         )?;
+        if upstream_body != before_reinject {
+            observations.push_rewrite(
+                super::observations::REWRITE_PROMPT_CACHE_KEY,
+                Some("reinjected for this provider".to_string()),
+            );
+        }
     }
     // Native OpenAI Responses → xAI only: flatten namespace tools then scrub private
     // fields. Conversion paths (source!=target) rely on IR and must not run this.
@@ -6771,12 +6839,32 @@ fn build_upstream_body_for_provider(
     // Per-model forced speed tier (issue #414): applied last, after every
     // protocol conversion and outbound pipeline pass, so the injected tier is
     // exactly what reaches the upstream.
+    let body_before_service_tier = upstream_body.clone();
     let upstream_body = apply_model_service_tier_override(
         upstream_body,
         provider_meta,
         upstream_model_id,
         target_protocol,
     );
+    if upstream_body != body_before_service_tier {
+        observations.push_rewrite(super::observations::REWRITE_SERVICE_TIER, None);
+    }
+    // Final pass: whatever reached the upstream body is what "forwarded" means.
+    // Read it in the target protocol, which is the dialect actually sent.
+    if let Ok(forwarded) = serde_json::from_slice::<Value>(&upstream_body) {
+        observations.observe_forwarded(target_protocol, &forwarded);
+    }
+    observations.push_filtered_tools();
+    observations.push_lossy_warnings(&lossy_warnings);
+    // The value itself is a dynamic billing token; only the fact that it was
+    // stripped belongs in a log that users can export.
+    if pipeline_context
+        .billing_cch
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        observations.push_rewrite(super::observations::REWRITE_CCH_STRIPPED, None);
+    }
     if cache_injection_enabled && target_protocol == AiProtocol::AnthropicMessages {
         return inject_cache_control_into_body(upstream_body).map(|body| PreparedUpstreamBody {
             body,
@@ -6785,6 +6873,7 @@ fn build_upstream_body_for_provider(
             pipeline,
             pipeline_context,
             xai_namespace_restore_map: HashMap::new(),
+            observations,
         });
     }
     Ok(PreparedUpstreamBody {
@@ -6794,6 +6883,7 @@ fn build_upstream_body_for_provider(
         pipeline,
         pipeline_context,
         xai_namespace_restore_map,
+        observations,
     })
 }
 
@@ -19885,7 +19975,9 @@ data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"qwen3","choic
         context
             .side_stores
             .remember_native_compaction_rejection(provider_config_identity(&provider));
-        assert!(!should_attempt_native_remote_compaction(&context, &provider));
+        assert!(!should_attempt_native_remote_compaction(
+            &context, &provider
+        ));
 
         let mut other_provider = provider.clone();
         other_provider.id = "provider-b".to_string();
@@ -19896,7 +19988,10 @@ data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"qwen3","choic
 
         let mut reconfigured = provider.clone();
         reconfigured.base_url = "https://other.example.com/v1".to_string();
-        assert!(should_attempt_native_remote_compaction(&context, &reconfigured));
+        assert!(should_attempt_native_remote_compaction(
+            &context,
+            &reconfigured
+        ));
     }
 
     /// A rate limit or an upstream fault is not an answer about the trigger, so

@@ -297,6 +297,13 @@
         "sessionDurationHint": "Local session rows carry no gateway HTTP timing. This shows an end-to-end estimate derived from transcript timestamps: most tools measure from the user message or tool result that sent the request to the written reply (including queuing, first-token wait, and any tool execution between streamed segments). ZCode, Grok, Muse Code and Qwen Code record the call's own duration; Antigravity adds the upstream's time-to-first-token to its streaming duration. Pairs shorter than 0.2s or longer than 30 minutes are treated as timestamp anomalies and show -.",
         "effortHint": "Explicit reasoning effort in the final upstream request. Model defaults are not inferred.",
         "serviceTierHint": "OpenAI Fast/Ultrafast service tier: the tier the upstream confirmed wins, falling back to the tier declared in the request body. Whether it costs extra is decided by this provider's billing config (the Fast / Ultrafast multipliers); unset records the standard price.",
+        "observations": {
+          "nativeTools": "Native tools",
+          "rewrites": "Gateway rewrites",
+          "declared": "declared",
+          "forwarded": "forwarded",
+          "used": "used"
+        },
         "compaction": {
           "native": "Native compact",
           "fallback": "Fallback compact",

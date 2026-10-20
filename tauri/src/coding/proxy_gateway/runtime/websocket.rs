@@ -4,8 +4,8 @@
 
 use super::compat::codex_remote_compaction::{
     self as codex_remote_compaction, CompactionStreamSummary, CompactionSummaryError,
-    RemoteCompactionCompat,
-    COMPACTION_MODE_FALLBACK, COMPACTION_MODE_NATIVE, COMPACTION_MODE_SIMULATED,
+    RemoteCompactionCompat, COMPACTION_MODE_FALLBACK, COMPACTION_MODE_NATIVE,
+    COMPACTION_MODE_SIMULATED,
 };
 use super::compat::provider_kind::ProviderBodyCompat;
 use super::http_io::{
@@ -1079,11 +1079,13 @@ fn build_websocket_compaction_response(
 ) -> Option<Value> {
     let summary = compaction.finish().ok()?;
     let item = codex_remote_compaction::build_compaction_item(&summary, model)?;
-    Some(codex_remote_compaction::build_websocket_compaction_response(
-        &item,
-        model,
-        compaction.usage(),
-    ))
+    Some(
+        codex_remote_compaction::build_websocket_compaction_response(
+            &item,
+            model,
+            compaction.usage(),
+        ),
+    )
 }
 
 /// Builds the summarizing retry for a pass-through compaction attempt the
@@ -1104,12 +1106,8 @@ fn compaction_retry_body(
         .and_then(|lane| pending.lanes.get_mut(lane))
         .and_then(|queue| queue.front_mut())
         .and_then(|turn| {
-            let model = turn
-                .response
-                .upstream_model_id
-                .clone()
-                .unwrap_or_default();
-            let body = upstream::prepare_websocket_compaction_retry(
+            let model = turn.response.upstream_model_id.clone().unwrap_or_default();
+            let prepared = upstream::prepare_websocket_compaction_retry(
                 &turn.request,
                 provider,
                 context,
@@ -1117,9 +1115,12 @@ fn compaction_retry_body(
             )
             .ok()?;
             let body = match turn.response.privacy.as_ref() {
-                Some(privacy) => privacy.prepare(&body, &provider.id).ok()?,
-                None => body,
+                Some(privacy) => privacy.prepare(&prepared.body, &provider.id).ok()?,
+                None => prepared.body,
             };
+            // The retry is a different request: its markers replace the native
+            // attempt's (which only offered the trigger and was refused).
+            turn.response.observations = prepared.observations;
             let compaction = turn.compaction.as_mut()?;
             // Capture the native attempt's verdict before the retry resets it.
             // Empty/ordinary replies are refusals; failed/truncated turns are
@@ -1421,11 +1422,11 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin, U: AsyncRead + AsyncWrite + Un
                         );
                         let prepared = privacy.as_ref().map_err(Clone::clone).and_then(|privacy| {
                             upstream::prepare_websocket_request(&request, &provider, context, apply_mapping, remote_compaction)
-                                .and_then(|(body, model, map)| {
+                                .and_then(|prepared| {
                                     let body = if let Some(privacy) = privacy {
-                                        privacy.prepare(&body, &provider.id).inspect_err(|_| privacy.fail())?
-                                    } else { body };
-                                    Ok((body, model, map))
+                                        privacy.prepare(&prepared.body, &provider.id).inspect_err(|_| privacy.fail())?
+                                    } else { prepared.body };
+                                    Ok((body, prepared.upstream_model, prepared.xai_namespace_restore_map, prepared.observations))
                                 })
                         });
                         let mut response = empty_response(0, "", "openai-compatible", "");
@@ -1493,17 +1494,21 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin, U: AsyncRead + AsyncWrite + Un
                                 None
                             },
                         };
-                        let prepared = prepared.and_then(|(body, model, map)| {
+                        let prepared = prepared.and_then(|(body, model, map, observations)| {
                             if pending.full(turn.request.body.len().saturating_add(body.len())) {
                                 return Err("Too many pending WebSocket requests".to_string());
                             }
-                            Ok((body, model, map))
+                            Ok((body, model, map, observations))
                         });
                         match prepared {
-                            Ok((body, model, map)) => {
+                            Ok((body, model, map, observations)) => {
                                 turn.response.upstream_model_id = Some(model);
                                 turn.response.upstream_request_body = Some(body.clone());
                                 turn.restore_map = map;
+                                // Request-side markers (what was declared and
+                                // what survived the rewrite) travel with the turn
+                                // so its JSONL detail can report them.
+                                turn.response.observations = observations;
                                 if send_message(
                                     &mut upstream_socket,
                                     Message::Text(String::from_utf8(body).map_err(io_error)?.into()),
@@ -1645,6 +1650,14 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin, U: AsyncRead + AsyncWrite + Un
                             .and_then(|queue| queue.front_mut())
                         {
                             turn.record_upstream_event(text.as_bytes(), &settings);
+                            // Native-tool markers are read from the upstream's own
+                            // frames, before any namespace restore or privacy
+                            // rewrite, so the detail says what the upstream ran.
+                            if let Some(value) = &value {
+                                turn.response
+                                    .observations
+                                    .observe_used(AiProtocol::OpenAiResponses, value);
+                            }
                             turn.response
                                 .token_usage
                                 .merge_max(from_response_body(GatewayCliKey::Codex, text.as_bytes()));

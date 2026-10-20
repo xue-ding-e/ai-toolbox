@@ -85,6 +85,7 @@ sequenceDiagram
 - **重建不能只转圈**：重建通过 `startProxyGatewaySessionRebuild` 后台启动，前端每秒轮询 `getProxyGatewaySessionRebuildProgress`，在提示条下方渲染 `role="status"` 的阶段进度（阶段文案 `gateway.page.requests.rebuildPhase.<phase>` + 已处理文件数 + 新增/更新数 + 进度条）。完成后用同一份快照渲染 `rebuildDone`/`importPartialFailure` 并刷新列表，失败渲染 `rebuildFailed`；轮询异常同样结束重建态。不要退回「await 整个重建 + 一个 spinner」的写法：真实历史要跑十几分钟，用户既看不到进度也离不开页面。
 - **进度状态必须来自后端，不能只存组件 state**：`GatewayPage` 切 tab 会卸载 `GatewayRequestsView`，本地 `rebuilding`/`rebuildProgress` 随之丢失。轮询 effect 必须在每次挂载时无条件拉一次后端快照并据此恢复重建态，不能以本地 `rebuilding` 作为是否轮询的前置条件（那正是「切 tab 回来进度条消失」的原因）。后端对**运行中**任务返回可重复读取的快照，对**已结束**任务只返回一次（读取即消费），这样重新进入页面能补报一次结果，又不会每次访问都弹「重建完成」。
 - 请求详情 Body tab 如果后端同时返回 `request_body` 与不同的 `upstream_request_body`，要分别显示“收到的请求体（原始）”和“实际发出的请求体（整流/转换后）”；相同或没有上游快照时只显示一段。
+- 请求详情「请求记录」tab 在 `native_tools` / `rewrites` 非空时追加两段：原生工具（`kind · 已声明 · 已转发 · 已调用`，只列已成立的维度）与网关改写（`kind`，悬停显示 detail）。两者**只在详情里展示**：列表接口读 SQLite 摘要，不携带这些字段；请求记录关闭或只有 SQLite 摘要时字段为空，直接不渲染这两段，不要补默认值。未知 `kind` 在详情里原样显示（详情用于排查，与列表徽章的「未知值静默」规则不同）。
 - 请求详情 Response tab 如果后端同时返回 `upstream_response_body` 与不同的 `response_body`，要分别显示“上游原始响应（转换前）”和“返回给客户端的响应（转换后）”；相同或没有上游快照时只显示一段。
 - 请求详情里的长 body / headers / response 文本块默认折叠并提供复制，折叠条件要同时考虑行数和字符长度；压缩 JSON 这类大型单行文本也不能直接把 `<pre>` 全展开。
 - `gateway-failover` 属于代理流量中的后台状态事件，只能用于刷新状态、统计或请求记录；不要触发全局 notification/message 弹窗，避免每次上游故障转移都打断客户端使用。
