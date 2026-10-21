@@ -81,23 +81,18 @@ fn pattern_file_display_path(expanded_pattern: &str, file_path: &Path) -> String
 /// 测试 SSH 连接（独立短连接，不复用主连接）
 /// 用于测试未保存的连接配置
 pub async fn test_connection(conn: &SSHConnection) -> SSHConnectionResult {
-    match session::test_connection_with_command(conn, "uname -a").await {
-        Ok(output) => {
-            let server_info = output.trim().to_string();
-            SSHConnectionResult {
-                connected: true,
-                error: None,
-                server_info: if server_info.is_empty() {
-                    None
-                } else {
-                    Some(server_info)
-                },
-            }
-        }
+    match session::probe_connection(conn).await {
+        Ok(probe) => SSHConnectionResult {
+            connected: true,
+            error: None,
+            server_info: probe.server_info,
+            shell_kind: Some(probe.shell_kind.as_str().to_string()),
+        },
         Err(e) => SSHConnectionResult {
             connected: false,
             error: Some(e),
             server_info: None,
+            shell_kind: None,
         },
     }
 }

@@ -486,6 +486,25 @@ pub async fn do_full_sync(
     module: Option<&str>,
     skip_modules: Option<&[String]>,
 ) -> SyncResult {
+    // The sync pipeline is POSIX-only. Probe before touching the remote so a
+    // Windows host fails once with an actionable message instead of failing
+    // every mapping with a mojibake shell error.
+    let shell_kind = session.detect_shell_kind().await;
+    if !shell_kind.is_posix() {
+        let message = format!(
+            "远端 Shell 不是 POSIX（{}），当前版本仅支持 Linux/macOS 远端，已停止同步",
+            shell_kind.display_name()
+        );
+        log::warn!("SSH full sync blocked: {}", message);
+        return SyncResult {
+            success: false,
+            synced_files: vec![],
+            skipped_files: vec![],
+            errors: vec![message],
+            warnings: vec![],
+        };
+    }
+
     let total_mapping_count = config.file_mappings.len();
     let enabled_mapping_count = config.file_mappings.iter().filter(|m| m.enabled).count();
     let disabled_mapping_count = total_mapping_count.saturating_sub(enabled_mapping_count);

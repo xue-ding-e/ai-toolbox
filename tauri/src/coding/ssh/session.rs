@@ -39,6 +39,62 @@ fn load_private_key(conn: &SSHConnection) -> Result<russh::keys::PrivateKey, Str
     }
 }
 
+/// The shell dialect that receives `exec` requests on the remote host.
+///
+/// Only a POSIX shell can run the sync commands this module builds today
+/// (`mkdir -p`, `mv`, `rm -rf`, `$HOME`, the skills target script). Windows
+/// OpenSSH defaults to `cmd.exe` or PowerShell, which fail those commands and
+/// report the failure in the console code page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteShellKind {
+    Posix,
+    WindowsCmd,
+    WindowsPowerShell,
+    Unknown,
+}
+
+impl RemoteShellKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Posix => "posix",
+            Self::WindowsCmd => "windows_cmd",
+            Self::WindowsPowerShell => "windows_powershell",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub fn is_posix(self) -> bool {
+        matches!(self, Self::Posix)
+    }
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::Posix => "POSIX shell",
+            Self::WindowsCmd => "Windows cmd.exe",
+            Self::WindowsPowerShell => "Windows PowerShell",
+            Self::Unknown => "unknown shell",
+        }
+    }
+}
+
+/// Raw command result. Non-zero exits are not errors here so callers can probe
+/// the remote shell without turning expected failures into transport errors.
+struct CommandOutput {
+    stdout: String,
+    stderr: String,
+    exit_code: Option<u32>,
+}
+
+impl CommandOutput {
+    fn succeeded(&self) -> bool {
+        matches!(self.exit_code, Some(0) | None)
+    }
+}
+
+const POSIX_SHELL_PROBE: &str = "[ 1 -eq 1 ] && echo __AI_TOOLBOX_POSIX_SHELL__";
+const POWERSHELL_PROBE: &str = "$PSVersionTable.PSVersion.ToString()";
+const CMD_PROBE: &str = "cmd /c ver";
+
 /// SSH 会话状态
 #[derive(Debug, Clone, PartialEq)]
 pub enum SessionStatus {
@@ -246,55 +302,29 @@ impl SshSession {
     /// 在远程执行命令并返回 stdout
     pub async fn exec_command(&self, cmd: &str) -> Result<String, String> {
         let handle = self.handle.as_ref().ok_or("SSH 会话未建立")?;
+        let output = exec_capture(handle, cmd).await?;
 
-        let mut channel = handle
-            .channel_open_session()
-            .await
-            .map_err(|e| format!("打开 SSH channel 失败: {}", e))?;
-
-        channel
-            .exec(true, cmd)
-            .await
-            .map_err(|e| format!("执行远程命令失败: {}", e))?;
-
-        let mut stdout_buf = Vec::new();
-        let mut stderr_buf = Vec::new();
-        let mut exit_code: Option<u32> = None;
-
-        loop {
-            let Some(msg) = channel.wait().await else {
-                break;
-            };
-            match msg {
-                ChannelMsg::Data { ref data } => {
-                    stdout_buf.extend_from_slice(data);
-                }
-                ChannelMsg::ExtendedData { ref data, ext } => {
-                    if ext == 1 {
-                        // SSH_EXTENDED_DATA_STDERR
-                        stderr_buf.extend_from_slice(data);
-                    }
-                }
-                ChannelMsg::ExitStatus { exit_status } => {
-                    exit_code = Some(exit_status);
-                }
-                _ => {}
-            }
+        if output.succeeded() {
+            return Ok(output.stdout);
         }
 
-        let stdout = String::from_utf8_lossy(&stdout_buf).to_string();
+        let detail = if !output.stderr.trim().is_empty() {
+            output.stderr.trim().to_string()
+        } else {
+            output.stdout.trim().to_string()
+        };
+        Err(format!(
+            "远程命令退出码 {}: {}",
+            output.exit_code.unwrap_or(1),
+            detail
+        ))
+    }
 
-        match exit_code {
-            Some(0) | None => Ok(stdout),
-            Some(code) => {
-                let stderr = String::from_utf8_lossy(&stderr_buf).to_string();
-                let detail = if !stderr.trim().is_empty() {
-                    stderr.trim().to_string()
-                } else {
-                    stdout.trim().to_string()
-                };
-                Err(format!("远程命令退出码 {}: {}", code, detail))
-            }
+    /// Probe which shell receives remote commands.
+    pub async fn detect_shell_kind(&self) -> RemoteShellKind {
+        match &self.handle {
+            Some(handle) => probe_remote_shell(handle).await.0,
+            None => RemoteShellKind::Unknown,
         }
     }
 
@@ -348,7 +378,7 @@ impl SshSession {
         match exit_code {
             Some(0) | None => Ok(()),
             Some(code) => {
-                let stderr = String::from_utf8_lossy(&stderr_buf).to_string();
+                let stderr = decode_remote_text(&stderr_buf);
                 let detail = if !stderr.trim().is_empty() {
                     format!(": {}", stderr.trim())
                 } else {
@@ -458,12 +488,14 @@ impl SshSession {
     }
 }
 
-/// 创建一个独立的临时 SSH 连接并执行命令（用于测试连接）
-/// 返回命令输出结果
-pub async fn test_connection_with_command(
-    conn: &SSHConnection,
-    cmd: &str,
-) -> Result<String, String> {
+/// Result of probing a standalone SSH connection before saving/syncing.
+pub struct RemoteConnectionProbe {
+    pub shell_kind: RemoteShellKind,
+    pub server_info: Option<String>,
+}
+
+/// 创建一个独立的临时 SSH 连接并探测远端 Shell。
+pub async fn probe_connection(conn: &SSHConnection) -> Result<RemoteConnectionProbe, String> {
     let config = client::Config {
         inactivity_timeout: Some(Duration::from_secs(10)),
         ..Default::default()
@@ -480,19 +512,37 @@ pub async fn test_connection_with_command(
 
     authenticate(&mut session, conn).await?;
 
-    // 执行命令
-    let mut channel = session
+    let (shell_kind, server_info) = probe_remote_shell(&session).await;
+    let _ = session.disconnect(Disconnect::ByApplication, "", "").await;
+
+    Ok(RemoteConnectionProbe {
+        shell_kind,
+        server_info,
+    })
+}
+
+/// Run one command and capture stdout/stderr/exit status.
+///
+/// Unlike [`SshSession::exec_command`], a non-zero exit status is returned as
+/// data instead of an error, so shell probes can try several dialects.
+async fn exec_capture(
+    handle: &client::Handle<SshHandler>,
+    cmd: &str,
+) -> Result<CommandOutput, String> {
+    let mut channel = handle
         .channel_open_session()
         .await
-        .map_err(|e| format!("打开 channel 失败: {}", e))?;
+        .map_err(|e| format!("打开 SSH channel 失败: {}", e))?;
 
     channel
         .exec(true, cmd)
         .await
-        .map_err(|e| format!("执行命令失败: {}", e))?;
+        .map_err(|e| format!("执行远程命令失败: {}", e))?;
 
     let mut stdout_buf = Vec::new();
     let mut stderr_buf = Vec::new();
+    let mut exit_code: Option<u32> = None;
+
     loop {
         let Some(msg) = channel.wait().await else {
             break;
@@ -503,16 +553,97 @@ pub async fn test_connection_with_command(
             }
             ChannelMsg::ExtendedData { ref data, ext } => {
                 if ext == 1 {
+                    // SSH_EXTENDED_DATA_STDERR
                     stderr_buf.extend_from_slice(data);
                 }
+            }
+            ChannelMsg::ExitStatus { exit_status } => {
+                exit_code = Some(exit_status);
             }
             _ => {}
         }
     }
 
-    let _ = session.disconnect(Disconnect::ByApplication, "", "").await;
+    Ok(CommandOutput {
+        stdout: String::from_utf8_lossy(&stdout_buf).to_string(),
+        stderr: decode_remote_text(&stderr_buf),
+        exit_code,
+    })
+}
 
-    Ok(String::from_utf8_lossy(&stdout_buf).to_string())
+/// Identify which shell dialect receives `exec` requests.
+async fn probe_remote_shell(
+    handle: &client::Handle<SshHandler>,
+) -> (RemoteShellKind, Option<String>) {
+    if let Ok(output) = exec_capture(handle, POSIX_SHELL_PROBE).await {
+        if output.succeeded() && output.stdout.contains("__AI_TOOLBOX_POSIX_SHELL__") {
+            let server_info = match exec_capture(handle, "uname -a").await {
+                Ok(info) if info.succeeded() => {
+                    let text = info.stdout.trim();
+                    (!text.is_empty()).then(|| text.to_string())
+                }
+                _ => None,
+            };
+            return (RemoteShellKind::Posix, server_info);
+        }
+    }
+
+    if let Ok(output) = exec_capture(handle, POWERSHELL_PROBE).await {
+        let version = output.stdout.trim();
+        if output.succeeded() && looks_like_powershell_version(version) {
+            return (
+                RemoteShellKind::WindowsPowerShell,
+                Some(format!("PowerShell {}", version)),
+            );
+        }
+    }
+
+    if let Ok(output) = exec_capture(handle, CMD_PROBE).await {
+        let info = output.stdout.trim();
+        // A successful `cmd /c ver` already identifies the host as Windows;
+        // the product banner itself may be localized.
+        if output.succeeded() {
+            return (
+                RemoteShellKind::WindowsCmd,
+                (!info.is_empty()).then(|| info.to_string()),
+            );
+        }
+    }
+
+    (RemoteShellKind::Unknown, None)
+}
+
+fn looks_like_powershell_version(value: &str) -> bool {
+    !value.is_empty()
+        && value.split('.').count() >= 2
+        && value
+            .chars()
+            .all(|character| character.is_ascii_digit() || character == '.')
+}
+
+/// Decode remote diagnostics. UTF-8 wins; otherwise Windows console output is
+/// usually GBK (GB18030 superset), with UTF-16 BOMs handled explicitly.
+fn decode_remote_text(bytes: &[u8]) -> String {
+    if bytes.is_empty() {
+        return String::new();
+    }
+
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        return text.to_string();
+    }
+
+    if let Some(payload) = bytes.strip_prefix(&[0xFF, 0xFE]) {
+        let (decoded, _, _) = encoding_rs::UTF_16LE.decode(payload);
+        return decoded.into_owned();
+    }
+
+    if let Some(payload) = bytes.strip_prefix(&[0xFE, 0xFF]) {
+        let (decoded, _, _) = encoding_rs::UTF_16BE.decode(payload);
+        return decoded.into_owned();
+    }
+
+    let (decoded, _, _) = encoding_rs::GB18030.decode(bytes);
+    decoded.into_owned()
 }
 
 /// 通过已有 SFTP 会话上传单个文件
@@ -727,9 +858,46 @@ impl Drop for SshSession {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_excluded_dir_name, relative_upload_path};
+    use super::{
+        decode_remote_text, is_excluded_dir_name, looks_like_powershell_version,
+        relative_upload_path,
+    };
     use std::collections::HashSet;
     use std::path::Path;
+
+    #[test]
+    fn decodes_gbk_windows_diagnostics() {
+        // "命令语法不正确。" encoded as GBK.
+        let gbk = [
+            195, 252, 193, 238, 211, 239, 183, 168, 178, 187, 213, 253, 200, 183, 161, 163,
+        ];
+        assert_eq!(decode_remote_text(&gbk), "命令语法不正确。");
+    }
+
+    #[test]
+    fn keeps_utf8_diagnostics_unchanged() {
+        assert_eq!(
+            decode_remote_text("命令语法不正确。".as_bytes()),
+            "命令语法不正确。"
+        );
+    }
+
+    #[test]
+    fn decodes_utf16le_with_bom() {
+        let mut bytes = vec![0xFF, 0xFE];
+        for code_unit in "Windows".encode_utf16() {
+            bytes.extend_from_slice(&code_unit.to_le_bytes());
+        }
+        assert_eq!(decode_remote_text(&bytes), "Windows");
+    }
+
+    #[test]
+    fn recognizes_powershell_version_output() {
+        assert!(looks_like_powershell_version("5.1.20348.2849"));
+        assert!(!looks_like_powershell_version(""));
+        assert!(!looks_like_powershell_version("5.1 LTS"));
+        assert!(!looks_like_powershell_version("Windows"));
+    }
 
     #[test]
     fn matches_excluded_directory_by_name_segment_only() {

@@ -37,6 +37,7 @@ sequenceDiagram
 ## 易错点与历史坑（Gotchas）
 
 - 不要把 SSH 写成“自动同步”模块。当前应明确为手动同步主模型；即使启用或切换连接时会跑一次全量同步，也不等于存在像 WSL 那样的事件驱动自动同步监听体系。
+- SSH 同步的远端命令链路只支持 POSIX Shell（Linux/macOS）。Windows OpenSSH 默认用 `cmd.exe` / PowerShell，`mkdir -p`、`rm -rf`、`$HOME`、`sh -c` 等命令会失败，且中文 Windows 的控制台错误是 GBK。`do_full_sync` 必须先探测 Shell 方言，非 POSIX 时在写入任何远端文件前返回明确错误；`exec_command` 的 stderr 解码必须按 UTF-8 → UTF-16 BOM → GB18030 兜底。连接测试也必须报告 `shell_kind`，不能像以前那样忽略 `uname -a` 的退出码、把 Windows 远端显示成“已连接”。
 - 同步设置保存只 patch 用户字段，不能回写表单里的历史状态或清掉 `last_sync_warnings`；配置、普通状态和警告写入均在同一次 SQLite 连接锁内完成。全量同步须把 Skills 阶段已收集警告合入返回结果与完成事件，包含该阶段最终失败的情况；同步哈希写入失败、目标目录无法解析也必须进入警告链路，不能只留日志或静默跳过。
 - SSH 设置页不会像 WSL 设置页那样按 `is_wsl_direct` 禁用模块。它只是把左侧本地路径显示成完整 UNC，真正同步仍由后端解析。
 - 不要只看普通 file mappings 就判断 SSH 同步是否完整。MCP 和 Skills 都走独立链路，其中 Skills 的源目录仍是中央仓库，不是某个工具当前目录。

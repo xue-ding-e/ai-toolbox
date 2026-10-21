@@ -1199,7 +1199,8 @@
       "skillsSourceMissingSkipped": "Source directory of skill '{{skill}}' does not exist; sync skipped: {{detail}}",
       "skillsRemoteDirCleanupFailed": "Failed to clean up the remote directory of skill '{{skill}}': {{detail}}",
       "skillsHashWriteFailed": "Failed to write the sync hash of skill '{{skill}}': {{detail}}",
-      "skillsTargetDirectoryUnresolved": "Unable to resolve the Skills target directory"
+      "skillsTargetDirectoryUnresolved": "Unable to resolve the Skills target directory",
+      "unsupportedRemoteShell": "Remote shell is not POSIX ({{shell}}); this version only supports Linux/macOS remotes, so sync was stopped."
     },
     "autoBackup": {
       "title": "Auto Backup",
@@ -1407,7 +1408,14 @@
       "indicator": {
         "tooltip": "Click to configure SSH sync"
       },
-      "lastSyncWarnings": "Last Skills sync warnings"
+      "lastSyncWarnings": "Last Skills sync warnings",
+      "shellKind": {
+        "posix": "POSIX",
+        "windowsCmd": "Windows cmd.exe",
+        "windowsPowerShell": "Windows PowerShell",
+        "unknown": "Unknown"
+      },
+      "remoteShellUnsupported": "Remote shell is {{shell}}. This version only supports Linux/macOS remotes, so sync is blocked."
     },
     "webdav": {
       "url": "Server URL",

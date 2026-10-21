@@ -101,6 +101,7 @@ dependencies = [
  "chrono",
  "croner",
  "dirs 5.0.1",
+ "encoding_rs",
  "flate2",
  "futures-util",
  "glob",

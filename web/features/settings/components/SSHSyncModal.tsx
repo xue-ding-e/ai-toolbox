@@ -161,6 +161,19 @@ export const SSHSyncModal: React.FC<SSHSyncModalProps> = ({ open, onClose }) => 
     return t('settings.ssh.authNone');
   };
 
+  const getShellKindLabel = (shellKind: string) => {
+    switch (shellKind) {
+      case 'windows_cmd':
+        return t('settings.ssh.shellKind.windowsCmd');
+      case 'windows_powershell':
+        return t('settings.ssh.shellKind.windowsPowerShell');
+      case 'unknown':
+        return t('settings.ssh.shellKind.unknown');
+      default:
+        return t('settings.ssh.shellKind.posix');
+    }
+  };
+
   const getModuleStatus = useCallback((module: string): WslDirectModuleStatus | undefined => {
     return moduleStatusMap.get(module);
   }, [moduleStatusMap]);
@@ -707,6 +720,15 @@ export const SSHSyncModal: React.FC<SSHSyncModalProps> = ({ open, onClose }) => 
               {testResult?.serverInfo && (
                 <div style={{ marginTop: 4 }}>
                   <Text type="secondary" style={{ fontSize: 12 }}>{testResult.serverInfo}</Text>
+                </div>
+              )}
+              {testResult?.connected && testResult.shellKind && testResult.shellKind !== 'posix' && (
+                <div style={{ marginTop: 4 }}>
+                  <Text type="danger" style={{ fontSize: 12 }}>
+                    {t('settings.ssh.remoteShellUnsupported', {
+                      shell: getShellKindLabel(testResult.shellKind),
+                    })}
+                  </Text>
                 </div>
               )}
               {testResult?.error && (

@@ -352,6 +352,11 @@ export const translateSyncMessage = (
 	const patterns: Array<[RegExp, (...args: string[]) => string]> = [
 		[/^SSH 同步未启用$/, () => t("settings.syncMessages.sshSyncDisabled")],
 		[
+			/^远端 Shell 不是 POSIX（(.+)），当前版本仅支持 Linux\/macOS 远端，已停止同步$/,
+			(shell) =>
+				t("settings.syncMessages.unsupportedRemoteShell", { shell }),
+		],
+		[
 			/^另一个同步操作正在进行中$/,
 			() => t("settings.syncMessages.syncInProgress"),
 		],

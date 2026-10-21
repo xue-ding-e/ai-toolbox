@@ -74,6 +74,8 @@ export interface SSHConnectionResult {
   connected: boolean;
   error?: string;
   serverInfo?: string;
+  /** `posix` | `windows_cmd` | `windows_powershell` | `unknown` */
+  shellKind?: string;
 }
 
 /**

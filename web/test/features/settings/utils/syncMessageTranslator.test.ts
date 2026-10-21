@@ -161,6 +161,18 @@ test('Antigravity CLI default mapping names translate to their own i18n keys', (
   );
 });
 
+test('unsupported remote shell preflight is translated with the detected shell', () => {
+  assert.equal(
+    translateSyncMessage(
+      '远端 Shell 不是 POSIX（Windows cmd.exe），当前版本仅支持 Linux/macOS 远端，已停止同步',
+      'ssh',
+      stubT,
+    ),
+    'settings.syncMessages.unsupportedRemoteShell?' +
+      JSON.stringify({ shell: 'Windows cmd.exe' }),
+  );
+});
+
 test('ZCode default mapping names translate to their own i18n keys', () => {
   // A regression here silently falls back to the raw Chinese Rust default name
   // in the sync modal, which is how the missing keys would surface.

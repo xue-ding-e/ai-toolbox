@@ -212,6 +212,10 @@ pub struct SSHConnectionResult {
     pub connected: bool,
     pub error: Option<String>,
     pub server_info: Option<String>,
+    /// Detected remote shell dialect: `posix`, `windows_cmd`,
+    /// `windows_powershell`, or `unknown`.
+    #[serde(default)]
+    pub shell_kind: Option<String>,
 }
 
 /// SSH status result
