@@ -50,9 +50,18 @@ export interface SkillRepo {
 
 export type SkillViewMode = 'flat' | 'grouped';
 
+export type SkillGroupingMode = 'custom' | 'source';
+
+/**
+ * Persisted grouped-view preference. `auto` keeps the historical source
+ * grouping until the user owns at least one custom group.
+ */
+export type SkillGroupModePreference = 'auto' | SkillGroupingMode;
+
 export interface SkillPreferences {
   preferred_tools: string[] | null;
   default_view_mode: SkillViewMode;
+  group_mode: SkillGroupModePreference;
   git_cache_cleanup_days: number;
   git_cache_ttl_secs: number;
   installed_tools: string[] | null;

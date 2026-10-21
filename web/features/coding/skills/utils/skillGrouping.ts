@@ -1,8 +1,24 @@
-import type { ManagedSkill, SkillGroup, SkillGroupRecord } from '../types';
+import type {
+  ManagedSkill,
+  SkillGroup,
+  SkillGroupingMode,
+  SkillGroupModePreference,
+  SkillGroupRecord,
+} from '../types';
 
-export type SkillGroupingMode = 'custom' | 'source';
+export type { SkillGroupingMode, SkillGroupModePreference } from '../types';
 
 export const CUSTOM_UNGROUPED_GROUP_KEY = 'custom:__ungrouped__';
+
+export function resolveSkillGroupingMode(
+  preference: SkillGroupModePreference | null | undefined,
+  customGroupCount: number,
+): SkillGroupingMode {
+  if (preference === 'custom' || preference === 'source') {
+    return preference;
+  }
+  return customGroupCount > 0 ? 'custom' : 'source';
+}
 
 export interface SkillGroupLabels {
   groupLocal: string;

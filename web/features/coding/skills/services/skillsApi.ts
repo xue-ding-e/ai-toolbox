@@ -23,6 +23,7 @@ import type {
   DeleteManagedSkillOptions,
   SkillDocument,
 } from '../types';
+import type { SkillGroupingMode, SkillGroupModePreference } from '../utils/skillGrouping';
 
 // Tool Status
 export const getToolStatus = async (): Promise<ToolStatus> => {
@@ -324,6 +325,15 @@ export const getDefaultViewMode = async (): Promise<SkillViewMode> => {
 
 export const setDefaultViewMode = async (mode: SkillViewMode): Promise<void> => {
   return invoke('skills_set_default_view_mode', { mode });
+};
+
+// Group Mode
+export const getSkillGroupMode = async (): Promise<SkillGroupModePreference> => {
+  return invoke<SkillGroupModePreference>('skills_get_group_mode');
+};
+
+export const setSkillGroupMode = async (mode: SkillGroupingMode): Promise<void> => {
+  return invoke('skills_set_group_mode', { mode });
 };
 
 // Skill Repos

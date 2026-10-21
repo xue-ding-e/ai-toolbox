@@ -73,7 +73,9 @@ import {
   isSkillGroupToolsAligned,
   isSkillUngroupedCustomGroup,
   normalizeSkillMetadataText,
+  resolveSkillGroupingMode,
   type SkillGroupingMode,
+  type SkillGroupModePreference,
 } from '../utils/skillGrouping';
 import { GROUP_TOOL_BATCH_OPTIONS } from '../utils/batchToolOptions';
 import {
@@ -294,7 +296,9 @@ const SkillsPage: React.FC = () => {
 
   const [searchText, setSearchText] = React.useState('');
   const [viewMode, setViewMode] = React.useState<SkillViewMode>('flat');
-  const [groupMode, setGroupMode] = React.useState<SkillGroupingMode>('custom');
+  const [groupModePreference, setGroupModePreference] =
+    React.useState<SkillGroupModePreference | null>(null);
+  const groupMode = resolveSkillGroupingMode(groupModePreference, groups.length);
   const [groupActiveKeys, setGroupActiveKeys] = React.useState<string[]>([]);
   const [selectedIds, setSelectedIds] = React.useState<Set<string>>(new Set());
   const [selectionMode, setSelectionMode] = React.useState(false);
@@ -485,6 +489,33 @@ const SkillsPage: React.FC = () => {
   React.useEffect(() => {
     setTagFilter((prev) => pruneStaleTagFilters(prev, allTags, hasUntaggedSkill));
   }, [allTags, hasUntaggedSkill]);
+
+  // Load the persisted grouped-view preference once. Until it arrives (and when
+  // it is still "auto"), resolveSkillGroupingMode keeps the historical source
+  // grouping for users who have no custom groups.
+  React.useEffect(() => {
+    let cancelled = false;
+    api
+      .getSkillGroupMode()
+      .then((preference) => {
+        if (!cancelled) {
+          setGroupModePreference((current) => current ?? preference);
+        }
+      })
+      .catch((error) => {
+        console.error('Failed to load skill group mode:', error);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleGroupModeChange = React.useCallback((nextMode: SkillGroupingMode) => {
+    setGroupModePreference(nextMode);
+    api.setSkillGroupMode(nextMode).catch((error) => {
+      console.error('Failed to save skill group mode:', error);
+    });
+  }, []);
 
   const isSearchActive = !!searchText.trim();
   const isFlatReorderEnabled = viewMode === 'flat' && reorderMode && !isSearchActive;
@@ -1194,7 +1225,7 @@ const SkillsPage: React.FC = () => {
                         <ManagementSegmented<SkillGroupingMode>
                           value={groupMode}
                           ariaLabel={t('skills.groupControls.groupingLabel')}
-                          onChange={setGroupMode}
+                          onChange={handleGroupModeChange}
                           options={[
                             {
                               value: 'custom',

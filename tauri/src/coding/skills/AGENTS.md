@@ -105,6 +105,7 @@ Skills 模块提供 AI 编程工具技能的统一管理功能。用户可以从
 | preferred_tools | array? | 首选工具列表 |
 | limit_add_more_to_preferred_tools | bool | 是否限制 Skill 卡片“添加更多”菜单仅显示首选工具（默认 false） |
 | default_view_mode | string | 进入 Skills 页面时的默认 UI 视图：`flat` / `grouped`，非法或缺失时回退 `flat` |
+| group_mode | string | 分组视图的默认分组方式：`auto` / `custom` / `source`，非法或缺失时回退 `auto`；`auto` 表示没有任何自定义分组时按来源分组，否则按自定义分组 |
 | git_cache_cleanup_days | i32 | Git 缓存清理天数，默认 30 |
 | git_cache_ttl_secs | i32 | Git 缓存 TTL 秒数，默认 60 |
 | known_tool_versions | object? | 已知工具版本信息 |

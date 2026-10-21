@@ -10,7 +10,7 @@ use crate::db::SqliteDbState;
 
 use super::adapter::{
     from_db_skill, from_db_skill_group, from_db_skill_preferences, from_db_skill_repo,
-    get_sync_detail, parse_sync_details, remove_sync_detail, set_sync_detail,
+    get_sync_detail, normalize_group_mode, parse_sync_details, remove_sync_detail, set_sync_detail,
     to_clean_skill_payload, to_skill_group_payload, to_skill_preferences_payload,
     to_skill_repo_payload,
 };
@@ -569,6 +569,7 @@ pub async fn get_setting(state: &SqliteDbState, key: &str) -> Result<Option<Stri
             .preferred_tools
             .map(|v| serde_json::to_string(&v).unwrap_or_default()),
         "default_view_mode" => Some(prefs.default_view_mode),
+        "group_mode" => Some(prefs.group_mode),
         "installed_tools_v1" => prefs
             .installed_tools
             .map(|v| serde_json::to_string(&v).unwrap_or_default()),
@@ -600,6 +601,9 @@ pub async fn set_setting(state: &SqliteDbState, key: &str, value: &str) -> Resul
                 "grouped" => "grouped".to_string(),
                 _ => "flat".to_string(),
             };
+        }
+        "group_mode" => {
+            prefs.group_mode = normalize_group_mode(Some(value));
         }
         "installed_tools_v1" => {
             prefs.installed_tools = serde_json::from_str(value).ok();
@@ -758,6 +762,41 @@ mod tests {
                 .and_then(|items| items.first())
                 .and_then(Value::as_str),
             Some("codex")
+        );
+    }
+
+    #[tokio::test]
+    async fn group_mode_setting_round_trips_and_normalizes() {
+        let (_temp, state) = create_test_db();
+
+        assert_eq!(
+            get_setting(&state, "group_mode")
+                .await
+                .expect("read setting")
+                .as_deref(),
+            Some("auto")
+        );
+
+        set_setting(&state, "group_mode", "source")
+            .await
+            .expect("save source grouping");
+        assert_eq!(
+            get_setting(&state, "group_mode")
+                .await
+                .expect("read setting")
+                .as_deref(),
+            Some("source")
+        );
+
+        set_setting(&state, "group_mode", "repository")
+            .await
+            .expect("save invalid grouping");
+        assert_eq!(
+            get_setting(&state, "group_mode")
+                .await
+                .expect("read setting")
+                .as_deref(),
+            Some("auto")
         );
     }
 

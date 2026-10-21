@@ -2272,6 +2272,29 @@ pub async fn skills_set_default_view_mode(
     skill_store::set_setting(&state, "default_view_mode", &mode).await
 }
 
+// --- Group Mode ---
+
+#[tauri::command]
+pub async fn skills_get_group_mode(state: State<'_, SqliteDbState>) -> Result<String, String> {
+    let raw = skill_store::get_setting(&state, "group_mode")
+        .await
+        .ok()
+        .flatten();
+    Ok(match raw.as_deref() {
+        Some("custom") => "custom".to_string(),
+        Some("source") => "source".to_string(),
+        _ => "auto".to_string(),
+    })
+}
+
+#[tauri::command]
+pub async fn skills_set_group_mode(
+    state: State<'_, SqliteDbState>,
+    mode: String,
+) -> Result<(), String> {
+    skill_store::set_setting(&state, "group_mode", &mode).await
+}
+
 // --- Custom Tools ---
 
 #[tauri::command]

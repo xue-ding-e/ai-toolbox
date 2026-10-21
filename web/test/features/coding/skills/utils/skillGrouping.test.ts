@@ -13,6 +13,7 @@ import {
   isSkillGroupToolsAligned,
   isSkillUngroupedCustomGroup,
   normalizeSkillMetadataText,
+  resolveSkillGroupingMode,
 } from '../../../../../features/coding/skills/utils/skillGrouping.ts';
 import { parseGitRepo } from '../../../../../features/coding/skills/utils/gitUrl.ts';
 import {
@@ -54,6 +55,18 @@ const labels = {
   groupImport: 'Imported Skills',
   groupUngrouped: 'Ungrouped',
 };
+
+test('resolveSkillGroupingMode keeps source grouping until custom groups exist', () => {
+  assert.equal(resolveSkillGroupingMode('auto', 0), 'source');
+  assert.equal(resolveSkillGroupingMode(null, 0), 'source');
+  assert.equal(resolveSkillGroupingMode(undefined, 0), 'source');
+  assert.equal(resolveSkillGroupingMode('auto', 2), 'custom');
+});
+
+test('resolveSkillGroupingMode honours explicit preferences', () => {
+  assert.equal(resolveSkillGroupingMode('source', 2), 'source');
+  assert.equal(resolveSkillGroupingMode('custom', 0), 'custom');
+});
 
 test('normalizeSkillMetadataText trims empty values to null', () => {
   assert.equal(normalizeSkillMetadataText('  Reverse  '), 'Reverse');

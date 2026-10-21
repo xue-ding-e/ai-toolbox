@@ -328,6 +328,7 @@ pub fn from_db_skill_preferences(value: Value) -> SkillPreferences {
         default_view_mode: normalize_default_view_mode(
             value.get("default_view_mode").and_then(|v| v.as_str()),
         ),
+        group_mode: normalize_group_mode(value.get("group_mode").and_then(|v| v.as_str())),
         git_cache_cleanup_days: value
             .get("git_cache_cleanup_days")
             .and_then(|v| v.as_i64())
@@ -369,11 +370,20 @@ fn normalize_default_view_mode(value: Option<&str>) -> String {
     }
 }
 
+pub(crate) fn normalize_group_mode(value: Option<&str>) -> String {
+    match value {
+        Some("custom") => "custom".to_string(),
+        Some("source") => "source".to_string(),
+        _ => "auto".to_string(),
+    }
+}
+
 /// Convert SkillPreferences to database payload
 pub fn to_skill_preferences_payload(prefs: &SkillPreferences) -> Value {
     serde_json::json!({
         "preferred_tools": prefs.preferred_tools,
         "default_view_mode": normalize_default_view_mode(Some(&prefs.default_view_mode)),
+        "group_mode": normalize_group_mode(Some(&prefs.group_mode)),
         "git_cache_cleanup_days": prefs.git_cache_cleanup_days,
         "git_cache_ttl_secs": prefs.git_cache_ttl_secs,
         "known_tool_versions": prefs.known_tool_versions,
@@ -458,6 +468,43 @@ mod tests {
     fn skill_preferences_default_view_mode_allows_grouped() {
         let grouped = from_db_skill_preferences(json!({ "default_view_mode": "grouped" }));
         assert_eq!(grouped.default_view_mode, "grouped");
+    }
+
+    #[test]
+    fn skill_preferences_group_mode_defaults_to_auto() {
+        let missing = from_db_skill_preferences(json!({}));
+        assert_eq!(missing.group_mode, "auto");
+
+        let invalid = from_db_skill_preferences(json!({ "group_mode": "repository" }));
+        assert_eq!(invalid.group_mode, "auto");
+    }
+
+    #[test]
+    fn skill_preferences_group_mode_keeps_explicit_choices() {
+        for mode in ["custom", "source"] {
+            let prefs = from_db_skill_preferences(json!({ "group_mode": mode }));
+            assert_eq!(prefs.group_mode, mode);
+        }
+    }
+
+    #[test]
+    fn skill_preferences_payload_normalizes_group_mode() {
+        let mut prefs = SkillPreferences::default();
+        prefs.group_mode = "source".to_string();
+        assert_eq!(
+            to_skill_preferences_payload(&prefs)
+                .get("group_mode")
+                .and_then(Value::as_str),
+            Some("source")
+        );
+
+        prefs.group_mode = "repository".to_string();
+        assert_eq!(
+            to_skill_preferences_payload(&prefs)
+                .get("group_mode")
+                .and_then(Value::as_str),
+            Some("auto")
+        );
     }
 
     #[test]
