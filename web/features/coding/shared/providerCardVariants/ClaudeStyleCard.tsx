@@ -134,7 +134,6 @@ const ClaudeStyleCard: React.FC<ProviderCardVariantProps> = ({
         <Space size={0} style={{ whiteSpace: 'nowrap' }}>
           {actions?.gatewayActions}
           {renderProviderPrimaryAction(primary)}
-          {actions?.extraActions}
           {menuItems.length > 0 && (
             <Dropdown
               trigger={['click']}

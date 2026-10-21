@@ -39,9 +39,7 @@ import {
   openAiApiFormatFromBaseUrl,
   subscribeGatewayProviderProfiles,
 } from '@/features/coding/shared/gateway';
-import CodexStyleCard, {
-  InlineConnectivityButton,
-} from '@/features/coding/shared/providerCardVariants/CodexStyleCard';
+import CodexStyleCard from '@/features/coding/shared/providerCardVariants/CodexStyleCard';
 import {
   renderProviderPrimaryAction,
 } from '@/features/coding/shared/providerCardVariants/providerCardActions';
@@ -673,10 +671,17 @@ const GrokProviderCard: React.FC<GrokProviderCardProps> = ({
    */
   const metaEntries = React.useMemo<ProviderCardMetaEntry[]>(() => {
     if (isOfficialProvider) {
-      return [{
+      const entries: ProviderCardMetaEntry[] = [{
         kind: 'text',
         value: <OfficialAccountHint>{t('grok.provider.officialAccountHint')}</OfficialAccountHint>,
       }];
+      // Notes are editable in both modes and the bespoke card always showed
+      // them on this line; the switching hint only replaces the connection
+      // facts (endpoint/model/protocol/key), not the user's own text.
+      if (provider.notes) {
+        entries.push({ kind: 'text', value: provider.notes });
+      }
+      return entries;
     }
     const entries: ProviderCardMetaEntry[] = [];
     if (baseUrl) {
@@ -859,13 +864,12 @@ const GrokProviderCard: React.FC<GrokProviderCardProps> = ({
     namePrefix: isOfficialProvider ? <OfficialAccountHeadingIcon /> : undefined,
     nameTags: stateTags,
     metaEntries,
-    inlineActions: isOfficialProvider ? undefined : (
-      <InlineConnectivityButton
-        onClick={() => onTest(provider)}
-        disabled={!canRunConnectivityTest}
-        tooltip={t('grok.provider.officialConnectivityHint')}
-      />
-    ),
+    // No `inlineActions`: this CLI's bespoke card reached connectivity only
+    // through the model list's toolbar, and that toolbar is still there. Adding
+    // the shared inline button would put a second 「模型测试」 on the same card,
+    // which is the duplication the card rules keep out (Codex and Kimi carry
+    // both because their toolbars sit inside a collapsed section the header
+    // does not repeat; Grok's toolbar is the only entry the user knows).
     footer: renderOfficialAccounts('footer'),
     modelSection,
   };

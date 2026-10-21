@@ -2788,8 +2788,6 @@
     "title": "Claude Code 配置管理",
     "pageHint": "可添加多套供应商配置并通过「应用」或系统托盘快捷菜单快速切换。「通用配置」的内容为所有供应商共享，应用时会自动与供应商配置合并写入。",
     "pageWarning": "注意：配置存储在应用数据库中，请勿手动修改本地配置文件，会被下次「应用」操作覆盖。",
-    "openFolder": "打开文件夹",
-    "refreshConfig": "刷新配置",
     "importFromOpenCode": "从 OpenCode 导入",
     "settings": {
       "vscode": "VSCode 集成",
@@ -5001,7 +4999,6 @@
       "officialAccountRefreshSuccess": "官方账号额度已刷新",
       "officialAccountSaveSuccess": "本地官方账号已保存",
       "officialAccountTokenExpiresAt": "Token 过期时间",
-      "officialAccountViewDetails": "查看明细",
       "officialAccountsEmpty": "暂无官方账号，点击右侧 OAuth 登录添加",
       "officialBatchSkipped": "已跳过 {{count}} 个官方订阅配置，AI Toolbox 目前不支持直接测试其登录态。",
       "officialConnectivityHint": "官方订阅使用 Grok 当前登录态，AI Toolbox 目前不支持直接做模型测试。",
@@ -5657,7 +5654,15 @@
     },
     "pageHint": "可添加多套供应商配置并通过「应用」或系统托盘快捷菜单快速切换。「通用配置」的内容为所有供应商共享，应用时会自动与供应商配置合并写入。",
     "pageWarning": "注意：配置存储在应用数据库中，请勿手动修改本地配置文件，会被下次「应用」操作覆盖。",
-    "unsupportedPlatform": "当前平台不支持 Claude Desktop 3P 配置管理"
+    "unsupportedPlatform": "当前平台不支持 Claude Desktop 3P 配置管理",
+    "provider": {
+      "nameRequired": "请输入供应商名称",
+      "baseUrlRequired": "请输入 Base URL",
+      "apiKeyRequired": "请输入 API Key",
+      "officialModeTitle": "使用 Claude Desktop 官方账号（1P）",
+      "officialModeDescription": "此渠道不写入任何 Base URL 或 API Key。应用后会把 Claude Desktop 切回官方登录模式（deploymentMode=1p），并移除本工具写入的 3P profile。名称可自行修改，用于托盘菜单与收藏记录。",
+      "officialDeleteDisabled": "官方渠道不能删除"
+    }
   },
   "kimi": {
     "title": "Kimi Code CLI 配置管理",

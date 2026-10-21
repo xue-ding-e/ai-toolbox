@@ -8,7 +8,8 @@ use super::constants::{COMMON_CONFIG_ID, OFFICIAL_PROVIDER_ID};
 use super::types::*;
 use crate::coding::db_id::db_new_id;
 use crate::coding::proxy_gateway::{
-    cli_proxy, paths::ProxyGatewayPaths, settings as gateway_settings, types::GatewayCliKey,
+    cli_proxy, paths::ProxyGatewayPaths, provider_protocol, settings as gateway_settings,
+    types::GatewayCliKey,
 };
 use crate::db::helpers::{db_delete, db_get, db_list, db_put};
 use crate::db::schema::{DbTable, OrderDirection, OrderField, OrderSpec};
@@ -163,10 +164,15 @@ pub async fn get_claude_desktop_preview() -> Result<Value, String> {
 // ============================================================================
 
 /// List all Claude Desktop providers ordered by sort_index.
+///
+/// The official channel is not a user-created record: the list seeds it on the
+/// first call and from then on it is an ordinary row (editable, disable-able,
+/// copyable, but not deletable — see `delete_claude_desktop_provider`).
 #[tauri::command]
 pub async fn list_claude_desktop_providers(
     state: tauri::State<'_, SqliteDbState>,
 ) -> Result<Vec<ClaudeDesktopProvider>, String> {
+    ensure_official_provider_row(state.db())?;
     list_providers_from_sqlite(state.db())
 }
 
@@ -335,13 +341,30 @@ pub async fn toggle_claude_desktop_provider_disabled(
 }
 
 /// Delete a Claude Desktop provider.
+///
+/// The **first** official row cannot be deleted: it is the CLI's 1P mode and
+/// the row `ensure_official_provider_row` adopts, not a user record. Deleting
+/// it would just make the next listing seed an identical row back, which reads
+/// as "delete did nothing". Rows beyond that first one (a legacy duplicate, or
+/// a copy the user made) are ordinary records and stay deletable — otherwise a
+/// copy of the official row could never be removed.
 #[tauri::command]
 pub async fn delete_claude_desktop_provider(
     state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     id: String,
 ) -> Result<(), String> {
-    delete_provider_from_sqlite(state.db(), &id)?;
+    let db = state.db();
+    let provider = get_provider_from_sqlite(db, &id)?
+        .ok_or_else(|| format!("Claude Desktop provider with ID '{id}' not found"))?;
+    let official_channel_id = list_providers_from_sqlite(db)?
+        .into_iter()
+        .find(|provider| provider.category == "official")
+        .map(|provider| provider.id);
+    if official_channel_id.as_deref() == Some(provider.id.as_str()) {
+        return Err("The official channel cannot be deleted".to_string());
+    }
+    delete_provider_from_sqlite(db, &id)?;
     let _ = app.emit("config-changed", "window");
     Ok(())
 }
@@ -434,6 +457,33 @@ pub async fn select_claude_desktop_provider(
 // Apply Config
 // ============================================================================
 
+/// Reject a plain (direct) apply for a provider that needs the gateway.
+///
+/// Claude Desktop has no direct mode for a provider whose model routes map
+/// upstream ids: its 3P profile only accepts claude-safe route ids, so the
+/// apply path below would silently write a gateway profile while leaving the
+/// gateway un-engaged — a provider that looks applied but cannot serve.
+/// Mirrors `ensure_claude_provider_native_for_direct` on the Claude Code side.
+fn ensure_claude_desktop_provider_native_for_direct(
+    db: &SqliteDbState,
+    provider_id: &str,
+) -> Result<(), String> {
+    let Some(provider) = get_provider_from_sqlite(db, provider_id)? else {
+        return Ok(());
+    };
+    if provider_protocol::provider_needs_gateway_proxy(
+        GatewayCliKey::ClaudeDesktop,
+        &provider.category,
+        provider.meta.as_ref(),
+        &provider.settings_config,
+    ) {
+        return Err(
+            "该渠道的模型映射需要通过本地网关转发，请使用「应用并代理」或先开启网关接管".to_string(),
+        );
+    }
+    Ok(())
+}
+
 /// Apply a provider's configuration to the Claude Desktop files.
 #[tauri::command]
 pub async fn apply_claude_desktop_provider(
@@ -442,6 +492,7 @@ pub async fn apply_claude_desktop_provider(
     provider_id: String,
 ) -> Result<(), String> {
     let db = state.db();
+    ensure_claude_desktop_provider_native_for_direct(&db, &provider_id)?;
     apply_config_internal(&db, &app, &provider_id, false).await
 }
 
@@ -796,15 +847,26 @@ pub async fn import_claude_desktop_providers_from_claude(
     Ok(imported)
 }
 
-/// Ensure a seeded "Claude Desktop Official" provider exists; create it if absent.
-#[tauri::command]
-pub async fn ensure_claude_desktop_official_provider(
-    state: tauri::State<'_, SqliteDbState>,
-    app: tauri::AppHandle,
-) -> Result<ClaudeDesktopProvider, String> {
-    let db = state.db();
-    if let Some(existing) = get_provider_from_sqlite(db, OFFICIAL_PROVIDER_ID)? {
-        return Ok(existing);
+/// The official channel row the list always carries.
+///
+/// Claude Desktop has one official channel — "use the Claude Desktop 1P login"
+/// — and it is not something the user creates: it is a property of the CLI.
+/// The provider list therefore guarantees exactly one `category = "official"`
+/// row. It is seeded on the first listing (not at app start), the same
+/// lazy-adoption shape Kimi's list uses, so a database that never opens the
+/// Claude Desktop tab stays untouched.
+///
+/// An existing official row wins over the fixed id: older releases let the user
+/// *create* an official channel through the form, and those rows are already
+/// what the user sees and may have renamed. Adopting one of them keeps the UI
+/// from growing a second official card next to it.
+fn ensure_official_provider_row(db: &SqliteDbState) -> Result<(), String> {
+    let providers = list_providers_from_sqlite(db)?;
+    if providers
+        .iter()
+        .any(|provider| provider.category == "official")
+    {
+        return Ok(());
     }
 
     let now = Local::now().to_rfc3339();
@@ -817,34 +879,16 @@ pub async fn ensure_claude_desktop_official_provider(
         notes: None,
         icon: None,
         icon_color: None,
-        sort_index: Some(0),
+        // Above every user row: the official channel is the baseline the others
+        // are alternatives to, and the list is sorted by this value.
+        sort_index: Some(-1),
         meta: Some(serde_json::json!({ "claude_desktop_mode": "direct" })),
         is_applied: false,
         is_disabled: false,
         created_at: now.clone(),
         updated_at: now,
     };
-
-    put_provider_to_sqlite(db, OFFICIAL_PROVIDER_ID, &content)?;
-    let _ = app.emit("config-changed", "window");
-
-    Ok(ClaudeDesktopProvider {
-        id: OFFICIAL_PROVIDER_ID.to_string(),
-        name: content.name,
-        category: content.category,
-        settings_config: content.settings_config,
-        source_provider_id: content.source_provider_id,
-        website_url: content.website_url,
-        notes: content.notes,
-        icon: content.icon,
-        icon_color: content.icon_color,
-        sort_index: content.sort_index,
-        meta: content.meta,
-        is_applied: content.is_applied,
-        is_disabled: content.is_disabled,
-        created_at: content.created_at,
-        updated_at: content.updated_at,
-    })
+    put_provider_to_sqlite(db, OFFICIAL_PROVIDER_ID, &content)
 }
 
 // ============================================================================
@@ -885,7 +929,98 @@ pub async fn resolve_claude_desktop_all_api_hub_providers(
 
 #[cfg(test)]
 mod tests {
-    use super::official_restore_settings;
+    use super::{
+        delete_provider_from_sqlite, ensure_official_provider_row, get_provider_from_sqlite,
+        list_providers_from_sqlite, official_restore_settings, put_provider_to_sqlite,
+        ClaudeDesktopProviderContent, OFFICIAL_PROVIDER_ID,
+    };
+    use crate::db::SqliteDbState;
+
+    fn test_db() -> SqliteDbState {
+        SqliteDbState::in_memory_for_test().expect("sqlite")
+    }
+
+    fn official_row(name: &str) -> ClaudeDesktopProviderContent {
+        ClaudeDesktopProviderContent {
+            name: name.to_string(),
+            category: "official".to_string(),
+            settings_config: "{\"env\":{}}".to_string(),
+            source_provider_id: None,
+            website_url: None,
+            notes: None,
+            icon: None,
+            icon_color: None,
+            sort_index: Some(0),
+            meta: None,
+            is_applied: false,
+            is_disabled: false,
+            created_at: "2026-10-21T00:00:00+08:00".to_string(),
+            updated_at: "2026-10-21T00:00:00+08:00".to_string(),
+        }
+    }
+
+    #[test]
+    fn ensure_official_provider_row_seeds_once() {
+        let db = test_db();
+        ensure_official_provider_row(&db).expect("seed");
+        let providers = list_providers_from_sqlite(&db).expect("list");
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].id, OFFICIAL_PROVIDER_ID);
+        assert_eq!(providers[0].category, "official");
+
+        // A second listing must not add a duplicate.
+        ensure_official_provider_row(&db).expect("seed again");
+        assert_eq!(list_providers_from_sqlite(&db).expect("list").len(), 1);
+    }
+
+    #[test]
+    fn ensure_official_provider_row_adopts_an_existing_official_row() {
+        // Older releases let users create an official channel through the form.
+        // That row wins over the fixed id, so the list does not grow a second
+        // official card next to the one the user already sees and renamed.
+        let db = test_db();
+        put_provider_to_sqlite(&db, "legacy-official", &official_row("My 1P"))
+            .expect("put");
+        ensure_official_provider_row(&db).expect("seed");
+        let providers = list_providers_from_sqlite(&db).expect("list");
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].id, "legacy-official");
+        assert_eq!(providers[0].name, "My 1P");
+    }
+
+    #[test]
+    fn ensure_official_provider_row_ignores_custom_rows() {
+        let db = test_db();
+        let mut custom = official_row("Relay");
+        custom.category = "custom".to_string();
+        put_provider_to_sqlite(&db, "custom-row", &custom).expect("put");
+        ensure_official_provider_row(&db).expect("seed");
+        let providers = list_providers_from_sqlite(&db).expect("list");
+        assert_eq!(providers.len(), 2);
+        assert!(providers.iter().any(|provider| provider.id == OFFICIAL_PROVIDER_ID));
+    }
+
+    /// The delete guard is "the first official row", not "category = official":
+    /// a copy of the official row keeps the category but must stay deletable.
+    #[test]
+    fn first_official_row_is_the_protected_one() {
+        let db = test_db();
+        put_provider_to_sqlite(&db, "first-official", &official_row("A"))
+            .expect("put");
+        put_provider_to_sqlite(&db, "copy-official", &official_row("A copy"))
+            .expect("put");
+        let official_channel_id = list_providers_from_sqlite(&db)
+            .expect("list")
+            .into_iter()
+            .find(|provider| provider.category == "official")
+            .map(|provider| provider.id)
+            .expect("official row");
+        assert_eq!(official_channel_id, "first-official");
+
+        delete_provider_from_sqlite(&db, "copy-official").expect("delete copy");
+        assert!(get_provider_from_sqlite(&db, "copy-official").expect("get").is_none());
+        assert!(get_provider_from_sqlite(&db, "first-official").expect("get").is_some());
+    }
 
     #[test]
     fn official_restore_settings_for_empty_env() {

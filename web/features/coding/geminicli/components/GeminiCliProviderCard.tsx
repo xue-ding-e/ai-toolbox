@@ -532,10 +532,18 @@ const GeminiCliProviderCard: React.FC<GeminiCliProviderCardProps> = ({
    */
   const metaEntries = React.useMemo<ProviderCardMetaEntry[]>(() => {
     if (isOfficialProvider) {
-      return [{
+      const entries: ProviderCardMetaEntry[] = [{
         kind: 'text',
         value: <OfficialAccountHint>{t('geminicli.provider.officialAccountHint')}</OfficialAccountHint>,
       }];
+      // The official card has no endpoint and no key, but it does have notes —
+      // the form shows the notes field in both modes, and the bespoke card
+      // rendered them on this line for every provider. The switching hint
+      // replaces the connection facts, not the user's own text.
+      if (provider.notes) {
+        entries.push({ kind: 'text', value: provider.notes });
+      }
+      return entries;
     }
     const entries: ProviderCardMetaEntry[] = [];
     if (baseUrl) {

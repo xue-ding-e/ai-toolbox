@@ -114,14 +114,6 @@ export interface ProviderCardActions {
    * over). The OpenCode style has no header action rail and ignores it.
    */
   gatewayActions?: React.ReactNode;
-  /**
-   * Extra header actions for the OpenCode style (batch delete, connectivity).
-   *
-   * In the Claude and Codex styles these render as icon buttons **before** the
-   * "more" menu — the place the bespoke cards put their tool-specific header
-   * actions.
-   */
-  extraActions?: React.ReactNode;
 }
 
 export interface ProviderCardState {

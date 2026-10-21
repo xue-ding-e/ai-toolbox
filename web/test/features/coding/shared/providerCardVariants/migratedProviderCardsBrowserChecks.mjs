@@ -83,6 +83,72 @@ export async function verifyMigratedProviderCards({ send, evaluate, baseUrl, art
   // A disabled drag leaves no handle at all (the grip used to stay and do nothing).
   check('a drag-disabled card renders no handle', await fixture('hasHandle("claude-desktop-list")'), false);
 
+  // With no role bindings the notes take that line's place (the bespoke card
+  // drew them there too); the shared card must not drop the only text left.
+  const desktopOfficialText = await fixture('text("claude-desktop-official-list")');
+  check(
+    'a binding-less Claude Desktop card still states its notes',
+    desktopOfficialText.includes('官方渠道备注'),
+  );
+
+  // The official channel is titled by the app, not by its row: `🔗 官方账号`.
+  // The glyph is antd's `LinkOutlined` (the shared `OfficialAccountHeadingIcon`),
+  // so it is asserted as the icon element, not as literal text. The old
+  // "官方订阅" tag said the same thing a second time and is gone.
+  const officialHeading = await evaluate(`
+    (() => {
+      const root = document.querySelector('[data-fixture="claude-desktop-official-list"]');
+      return {
+        text: root.textContent.replace(/\\s+/g, ' ').trim(),
+        glyph: Boolean(root.querySelector('.anticon-link')),
+      };
+    })()
+  `);
+  check(
+    'the official channel is headed 官方账号 with the shared glyph',
+    officialHeading.glyph
+      && officialHeading.text.startsWith('官方账号')
+      && !officialHeading.text.includes('官方订阅')
+      && !officialHeading.text.includes('Claude Desktop Official'),
+  );
+
+  // ...and it cannot be deleted: the "more" menu (where the list card keeps
+  // delete) has no 删除 entry at all, rather than a disabled one.
+  const officialMenuHasDelete = await evaluate(`
+    (async () => {
+      const root = document.querySelector('[data-fixture="claude-desktop-official-list"]');
+      const more = root.querySelector('button .anticon-more')?.closest('button');
+      if (!more) return 'no-menu-button';
+      const mountedBefore = new Set(document.querySelectorAll('.ant-dropdown'));
+      more.click();
+      await new Promise(resolve => setTimeout(resolve, 300));
+      const menu = [...document.querySelectorAll('.ant-dropdown')]
+        .find(node => !mountedBefore.has(node));
+      const items = [...(menu?.querySelectorAll('[role="menuitem"]') ?? [])]
+        .map(item => item.textContent.replace(/\\s+/g, ' ').trim());
+      document.body.click();
+      await new Promise(resolve => setTimeout(resolve, 150));
+      return items.some(item => item.includes('删除'));
+    })()
+  `);
+  check('the official channel has no delete entry in its menu', officialMenuHasDelete, false);
+
+  // A claude-safe provider that maps routes onto other claude ids needs the
+  // gateway (Direct 3P mode forbids model mapping). It must offer
+  // 「应用并代理」 and no bare 应用 — the AnyRouter case, 2026-10-21.
+  const mappedActionLabels = await evaluate(`
+    (() => {
+      const root = document.querySelector('[data-fixture="claude-desktop-mapped-list"]');
+      return [...root.querySelectorAll('button')]
+        .map(button => button.textContent.replace(/\\s+/g, ' ').trim())
+        .filter(Boolean);
+    })()
+  `);
+  check(
+    'a mapped Claude Desktop provider applies through the gateway',
+    mappedActionLabels.includes('应用并代理') && !mappedActionLabels.includes('应用'),
+  );
+
   // The grid cell states the role bindings on its second line.
   const desktopSubtitle = await fixture('subtitle("claude-desktop-card")');
   check(
@@ -168,6 +234,10 @@ export async function verifyMigratedProviderCards({ send, evaluate, baseUrl, art
 
   const grokOfficialText = await fixture('text("grok-official-list")');
   check(
+    'the Grok official card still states its notes beside the switching hint',
+    grokOfficialText.includes('官方渠道备注'),
+  );
+  check(
     'the Grok official card is titled with the shared heading',
     /官方账号\s*\(1\)/.test(grokOfficialText),
   );
@@ -206,6 +276,17 @@ export async function verifyMigratedProviderCards({ send, evaluate, baseUrl, art
     'the Grok model toolbar keeps its documented order',
     toolbarOrder.every((index, position) => index >= 0 && (position === 0 || index > toolbarOrder[position - 1])),
   );
+
+  // The toolbar is this CLI's only connectivity entry: the bespoke card never
+  // had a second one in the header, so the migrated card must not add it.
+  const grokTestEntries = await evaluate(`
+    (() => {
+      const root = document.querySelector('[data-fixture="grok-custom-list"]');
+      const text = root.textContent.replace(/\\s+/g, ' ');
+      return text.split('模型测试').length - 1;
+    })()
+  `);
+  check('the custom Grok card offers connectivity in one place only', grokTestEntries, 1);
 
   // The custom card's second line states the endpoint, model and masked key.
   //

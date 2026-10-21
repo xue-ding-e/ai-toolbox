@@ -23,7 +23,7 @@ import {
   firstGatewayApiFormat,
   getGatewayProviderApiFormatFromMeta,
   getGatewayProviderProfilesVersion,
-  hasNonClaudeModelIds,
+  hasClaudeDesktopRoutingModels,
   isGatewayAggregateMode,
   isGatewayFailoverMode,
   isGatewayProxyMode,
@@ -34,6 +34,7 @@ import {
   InlineConnectivityButton,
 } from '@/features/coding/shared/providerCardVariants/CodexStyleCard';
 import ClaudeStyleCard from '@/features/coding/shared/providerCardVariants/ClaudeStyleCard';
+import { OfficialAccountHeadingIcon } from '@/features/coding/shared/officialAccounts';
 import {
   renderProviderPrimaryAction,
 } from '@/features/coding/shared/providerCardVariants/providerCardActions';
@@ -70,6 +71,14 @@ const CLAUDE_DESKTOP_ROLE_ROUTE_ORDER: Array<'sonnet' | 'opus' | 'fable' | 'haik
 interface ClaudeDesktopProviderCardProps {
   provider: ClaudeDesktopProvider;
   isApplied: boolean;
+  /**
+   * Whether this row is the fixed official channel (the first
+   * `category = "official"` row, which the backend seeds and protects).
+   *
+   * Not the same as `category === "official"`: legacy duplicates and copies of
+   * the official row keep that category but are ordinary deletable records.
+   */
+  isOfficialChannel?: boolean;
   /** Which layout the page is in; `'card'` renders the compact grid cell. */
   viewMode?: ProviderViewMode;
   onEdit: (provider: ClaudeDesktopProvider) => void;
@@ -108,6 +117,9 @@ interface ClaudeDesktopProviderCardProps {
 const ClaudeDesktopProviderCard: React.FC<ClaudeDesktopProviderCardProps> = ({
   provider,
   isApplied,
+  // Defaults to the category check so a caller that renders a single card
+  // (fixtures, tests) still gets the official treatment.
+  isOfficialChannel: isOfficialChannelProp,
   viewMode = 'list',
   onEdit,
   onDelete,
@@ -190,6 +202,8 @@ const ClaudeDesktopProviderCard: React.FC<ClaudeDesktopProviderCardProps> = ({
     '';
   const configuredBaseUrl = settingsConfig.env?.ANTHROPIC_BASE_URL?.trim() || '';
   const isOfficialProvider = provider.category === 'official';
+  /** The fixed official channel; every other official-category row is ordinary. */
+  const isOfficialChannel = isOfficialChannelProp ?? isOfficialProvider;
   const showRuntimeApplied = isApplied;
   const gatewayProviderProfilesVersion = React.useSyncExternalStore(
     subscribeGatewayProviderProfiles,
@@ -212,7 +226,7 @@ const ClaudeDesktopProviderCard: React.FC<ClaudeDesktopProviderCardProps> = ({
   const needsGatewayProxy =
     !isOfficialProvider &&
     (providerNeedsGatewayProxy(providerApiFormat, 'anthropic') ||
-      hasNonClaudeModelIds(configuredModelIds));
+      hasClaudeDesktopRoutingModels(effectiveRoutes));
   const gatewayCanApplyProxy = canApplyProviderWithGatewayProxy(gatewayStatus);
   const gatewayMode = gatewayStatus?.mode ?? null;
   const gatewayFailoverActive = isGatewayFailoverMode(gatewayMode);
@@ -352,9 +366,6 @@ const ClaudeDesktopProviderCard: React.FC<ClaudeDesktopProviderCardProps> = ({
 
   const stateTags = (
     <>
-      {isOfficialProvider && (
-        <Tag>{t('claudecode.provider.modeOfficial')}</Tag>
-      )}
       {isOfficialProvider && gatewayTakeoverActive && (
         <Tooltip title={t('gateway.takeover.officialBypassedTooltip')}>
           <Tag color="gold">{t('gateway.takeover.officialBypassedTag')}</Tag>
@@ -460,8 +471,14 @@ const ClaudeDesktopProviderCard: React.FC<ClaudeDesktopProviderCardProps> = ({
         });
       }
     }
+    // With no role bindings the notes ride this line (as they did on the
+    // bespoke card); with bindings they move to the footer so the line stays
+    // about the bindings. Same split Claude Code uses.
+    if (!hasConfiguredModels && provider.notes) {
+      entries.push({ kind: 'text', value: provider.notes });
+    }
     return entries;
-  }, [configuredBaseUrl, roleBindings, t]);
+  }, [configuredBaseUrl, hasConfiguredModels, provider.notes, roleBindings, t]);
 
   const gatewayActions = (
     <>
@@ -545,10 +562,21 @@ const ClaudeDesktopProviderCard: React.FC<ClaudeDesktopProviderCardProps> = ({
     </>
   );
 
+  /**
+   * The official channel is a fixed list member, named by the app rather than
+   * by the user: `🔗 官方账号`, like every other CLI's official card. Its row
+   * keeps whatever name the user gave it (the form still edits it), but the
+   * heading states what it *is* — a "官方订阅" tag beside a user-chosen name was
+   * the same fact said twice (SOP §4.2.9).
+   */
+  const cardTitle = isOfficialProvider
+    ? t('common.officialAccount.headingTitle')
+    : provider.name;
+
   const props: ProviderCardVariantProps = {
     provider: {
       id: provider.id,
-      name: provider.name,
+      name: cardTitle,
       baseUrl: configuredBaseUrl,
     },
     providerState: {
@@ -571,7 +599,12 @@ const ClaudeDesktopProviderCard: React.FC<ClaudeDesktopProviderCardProps> = ({
       onEdit: () => onEdit(provider),
       onCopy: () => onCopy(provider),
       onShare: onShare ? () => onShare(provider) : undefined,
-      onDelete: () => onDelete(provider),
+      // The fixed official channel cannot be deleted: the backend rejects it,
+      // and every listing seeds it back. Omitting the action keeps the entry
+      // point out of all three surfaces (list menu, grid menu, detail sidebar)
+      // rather than showing a delete that can only fail. A copy of it is an
+      // ordinary row and keeps its delete.
+      onDelete: isOfficialChannel ? undefined : () => onDelete(provider),
       enabledStateLabel: provider.isDisabled
         ? t('claudecode.configDisabled')
         : t('claudecode.configEnabled'),
@@ -585,18 +618,24 @@ const ClaudeDesktopProviderCard: React.FC<ClaudeDesktopProviderCardProps> = ({
           }
         : undefined,
     },
+    namePrefix: isOfficialProvider ? <OfficialAccountHeadingIcon /> : undefined,
     nameTags: stateTags,
     metaEntries,
     inlineActions: (
-      <InlineConnectivityButton
-        onClick={() => onTest(provider)}
-        disabled={!canRunConnectivityTest}
-        tooltip={
-          isOfficialProvider
-            ? t('claudecode.provider.officialConnectivityHint')
-            : undefined
-        }
-      />
+      <>
+        <Text type="secondary" style={{ fontSize: 12 }}>|</Text>
+        <InlineConnectivityButton
+          onClick={() => onTest(provider)}
+          disabled={!canRunConnectivityTest}
+          // The bespoke card only explained the official case; a custom card
+          // with a missing endpoint/key keeps no tooltip, as before.
+          tooltip={
+            isOfficialProvider
+              ? t('claudecode.provider.officialConnectivityHint')
+              : undefined
+          }
+        />
+      </>
     ),
     footer: provider.notes && hasConfiguredModels ? (
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -667,6 +706,7 @@ const ClaudeDesktopProviderCard: React.FC<ClaudeDesktopProviderCardProps> = ({
       }))}
       providerState={props.providerState}
       actions={props.actions}
+      namePrefix={props.namePrefix}
       nameTags={stateTags}
       extraMenuItems={[{
         key: 'connectivity',
@@ -676,7 +716,7 @@ const ClaudeDesktopProviderCard: React.FC<ClaudeDesktopProviderCardProps> = ({
         onClick: () => onTest(provider),
       }]}
       detail={{
-        title: <ProviderNameLink name={provider.name} baseUrl={configuredBaseUrl} />,
+        title: <ProviderNameLink name={cardTitle} baseUrl={configuredBaseUrl} />,
         statusTags: stateTags,
         sections: detailSections,
         primaryActions: (
@@ -708,9 +748,13 @@ const ClaudeDesktopProviderCard: React.FC<ClaudeDesktopProviderCardProps> = ({
                 {t('common.share')}
               </Button>
             )}
-            <Button size="small" type="text" danger onClick={() => onDelete(provider)}>
-              {t('common.delete')}
-            </Button>
+            {/* No delete for the fixed official channel — the same
+                `actions.onDelete` omission the list and grid menus render from. */}
+            {!isOfficialChannel && (
+              <Button size="small" type="text" danger onClick={() => onDelete(provider)}>
+                {t('common.delete')}
+              </Button>
+            )}
           </Space>
         ),
       }}

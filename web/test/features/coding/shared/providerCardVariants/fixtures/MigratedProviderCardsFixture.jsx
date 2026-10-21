@@ -89,6 +89,52 @@ const claudeDesktopProps = {
   gatewayTakeoverActive: false,
 };
 
+/**
+ * The official channel with no role bindings — the one case the card has to
+ * state the notes without a binding line to carry them. The bespoke card drew
+ * notes on the second line in that state; the shared card must not drop them.
+ */
+const claudeDesktopOfficialProvider = {
+  id: 'desktop-official',
+  name: 'Claude Desktop Official',
+  category: 'official',
+  settingsConfig: JSON.stringify({ env: {} }),
+  notes: '官方渠道备注',
+  isApplied: false,
+  isDisabled: false,
+  createdAt: '2026-01-01T00:00:00Z',
+  updatedAt: '2026-01-01T00:00:00Z',
+};
+
+/**
+ * A claude-safe provider whose role routes *map* claude ids onto each other
+ * (`claude-sonnet-5` → `claude-opus-5`, the AnyRouter shape). Direct 3P mode
+ * forbids model mapping, so this provider must read as "needs the gateway":
+ * its only apply action is 「应用并代理」, never a bare 应用.
+ */
+const claudeDesktopMappedProvider = {
+  id: 'desktop-mapped',
+  name: 'Desktop Mapped',
+  category: 'custom',
+  settingsConfig: JSON.stringify({
+    env: {
+      ANTHROPIC_BASE_URL: 'https://mapped.example.test',
+      ANTHROPIC_AUTH_TOKEN: 'sk-ant-mapped-fixture-key',
+    },
+  }),
+  meta: {
+    apiFormat: 'anthropic',
+    claudeDesktopModelRoutes: {
+      'claude-sonnet-5': { model: 'claude-opus-5', supports1m: false },
+      'claude-opus-5': { model: 'claude-opus-5', supports1m: false },
+    },
+  },
+  isApplied: false,
+  isDisabled: false,
+  createdAt: '2026-01-01T00:00:00Z',
+  updatedAt: '2026-01-01T00:00:00Z',
+};
+
 /* ------------------------------------------------------------------ Gemini CLI */
 
 const geminiOfficialProvider = {
@@ -157,6 +203,9 @@ const grokOfficialProvider = {
   name: 'Grok Official',
   category: 'official',
   settingsConfig: JSON.stringify({ auth: {}, config: {}, modelCatalog: { models: [] } }),
+  // Notes are editable in official mode too, and the bespoke card drew them on
+  // the second line next to the switching hint.
+  notes: '官方渠道备注',
   isApplied: false,
   isDisabled: false,
   createdAt: '2026-01-01T00:00:00Z',
@@ -372,6 +421,23 @@ createRoot(document.getElementById('root')).render(
       <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
         <div data-fixture="claude-desktop-list">
           <ClaudeDesktopProviderCard {...claudeDesktopProps} viewMode="list" />
+        </div>
+        <div data-fixture="claude-desktop-official-list">
+          <ClaudeDesktopProviderCard
+            {...claudeDesktopProps}
+            provider={claudeDesktopOfficialProvider}
+            isOfficialChannel
+            isApplied={false}
+            viewMode="list"
+          />
+        </div>
+        <div data-fixture="claude-desktop-mapped-list">
+          <ClaudeDesktopProviderCard
+            {...claudeDesktopProps}
+            provider={claudeDesktopMappedProvider}
+            isApplied={false}
+            viewMode="list"
+          />
         </div>
         <div data-fixture="claude-desktop-card">
           <ClaudeDesktopProviderCard {...claudeDesktopProps} viewMode="card" />

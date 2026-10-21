@@ -73,7 +73,7 @@
 - `pnpm run test:codex-card-view`（81 项真浏览器断言，挂**真实 `CodexPage`**）：切换生效并落库、格子只有主模型且无地址/目录、`主模型: gpt-5 (high)`、没配模型就不出第二行、**官方渠道的第二行是「当前登录: <账号>」而不是模型**（三态：应用中的账号 / 磁盘上那份登录与一份没在用的保存账号并存（用户报缺陷时的真实形状，须报「在用」的那份，不报闲置的）/ 「未登录」）、三段式字号、官方卡片是 🔗 官方账号 (2) 且图标在标题之前、footer 是网关/应用、hover 浮出「更多」、标题悬停给域名并可点开、**侧栏含连接信息/模型配置/模型列表目录/官方账号，且目录带全部管理动作**、自定义供应商**没有**账号块、长 key 中间省略而复制给出完整值、`data-provider-id` 仍在、网格内真拖拽后回写、切回列表后目录仍在、暗色主题。
 - `pnpm run test:kimi-card-view`（37 项）/ `pnpm run test:zcode-card-view`（49 项）：两个宿主各自钉住「网格里这个成员是一个普通格子」（Kimi 那份与 Codex 一样钉官方格子的三态「当前登录」），ZCode 那份还钉「格子的动作槽陈述启用开关而菜单不再重复它」、「管理器的账号行不在格子里、在它自己的侧栏里且常开无 caret」与「拖它不会连带打开侧栏」。
 - `pnpm run test:provider-card-layout`：新组件不得让映射层守卫报错，`PENDING_MIGRATION` 为空（2026-10-20 清空）；`ProviderModelSection` 已列入该脚本的「render point」文件表，否则 `modelSection.*` 会被误报成死 prop。
-- `pnpm run test:migrated-provider-cards`：四家（claudedesktop / geminicli / grok / omo_native）的映射层列表 + 卡片两种布局，24 项真浏览器断言（角色绑定、tierAlias tag、备注 footer 位置、dragDisabled 无把手、官方卡片标题与计数、账号行跨满整宽、virtual 行只给保存、Grok 刷新 Token 插槽、模型工具栏顺序、OmO npm 包与默认渠道、菜单删除保护、暗色主题）。
+- `pnpm run test:migrated-provider-cards`：四家（claudedesktop / geminicli / grok / omo_native）的映射层列表 + 卡片两种布局，30 项真浏览器断言（角色绑定、tierAlias tag、备注 footer 位置、dragDisabled 无把手、Claude Desktop 官方行标题 `🔗 官方账号` 且菜单无删除、映射渠道只有「应用并代理」、官方卡片标题与计数、账号行跨满整宽、virtual 行只给保存、Grok 刷新 Token 插槽、模型工具栏顺序、OmO npm 包与默认渠道、菜单删除保护、暗色主题）。
 - `pnpm run test:provider-list-locate` / `test:provider-list-drag`：列表布局未受影响。
 
 ## 何时更新本文件

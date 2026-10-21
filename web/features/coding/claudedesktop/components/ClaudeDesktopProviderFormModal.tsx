@@ -153,24 +153,29 @@ const ClaudeDesktopProviderFormModal: React.FC<ClaudeDesktopProviderFormModalPro
     { value: 'gemini_native', label: t('claudecode.provider.apiFormatGeminiNative') },
   ], [t]);
 
-  const providerEndpointOptions = React.useMemo(() => [
-    { value: CUSTOM_PROVIDER_ENDPOINT_KEY, label: t('claudecode.provider.providerProfileCustom') },
-    // "官方渠道" is only selectable when creating a new provider, or when editing
-    // an existing official (seed) entry. A non-official provider's channel is
-    // fixed at creation time and cannot be switched to official afterwards
-    // (backend apply only treats the seeded claude-desktop-official id, or a
-    // category=official row with empty credentials, as an official restore).
-    ...(!isEdit || provider?.category === 'official'
+  /**
+   * 「官方渠道」 is not a choice: the official row is a fixed list member the
+   * backend seeds (see `ensure_official_provider_row`), not something the user
+   * creates. The form therefore offers only custom/gateway channels when
+   * creating. Editing an existing official row still shows its channel, as a
+   * single read-only option — dropping it would leave the required select
+   * empty, which is exactly the "disabled + required" trap that made official
+   * saves fail before.
+   */
+  const providerEndpointOptions = React.useMemo(() => (
+    isOfficialMode
       ? [{ value: OFFICIAL_PROVIDER_ENDPOINT_KEY, label: t('claudecode.provider.providerProfileOfficial') }]
-      : []),
-    ...getGatewayProviderProfilesForTool('claude_desktop').flatMap((profile) => {
-      const endpoints = profile.tools.claude_desktop?.endpoints || [];
-      return endpoints.map((endpoint) => ({
-        value: toGatewayProviderEndpointKey(profile.id, endpoint.id),
-        label: `${profile.label} / ${endpoint.label}`,
-      }));
-    }),
-  ], [gatewayProviderProfilesVersion, isEdit, provider?.category, t]);
+      : [
+          { value: CUSTOM_PROVIDER_ENDPOINT_KEY, label: t('claudecode.provider.providerProfileCustom') },
+          ...getGatewayProviderProfilesForTool('claude_desktop').flatMap((profile) => {
+            const endpoints = profile.tools.claude_desktop?.endpoints || [];
+            return endpoints.map((endpoint) => ({
+              value: toGatewayProviderEndpointKey(profile.id, endpoint.id),
+              label: `${profile.label} / ${endpoint.label}`,
+            }));
+          }),
+        ]
+  ), [gatewayProviderProfilesVersion, isOfficialMode, t]);
 
   const watchOptions = React.useMemo(() => ({ form, preserve: true }), [form]);
   const selectedProviderProfileId = Form.useWatch('providerProfileId', watchOptions) as string | undefined;
@@ -723,16 +728,25 @@ const ClaudeDesktopProviderFormModal: React.FC<ClaudeDesktopProviderFormModalPro
     </Form.Item>
   );
 
+  /**
+   * The official row's explanation.
+   *
+   * Its wording is Claude Desktop's own now. The shared `claudecode.*` copy
+   * says "use the account Claude Code is currently signed in with", which is
+   * the wrong CLI and the wrong files — Desktop's 1P mode is restored by
+   * rewriting `deploymentMode` and dropping the 3P profile, not by reading a
+   * CLI login.
+   */
   const renderOfficialModeNotice = () => (
     <Form.Item wrapperCol={{ offset: labelCol.span, span: wrapperCol.span }}>
       <div className={styles.officialModeNotice}>
         <div className={styles.officialModeAccent} aria-hidden="true" />
         <div className={styles.officialModeContent}>
           <div className={styles.officialModeTitle}>
-            {t('claudecode.provider.officialModeTitle')}
+            {t('claudedesktop.provider.officialModeTitle')}
           </div>
           <div className={styles.officialModeDescription}>
-            {t('claudecode.provider.officialModeDescription')}
+            {t('claudedesktop.provider.officialModeDescription')}
           </div>
         </div>
       </div>
@@ -763,7 +777,13 @@ const ClaudeDesktopProviderFormModal: React.FC<ClaudeDesktopProviderFormModalPro
         <Form.Item
           label={t('claudecode.provider.providerProfile')}
           required
-          help={<span style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>{t('claudecode.provider.providerProfileHelp')}</span>}
+          // In official mode the select holds the row's fixed identity, not a
+          // choice, so it explains nothing about channels.
+          help={isOfficialMode ? undefined : (
+            <span style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>
+              {t('claudecode.provider.providerProfileHelp')}
+            </span>
+          )}
         >
           <div className={isOfficialMode ? undefined : styles.providerProfileRow}>
             <Form.Item
@@ -774,7 +794,7 @@ const ClaudeDesktopProviderFormModal: React.FC<ClaudeDesktopProviderFormModalPro
             >
               <Select
                 options={providerEndpointOptions}
-                disabled={isEdit}
+                disabled={isEdit || isOfficialMode}
                 onChange={handleProviderEndpointChange}
               />
             </Form.Item>
@@ -801,12 +821,17 @@ const ClaudeDesktopProviderFormModal: React.FC<ClaudeDesktopProviderFormModalPro
 
         {isOfficialMode && renderOfficialModeNotice()}
 
+        {/* Editable in official mode too: the card titles the row 官方账号, and
+            whatever the user names it here is what the tray menu and the
+            favorite history show. It must never be `disabled` while required —
+            that combination can only fail validation, which is how official
+            saves used to end in 「操作失败」. */}
         <Form.Item
           name="name"
           label="名称"
-          rules={[{ required: true, message: t('common.error') }]}
+          rules={[{ required: true, message: t('claudedesktop.provider.nameRequired') }]}
         >
-          <Input placeholder="供应商名称" disabled={isOfficialMode} />
+          <Input placeholder="供应商名称" />
         </Form.Item>
 
         {!isOfficialMode && (
@@ -814,7 +839,7 @@ const ClaudeDesktopProviderFormModal: React.FC<ClaudeDesktopProviderFormModalPro
             <Form.Item
               name="baseUrl"
               label="Base URL"
-              rules={[{ required: true, message: t('common.error') }]}
+              rules={[{ required: true, message: t('claudedesktop.provider.baseUrlRequired') }]}
             >
               <Input placeholder="https://api.anthropic.com" />
             </Form.Item>
@@ -822,7 +847,7 @@ const ClaudeDesktopProviderFormModal: React.FC<ClaudeDesktopProviderFormModalPro
             <Form.Item
               name="apiKey"
               label="API Key"
-              rules={[{ required: true, message: t('common.error') }]}
+              rules={[{ required: true, message: t('claudedesktop.provider.apiKeyRequired') }]}
             >
               <Input
                 type={showApiKey ? 'text' : 'password'}

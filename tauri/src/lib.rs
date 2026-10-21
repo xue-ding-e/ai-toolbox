@@ -2293,7 +2293,6 @@ pub fn run() {
             coding::claude_desktop::get_claude_desktop_common_config,
             coding::claude_desktop::save_claude_desktop_common_config,
             coding::claude_desktop::import_claude_desktop_providers_from_claude,
-            coding::claude_desktop::ensure_claude_desktop_official_provider,
             coding::claude_desktop::list_claude_desktop_prompt_configs,
             coding::claude_desktop::create_claude_desktop_prompt_config,
             coding::claude_desktop::update_claude_desktop_prompt_config,

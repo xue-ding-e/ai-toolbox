@@ -63,6 +63,8 @@
   - **`kind: 'tag'`**：Claude 式此前把 tag 降级成次要色文本；Gemini 的模型标签与 Claude Desktop 的 `tierAlias` 需要真 `Tag`。
   - **`footer` 移出头部两栏**：Claude 式此前把它放在左栏内，会重现「账号行右侧空一大块」的缺陷（见下文 footer 约束）。Claude Code 的备注 footer 因此变宽——这是既定修正。
   - `inlineActions` 的渲染条件从「有 `metaEntries`」放宽为「有 `metaEntries` **或** `inlineActions`」，官方卡片没有 meta 行时连通性按钮仍在。
+- **第二行只承载「这张卡片要陈述的事实」，用户的备注不要被官方分支吞掉。** Gemini / Grok 的官方卡片把连接事实换成了切换说明（`OfficialAccountHint`），但备注在两种模式下都可编辑、迁移前的卡片也照画——所以官方分支在说明之后仍追加 `provider.notes`；Claude Desktop 则在**没有角色绑定**时把备注放进第二行（有绑定时进 footer，与 Claude Code 同规则）。2026-10-20 的首次迁移漏了这三处，审阅时由「官方渠道的备注会消失」发现。
+- **固定成员不要再用类别标签重复标题。** 一个由应用命名、位置固定的成员（Claude Desktop 的官方渠道）标题已经写成 `🔗 官方账号`，再挂一枚「官方订阅」标签就是把同一句话说两遍（SOP §4.2.9）。这类成员也不该出现删除入口：`actions.onDelete` 直接不传，列表菜单、格子菜单与详情侧栏三处会一起消失——比"渲染一个 disabled 的删除"更准确，因为那张行删了也会被下次列表 seed 回来。**只保护"固定成员"本身**：同类别但非固定的行（历史重复、用户复制出来的）仍是普通行，照常有删除。
 
 ## 迁移一个 CLI 的步骤
 
@@ -78,16 +80,15 @@
 
 | 插槽 | 位置 | 用途 | 现有消费方 |
 |---|---|---|---|
-| `providerState.accent` | 卡片外框（`CardShell`） | `applied`（主色边框 + 选中底色）/ `gatewayPrimary`（成功色 + 渐变）；批量选中优先于两者 | claudecode、codex、claudedesktop |
-| `providerState.draggable` / `sortableId` | 卡片级拖拽把手（`CardShell`） | **卡片级**顺序；不带模型区的样式也要能拖，所以不放 `modelSection` | claudecode、codex、zcode、omo_native、geminicli、claudedesktop、grok |
-| `namePrefix` | 名称**之前** | 被改名的卡片补前缀图标（官方卡片的 🔗） | codex、kimi、geminicli、grok |
-| `nameTags` | 名称右侧 | 已应用 / 官方 / 代理 / 网关优先级徽章、官方账号计数 | claudecode、codex、zcode、geminicli、grok、claudedesktop |
-| `metaEntries` | 第二行 | 有序的 `text` / `code` / `tag` 项；**标签用 `entry.label`，不要拆成前一个 `text` 项** | claudecode（角色绑定）、codex（端点/模型/key/备注）、zcode、geminicli、grok、claudedesktop（角色路由 + tierAlias tag） |
-| `inlineActions` | 第二行末尾 | 行内动作（连通性测试、CLI 启动） | claudecode、codex、grok、claudedesktop（`InlineConnectivityButton`） |
-| `footer` | **头部两栏之下、模型区之上**（与模型区一样**跨满卡片整宽**） | 自由区块（官方账号折叠区、备注） | codex、geminicli、grok、claudedesktop |
-| `actions.gatewayActions` | 头部主操作**之前** | 网关接管/恢复直连/切换主渠道 | claudecode、codex、geminicli、grok、claudedesktop |
-| `actions.primaryAction` | 头部主操作 | 文字链「应用」 | claudecode、codex、geminicli、grok、claudedesktop |
-| `actions.extraActions` | 头部图标按钮，在「更多」**之前** | 工具专属头部动作 | zcode、omo_native（OpenCode 式）；Claude/Codex 式亦可 |
+| `providerState.accent` | 卡片外框（`CardShell`） | `applied`（主色边框 + 选中底色）/ `gatewayPrimary`（成功色 + 渐变）；批量选中优先于两者 | claudecode、codex、kimi、geminicli、grok、claudedesktop |
+| `providerState.draggable` / `sortableId` | 卡片级拖拽把手（`CardShell`） | **卡片级**顺序；不带模型区的样式也要能拖，所以不放 `modelSection` | 九个 coding 页全部（claudecode、claudedesktop、codex、geminicli、grok、kimi、omo_native、opencode、zcode） |
+| `namePrefix` | 名称**之前** | 被改名的卡片补前缀图标（官方卡片的 🔗） | codex、kimi、geminicli、grok、zcode（官方账号卡片） |
+| `nameTags` | 名称右侧 | 已应用 / 官方 / 代理 / 网关优先级徽章、官方账号计数 | claudecode、claudedesktop、codex、geminicli、grok、kimi、zcode |
+| `metaEntries` | 第二行 | 有序的 `text` / `code` / `tag` 项；**标签用 `entry.label`，不要拆成前一个 `text` 项** | claudecode（角色绑定）、claudedesktop（角色路由 + tierAlias tag）、codex、geminicli、grok、kimi |
+| `inlineActions` | 第二行末尾 | 行内动作（连通性测试、CLI 启动） | claudecode、codex、kimi、claudedesktop（`InlineConnectivityButton`）。**Grok 刻意不传**：它的模型工具栏已经是唯一入口，再放一个就是同一张卡片说两遍 |
+| `footer` | **头部两栏之下、模型区之上**（与模型区一样**跨满卡片整宽**） | 自由区块（官方账号折叠区、备注、只读模型目录） | codex、geminicli、grok、kimi、claudecode（备注）、claudedesktop（备注）、opencode（只读目录） |
+| `actions.gatewayActions` | 头部主操作**之前** | 网关接管/恢复直连/切换主渠道 | claudecode、codex、kimi、geminicli、grok、claudedesktop |
+| `actions.primaryAction` | 头部主操作 | 文字链「应用」 | claudecode、codex、kimi、geminicli、grok、claudedesktop |
 | `actions.enabledStateLabel` | 「更多」菜单里启用开关的副标题 | `配置已启用` / `配置已禁用`（各 CLI 措辞不同，不共用 `common.provider.*`） | claudecode、codex、kimi、geminicli、grok、claudedesktop |
 | `modelSection.aboveList` / `renderModelExtraActions` | 模型区内 | Codex 的自动审批行与行级动作 | codex |
 | `modelSection.className` / `bodyStyle` | 模型 Collapse | 缩进适配（透明背景由 `transparentRows` 负责） | codex |

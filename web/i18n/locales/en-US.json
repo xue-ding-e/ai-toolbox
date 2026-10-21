@@ -2791,8 +2791,6 @@
     "title": "Claude Code Configuration",
     "pageHint": "Add multiple provider configs and quickly switch via \"Apply\" or the system tray menu. \"Common Config\" is shared across all providers and will be automatically merged when applying.",
     "pageWarning": "Note: Configs are stored in the app database. Do not manually edit the local config file — it will be overwritten by the next \"Apply\" operation.",
-    "openFolder": "Open Folder",
-    "refreshConfig": "Refresh Config",
     "importFromOpenCode": "Import from OpenCode",
     "settings": {
       "vscode": "VSCode Integration",
@@ -5004,7 +5002,6 @@
       "officialAccountRefreshSuccess": "Official account limits refreshed",
       "officialAccountSaveSuccess": "Local official account saved",
       "officialAccountTokenExpiresAt": "Token expires at",
-      "officialAccountViewDetails": "View details",
       "officialAccountsEmpty": "No official accounts yet. Click OAuth Login to add one.",
       "officialBatchSkipped": "Skipped {{count}} official subscription config(s). AI Toolbox does not currently support testing their login state directly.",
       "officialConnectivityHint": "Official subscription uses Grok's current login state. AI Toolbox does not currently support direct model tests for this mode.",
@@ -5660,7 +5657,15 @@
     },
     "pageHint": "Add multiple provider configurations and switch between them with \"Apply\" or the tray menu. \"Common config\" is shared by all providers and merged into the provider config when applied.",
     "pageWarning": "Note: configurations are stored in the app database. Do not edit the local config files manually — the next \"Apply\" overwrites them.",
-    "unsupportedPlatform": "Claude Desktop 3P config management is not supported on this platform"
+    "unsupportedPlatform": "Claude Desktop 3P config management is not supported on this platform",
+    "provider": {
+      "nameRequired": "Please enter a provider name",
+      "baseUrlRequired": "Please enter the Base URL",
+      "apiKeyRequired": "Please enter the API key",
+      "officialModeTitle": "Use the official Claude Desktop account (1P)",
+      "officialModeDescription": "This channel writes no Base URL or API key. Applying it switches Claude Desktop back to its official sign-in mode (deploymentMode=1p) and removes the 3P profile this app wrote. The name is yours to edit; the tray menu and favorites use it.",
+      "officialDeleteDisabled": "The official channel cannot be deleted"
+    }
   },
   "kimi": {
     "title": "Kimi Code CLI Configuration",

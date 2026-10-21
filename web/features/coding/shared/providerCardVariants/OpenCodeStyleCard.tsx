@@ -118,10 +118,6 @@ const OpenCodeStyleCard: React.FC<ProviderCardVariantProps> = ({
         </div>
 
         <Space>
-          {/* Tool-specific header actions (connectivity test, fetch models…).
-              They sit before the standard icons so the row still ends on the
-              destructive action, which is where the eye expects it. */}
-          {actions?.extraActions}
           {onToggleDisabled && (
             <ProviderEnabledSwitch isDisabled={isDisabled} onToggleDisabled={onToggleDisabled} />
           )}

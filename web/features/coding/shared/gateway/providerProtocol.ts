@@ -228,6 +228,26 @@ export const isClaudeSafeModelId = (model: string): boolean => {
 export const hasNonClaudeModelIds = (modelIds: string[]): boolean =>
   modelIds.some((modelId) => !isClaudeSafeModelId(modelId));
 
+/**
+ * Whether a provider's role routes need the local gateway.
+ *
+ * Mirrors the backend's `has_routing_models` (claude_desktop
+ * `config_writer.rs`): Direct mode forbids model mapping, so a provider whose
+ * upstream model differs from its route id — `claude-sonnet-5` mapped to
+ * `claude-opus-5`, say — cannot be written directly even though both names are
+ * claude-safe. Checking only `hasNonClaudeModelIds` read such a provider as
+ * "direct", and its 应用 button silently wrote a gateway profile without the
+ * gateway being engaged (user-reported 2026-10-21, AnyRouter).
+ */
+export const hasClaudeDesktopRoutingModels = (
+  routes: Record<string, { model?: string }> | null | undefined,
+): boolean =>
+  Boolean(routes) &&
+  Object.entries(routes ?? {}).some(([routeId, route]) => {
+    const model = route?.model?.trim() ?? '';
+    return model !== '' && model !== routeId.trim();
+  });
+
 export type GatewayProxyReason = 'protocol' | 'model' | 'both' | null;
 
 /** Classify why a provider needs the local gateway: a protocol mismatch, an

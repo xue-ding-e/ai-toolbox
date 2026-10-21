@@ -9,6 +9,7 @@ export {
   gatewayProxyReason,
   grokProviderNeedsGatewayProxy,
   grokWireApiFormatFromConfig,
+  hasClaudeDesktopRoutingModels,
   hasNonClaudeModelIds,
   firstGatewayApiFormat,
   isClaudeSafeModelId,

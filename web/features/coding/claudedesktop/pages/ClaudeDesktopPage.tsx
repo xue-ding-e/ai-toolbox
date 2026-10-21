@@ -537,9 +537,24 @@ const ClaudeDesktopPage: React.FC = () => {
     [providers, providerKeyword, sortMode, lastUsedAt],
   );
 
+  /**
+   * The one official row the backend protects and `ensure_official_provider_row`
+   * adopts: the first `category = "official"` row in list order (sort_index
+   * ascending). Any further official rows — legacy duplicates, or a copy the
+   * user made — are ordinary records and stay deletable.
+   */
+  const officialChannelProviderId = React.useMemo(
+    () => providers.find((provider) => provider.category === 'official')?.id ?? '',
+    [providers],
+  );
+
   const canBatchDeleteProvider = React.useCallback(
-    (provider: ClaudeDesktopProvider) => Boolean(provider.id),
-    [],
+    // The fixed official row cannot be deleted (the backend rejects it), so
+    // batch selection must not offer it either — the batch loop would fail on
+    // it after deleting the others.
+    (provider: ClaudeDesktopProvider) =>
+      Boolean(provider.id) && provider.id !== officialChannelProviderId,
+    [officialChannelProviderId],
   );
 
   const handleBatchDeleteProviders = React.useCallback(
@@ -596,6 +611,7 @@ const ClaudeDesktopPage: React.FC = () => {
       key={provider.id}
       provider={provider}
       viewMode={viewMode}
+      isOfficialChannel={provider.id === officialChannelProviderId}
       isApplied={provider.id === appliedProviderId && provider.isApplied}
       dragDisabled={providerDragDisabled}
       onEdit={handleEditProvider}
@@ -697,6 +713,13 @@ const ClaudeDesktopPage: React.FC = () => {
   };
 
   const handleDeleteProvider = (provider: ClaudeDesktopProvider) => {
+    // The card omits the action for the official channel; this is the guard for
+    // any other caller (a stale render, a future entry point). The backend
+    // rejects it too.
+    if (!canBatchDeleteProvider(provider)) {
+      message.warning(t('claudedesktop.provider.officialDeleteDisabled'));
+      return;
+    }
     Modal.confirm({
       title: t('claudecode.provider.confirmDelete', { name: provider.name }),
       icon: <ExclamationCircleOutlined />,
