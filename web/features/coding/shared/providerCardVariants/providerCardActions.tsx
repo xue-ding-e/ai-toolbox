@@ -59,7 +59,9 @@ export function renderProviderPrimaryAction(
   }
 
   return (
-    <Tooltip title={primary.tooltip}>
+    <Tooltip title={primary.disabled
+      ? (primary.disabledReason ?? primary.tooltip)
+      : primary.tooltip}>
       <span>
         <Button
           type="link"

@@ -96,30 +96,47 @@ const CodexStyleCard: React.FC<ProviderCardVariantProps> = ({
           </div>
 
           {(metaEntries?.length || inlineActions) && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 4 }}>
+            // One line, never two — same rule as the Claude style: the facts
+            // shrink and the trailing action keeps its size, so a long
+            // endpoint compresses itself instead of wrapping 模型测试 onto the
+            // next row (user-reported 2026-10-21).
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'nowrap', marginTop: 4 }}>
               {metaEntries?.map((entry, index) => (
-                <span key={index} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                // `title` is the untruncated value, for the same reason as the
+                // Claude style: the line never wraps, so a compressed endpoint
+                // has to stay readable on hover.
+                <span
+                  key={index}
+                  title={entry.title ?? (typeof entry.value === 'string' ? entry.value : undefined)}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 4, minWidth: 0 }}
+                >
                   {entry.label && (
-                    <Text type="secondary" style={{ fontSize: 12 }}>
+                    <Text type="secondary" style={{ fontSize: 12, flexShrink: 0 }}>
                       {entry.label}
                     </Text>
                   )}
                   {entry.kind === 'tag' ? (
-                    <Tag color={entry.color ?? 'blue'} style={{ fontSize: 11, margin: 0 }}>
+                    <Tag color={entry.color ?? 'blue'} style={{ fontSize: 11, margin: 0, flexShrink: 0 }}>
                       {entry.value}
                     </Tag>
                   ) : entry.kind === 'code' ? (
-                    <Text code style={{ fontSize: 11, padding: '0 4px' }}>
+                    <Text code ellipsis style={{ fontSize: 11, padding: '0 4px', minWidth: 0 }}>
                       {entry.value}
                     </Text>
                   ) : (
-                    <Text type="secondary" style={{ fontSize: 12 }}>
+                    <Text type="secondary" ellipsis style={{ fontSize: 12, minWidth: 0 }}>
                       {entry.value}
                     </Text>
                   )}
                 </span>
               ))}
-              {inlineActions}
+              {inlineActions && (
+                // Only rendered when there is an action: an empty flex item
+                // would still cost the row one 8px gap at its end.
+                <span style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center' }}>
+                  {inlineActions}
+                </span>
+              )}
             </div>
           )}
         </div>

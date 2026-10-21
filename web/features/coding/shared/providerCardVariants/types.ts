@@ -46,6 +46,16 @@ export interface ProviderCardMetaEntry {
    */
   value: React.ReactNode;
   /**
+   * Hover text for a value the one-line row may compress.
+   *
+   * A string `value` is used as its own hover text; a **node** value cannot be,
+   * and the official-account explanation (`OfficialAccountHint`) is the case
+   * that needs one. Without it a narrow window would cut the sentence with no
+   * way to read the rest — the row never wraps, so the tooltip is where the
+   * full text lives.
+   */
+  title?: string;
+  /**
    * Optional label rendered immediately before the value, in secondary text:
    * `Haiku: claude-haiku-4-5`.
    *
@@ -98,6 +108,15 @@ export interface ProviderCardActions {
     disabled?: boolean;
     loading?: boolean;
     tooltip?: string;
+    /**
+     * Shown **only while `disabled`**, in place of `tooltip`.
+     *
+     * `disabled` alone is silent: the button greys out and the user is left to
+     * guess why. `tooltip` cannot express this because it also shows while the
+     * action is live. The official channels use it for "sign in first": the
+     * apply action exists but has nothing to apply yet (Grok, 2026-10-21).
+     */
+    disabledReason?: string;
     /** A disabled primary action with a tooltip still renders, greyed out. */
     locked?: boolean;
   };

@@ -5030,7 +5030,8 @@
       "officialAccountRefreshToken": "Refresh Token",
       "officialAccountRefreshTokenSuccess": "OAuth token refreshed",
       "officialAccountRefreshTokenFailedReLogin": "Refresh token is invalid. Please re-login with OAuth.",
-      "officialAccountHint": "Switching writes this account's credentials into Grok CLI's auth.json, replacing the current login; it is unavailable while the gateway takes over or proxies."
+      "officialAccountHint": "Switching writes this account's credentials into Grok CLI's auth.json, replacing the current login; it is unavailable while the gateway takes over or proxies.",
+      "officialApplyNoAccount": "This official channel has no signed-in account yet. Sign in from the account list before applying."
     },
     "providerDisabled": "Provider disabled",
     "providerEnabled": "Provider enabled",
@@ -5664,7 +5665,10 @@
       "apiKeyRequired": "Please enter the API key",
       "officialModeTitle": "Use the official Claude Desktop account (1P)",
       "officialModeDescription": "This channel writes no Base URL or API key. Applying it switches Claude Desktop back to its official sign-in mode (deploymentMode=1p) and removes the 3P profile this app wrote. The name is yours to edit; the tray menu and favorites use it.",
-      "officialDeleteDisabled": "The official channel cannot be deleted"
+      "officialDeleteDisabled": "The official channel cannot be deleted",
+      "officialAccountHint": "Applying switches Claude Desktop back to its official sign-in mode (1P) and removes the 3P profile this app wrote. The signed-in account is managed by Claude Desktop itself.",
+      "officialLoginLabel": "Official sign-in",
+      "officialLoginManaged": "Managed by Claude Desktop"
     }
   },
   "kimi": {

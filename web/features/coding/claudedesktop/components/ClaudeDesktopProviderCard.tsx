@@ -34,7 +34,10 @@ import {
   InlineConnectivityButton,
 } from '@/features/coding/shared/providerCardVariants/CodexStyleCard';
 import ClaudeStyleCard from '@/features/coding/shared/providerCardVariants/ClaudeStyleCard';
-import { OfficialAccountHeadingIcon } from '@/features/coding/shared/officialAccounts';
+import {
+  OfficialAccountHeadingIcon,
+  OfficialAccountHint,
+} from '@/features/coding/shared/officialAccounts';
 import {
   renderProviderPrimaryAction,
 } from '@/features/coding/shared/providerCardVariants/providerCardActions';
@@ -202,6 +205,15 @@ const ClaudeDesktopProviderCard: React.FC<ClaudeDesktopProviderCardProps> = ({
     '';
   const configuredBaseUrl = settingsConfig.env?.ANTHROPIC_BASE_URL?.trim() || '';
   const isOfficialProvider = provider.category === 'official';
+  /**
+   * A channel that applies as "restore the 1P login": the form's official mode
+   * writes `{"env":{}}`. Mirrors the backend's `official_restore_settings` — an
+   * imported row that merely carries the category but still has its own base
+   * URL / token goes through the direct apply path, so it must keep stating
+   * its connection facts instead of the official explanation.
+   */
+  const isOfficialRestoreChannel =
+    isOfficialProvider && !configuredBaseUrl && !configuredApiKey;
   /** The fixed official channel; every other official-category row is ordinary. */
   const isOfficialChannel = isOfficialChannelProp ?? isOfficialProvider;
   const showRuntimeApplied = isApplied;
@@ -458,6 +470,24 @@ const ClaudeDesktopProviderCard: React.FC<ClaudeDesktopProviderCardProps> = ({
    */
   const metaEntries = React.useMemo<ProviderCardMetaEntry[]>(() => {
     const entries: ProviderCardMetaEntry[] = [];
+    // An official-restore channel has no endpoint/key/bindings to state: its
+    // line is the explanation of what applying it does (the same substitution
+    // Codex, Kimi, Gemini and Grok make). Claude Desktop has no account list of
+    // its own — the 1P login belongs to the app — so the sentence names that
+    // explicitly instead of implying a list this module cannot fill.
+    if (isOfficialRestoreChannel) {
+      entries.push({
+        kind: 'text',
+        value: <OfficialAccountHint>{t('claudedesktop.provider.officialAccountHint')}</OfficialAccountHint>,
+        // A node value cannot double as its own hover text; the row never
+        // wraps, so the sentence stays readable through this.
+        title: t('claudedesktop.provider.officialAccountHint'),
+      });
+      if (provider.notes) {
+        entries.push({ kind: 'text', value: provider.notes });
+      }
+      return entries;
+    }
     if (configuredBaseUrl) {
       entries.push({ kind: 'code', value: configuredBaseUrl });
     }
@@ -478,7 +508,7 @@ const ClaudeDesktopProviderCard: React.FC<ClaudeDesktopProviderCardProps> = ({
       entries.push({ kind: 'text', value: provider.notes });
     }
     return entries;
-  }, [configuredBaseUrl, hasConfiguredModels, provider.notes, roleBindings, t]);
+  }, [configuredBaseUrl, hasConfiguredModels, isOfficialRestoreChannel, provider.notes, roleBindings, t]);
 
   const gatewayActions = (
     <>
@@ -621,19 +651,17 @@ const ClaudeDesktopProviderCard: React.FC<ClaudeDesktopProviderCardProps> = ({
     namePrefix: isOfficialProvider ? <OfficialAccountHeadingIcon /> : undefined,
     nameTags: stateTags,
     metaEntries,
-    inlineActions: (
+    // No connectivity action on an official-restore card: the 1P login is not
+    // a static endpoint this app can probe, so the button could only ever be
+    // disabled. Codex and Kimi omit it there for the same reason — a greyed
+    // 「模型测试」 with a reason on hover still reads as a broken feature, and
+    // on an otherwise empty line it was the only thing left (2026-10-21).
+    inlineActions: isOfficialRestoreChannel ? undefined : (
       <>
         <Text type="secondary" style={{ fontSize: 12 }}>|</Text>
         <InlineConnectivityButton
           onClick={() => onTest(provider)}
           disabled={!canRunConnectivityTest}
-          // The bespoke card only explained the official case; a custom card
-          // with a missing endpoint/key keeps no tooltip, as before.
-          tooltip={
-            isOfficialProvider
-              ? t('claudecode.provider.officialConnectivityHint')
-              : undefined
-          }
         />
       </>
     ),
@@ -650,41 +678,53 @@ const ClaudeDesktopProviderCard: React.FC<ClaudeDesktopProviderCardProps> = ({
     return <ClaudeStyleCard {...props} />;
   }
 
-  const detailSections: ProviderDetailSection[] = [
-    {
-      key: 'connection',
+  // An official-restore channel has no endpoint, key or bindings: the sidebar
+  // states the one fact it does have instead of three 「未配置」 rows.
+  const detailSections: ProviderDetailSection[] = isOfficialRestoreChannel
+    ? [{
+      key: 'officialLogin',
       title: t('common.provider.connectionTitle'),
-      fields: [
-        {
-          key: 'baseUrl',
-          label: t('claudecode.provider.baseUrl'),
-          value: configuredBaseUrl,
+      fields: [{
+        key: 'officialLogin',
+        label: t('claudedesktop.provider.officialLoginLabel'),
+        value: t('claudedesktop.provider.officialLoginManaged'),
+      }],
+    }]
+    : [
+      {
+        key: 'connection',
+        title: t('common.provider.connectionTitle'),
+        fields: [
+          {
+            key: 'baseUrl',
+            label: t('claudecode.provider.baseUrl'),
+            value: configuredBaseUrl,
+            emptyText: t('common.provider.notConfigured'),
+            copyable: true,
+          },
+          {
+            key: 'apiKey',
+            label: t('claudecode.provider.apiKey'),
+            value: configuredApiKey,
+            emptyText: t('common.provider.notConfigured'),
+            copyable: true,
+            elideMiddle: true,
+          },
+        ],
+      },
+      {
+        key: 'roles',
+        title: t('claudecode.model.mappingTitle'),
+        fields: roleBindings.map((binding) => ({
+          key: binding.role,
+          label: binding.label,
+          value: binding.tierAlias
+            ? `${binding.model} · ${t('claudecode.model.tierAliasLabel')}: ${binding.tierAlias}`
+            : binding.model,
           emptyText: t('common.provider.notConfigured'),
-          copyable: true,
-        },
-        {
-          key: 'apiKey',
-          label: t('claudecode.provider.apiKey'),
-          value: configuredApiKey,
-          emptyText: t('common.provider.notConfigured'),
-          copyable: true,
-          elideMiddle: true,
-        },
-      ],
-    },
-    {
-      key: 'roles',
-      title: t('claudecode.model.mappingTitle'),
-      fields: roleBindings.map((binding) => ({
-        key: binding.role,
-        label: binding.label,
-        value: binding.tierAlias
-          ? `${binding.model} · ${t('claudecode.model.tierAliasLabel')}: ${binding.tierAlias}`
-          : binding.model,
-        emptyText: t('common.provider.notConfigured'),
-      })),
-    },
-  ];
+        })),
+      },
+    ];
 
   if (provider.notes) {
     detailSections.push({
@@ -697,18 +737,27 @@ const ClaudeDesktopProviderCard: React.FC<ClaudeDesktopProviderCardProps> = ({
   return (
     <ProviderCompactCard
       provider={props.provider}
-      // The grid cell states the role bindings, truncated to one line. A cell
-      // that owns no binding says so through the empty second line being
-      // reserved — the same shape Claude Code's cell has.
-      subtitle={roleBindings.map((binding) => ({
-        label: binding.label,
-        value: binding.model,
-      }))}
+      // The cell states one thing, always. A custom provider states its role
+      // bindings (one line, truncated); an official-restore channel states
+      // that its sign-in belongs to Claude Desktop — there is no account list
+      // this module could read, and a blank second line reads as a broken cell
+      // (the rule the other official cells follow).
+      subtitle={isOfficialRestoreChannel
+        ? [{
+          label: t('claudedesktop.provider.officialLoginLabel'),
+          value: t('claudedesktop.provider.officialLoginManaged'),
+        }]
+        : roleBindings.map((binding) => ({
+          label: binding.label,
+          value: binding.model,
+        }))}
       providerState={props.providerState}
       actions={props.actions}
       namePrefix={props.namePrefix}
       nameTags={stateTags}
-      extraMenuItems={[{
+      // Same rule as `inlineActions`: an official-restore card has no
+      // probeable endpoint, so its menu does not offer the action at all.
+      extraMenuItems={isOfficialRestoreChannel ? undefined : [{
         key: 'connectivity',
         label: t('opencode.connectivity.button'),
         icon: <ApiOutlined />,
@@ -727,16 +776,17 @@ const ClaudeDesktopProviderCard: React.FC<ClaudeDesktopProviderCardProps> = ({
         ),
         secondaryActions: (
           <Space size={4} wrap>
-            <Button
-              size="small"
-              type="text"
-              icon={<ApiOutlined />}
-              onClick={() => onTest(provider)}
-              disabled={!canRunConnectivityTest}
-              title={isOfficialProvider ? t('claudecode.provider.officialConnectivityHint') : undefined}
-            >
-              {t('opencode.connectivity.button')}
-            </Button>
+            {!isOfficialRestoreChannel && (
+              <Button
+                size="small"
+                type="text"
+                icon={<ApiOutlined />}
+                onClick={() => onTest(provider)}
+                disabled={!canRunConnectivityTest}
+              >
+                {t('opencode.connectivity.button')}
+              </Button>
+            )}
             <Button size="small" type="text" onClick={() => onEdit(provider)}>
               {t('common.edit')}
             </Button>

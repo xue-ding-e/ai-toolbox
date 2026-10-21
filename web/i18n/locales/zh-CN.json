@@ -5027,7 +5027,8 @@
       "officialAccountRefreshToken": "刷新 Token",
       "officialAccountRefreshTokenSuccess": "OAuth Token 已刷新",
       "officialAccountRefreshTokenFailedReLogin": "Refresh Token 已失效，请重新 OAuth 登录",
-      "officialAccountHint": "切换会把该账号的登录凭据写入 Grok CLI 的 auth.json，替换当前登录；网关接管或代理模式下无法切换。"
+      "officialAccountHint": "切换会把该账号的登录凭据写入 Grok CLI 的 auth.json，替换当前登录；网关接管或代理模式下无法切换。",
+      "officialApplyNoAccount": "官方渠道还没有登录账号，请先在账号列表登录后再应用"
     },
     "providerDisabled": "供应商已禁用",
     "providerEnabled": "供应商已启用",
@@ -5661,7 +5662,10 @@
       "apiKeyRequired": "请输入 API Key",
       "officialModeTitle": "使用 Claude Desktop 官方账号（1P）",
       "officialModeDescription": "此渠道不写入任何 Base URL 或 API Key。应用后会把 Claude Desktop 切回官方登录模式（deploymentMode=1p），并移除本工具写入的 3P profile。名称可自行修改，用于托盘菜单与收藏记录。",
-      "officialDeleteDisabled": "官方渠道不能删除"
+      "officialDeleteDisabled": "官方渠道不能删除",
+      "officialAccountHint": "应用会把 Claude Desktop 切回官方登录模式（1P），并移除本工具写入的 3P profile；登录账号由 Claude Desktop 本体管理。",
+      "officialLoginLabel": "官方登录",
+      "officialLoginManaged": "由 Claude Desktop 管理"
     }
   },
   "kimi": {

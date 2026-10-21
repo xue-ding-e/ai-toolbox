@@ -107,6 +107,35 @@ const claudeDesktopOfficialProvider = {
 };
 
 /**
+ * The shape that made the meta line wrap (user-reported 2026-10-21): a long
+ * endpoint plus all four role bindings. The facts must compress; 「模型测试」
+ * stays on the same row.
+ */
+const claudeDesktopLongProvider = {
+  id: 'desktop-long',
+  name: 'Desktop Long',
+  category: 'custom',
+  settingsConfig: JSON.stringify({
+    env: {
+      ANTHROPIC_BASE_URL: 'https://a-very-long-endpoint-name.cn-shanghai.fcapp.run/anthropic/v1/messages',
+      ANTHROPIC_AUTH_TOKEN: 'sk-ant-long-fixture-key',
+    },
+  }),
+  meta: {
+    claudeDesktopModelRoutes: {
+      'claude-sonnet-5': { model: 'claude-sonnet-4-5' },
+      'claude-opus-5': { model: 'claude-opus-4-8' },
+      'claude-fable-5': { model: 'claude-fable-5' },
+      'claude-haiku-4-5': { model: 'claude-haiku-4-5-20251001' },
+    },
+  },
+  isApplied: false,
+  isDisabled: false,
+  createdAt: '2026-01-01T00:00:00Z',
+  updatedAt: '2026-01-01T00:00:00Z',
+};
+
+/**
  * A claude-safe provider whose role routes *map* claude ids onto each other
  * (`claude-sonnet-5` → `claude-opus-5`, the AnyRouter shape). Direct 3P mode
  * forbids model mapping, so this provider must read as "needs the gateway":
@@ -431,6 +460,14 @@ createRoot(document.getElementById('root')).render(
             viewMode="list"
           />
         </div>
+        <div data-fixture="claude-desktop-long-list">
+          <ClaudeDesktopProviderCard
+            {...claudeDesktopProps}
+            provider={claudeDesktopLongProvider}
+            isApplied={false}
+            viewMode="list"
+          />
+        </div>
         <div data-fixture="claude-desktop-mapped-list">
           <ClaudeDesktopProviderCard
             {...claudeDesktopProps}
@@ -441,6 +478,15 @@ createRoot(document.getElementById('root')).render(
         </div>
         <div data-fixture="claude-desktop-card">
           <ClaudeDesktopProviderCard {...claudeDesktopProps} viewMode="card" />
+        </div>
+        <div data-fixture="claude-desktop-official-card">
+          <ClaudeDesktopProviderCard
+            {...claudeDesktopProps}
+            provider={claudeDesktopOfficialProvider}
+            isOfficialChannel
+            isApplied={false}
+            viewMode="card"
+          />
         </div>
 
         <div data-fixture="gemini-list">
@@ -464,6 +510,17 @@ createRoot(document.getElementById('root')).render(
             {...grokCommonProps}
             provider={grokCustomProvider}
             isApplied={false}
+            viewMode="list"
+          />
+        </div>
+        {/* The one official channel that never signed in: its apply action
+            must stay visible but locked, and explain itself on hover. */}
+        <div data-fixture="grok-official-empty-list">
+          <GrokProviderCard
+            {...grokCommonProps}
+            provider={grokOfficialProvider}
+            isApplied={false}
+            officialAccounts={[]}
             viewMode="list"
           />
         </div>

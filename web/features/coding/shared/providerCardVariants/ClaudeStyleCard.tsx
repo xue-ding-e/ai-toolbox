@@ -100,33 +100,55 @@ const ClaudeStyleCard: React.FC<ProviderCardVariantProps> = ({
             // one value shared by both variants — the migration flattened the
             // two and Claude Code silently lost half its title-to-subtitle
             // gap (2026-10-08 report).
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px 16px', flexWrap: 'wrap', marginTop: 8 }}>
+            //
+            // One line, never two. The entries shrink (each value ellipsises)
+            // and the trailing `inlineActions` keeps its size, so a long
+            // endpoint or a fifth role compresses the facts *before* the
+            // action instead of pushing 模型测试 onto a second row
+            // (user-reported 2026-10-21). Same rule as the compact cell's
+            // subtitle: the action is what the user came for.
+            <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'nowrap', marginTop: 8 }}>
               {metaEntries?.map((entry, index) => (
                 // One entry renders as one flex item, so the gap separates
                 // bindings but never splits a label from its value, and
                 // `alignItems: center` lines the label up with the code box.
-                <span key={index} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                //
+                // `title` carries the untruncated value: the row is one line by
+                // design, and a compressed endpoint must still be readable
+                // somewhere. It is a native tooltip (not antd's ellipsis
+                // tooltip) so the flex row keeps its own measurement.
+                <span
+                  key={index}
+                  title={entry.title ?? (typeof entry.value === 'string' ? entry.value : undefined)}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 4, minWidth: 0 }}
+                >
                   {entry.label && (
-                    <Text type="secondary" style={{ fontSize: 12 }}>
+                    <Text type="secondary" style={{ fontSize: 12, flexShrink: 0 }}>
                       {entry.label}
                     </Text>
                   )}
                   {entry.kind === 'tag' ? (
-                    <Tag color={entry.color ?? 'blue'} style={{ fontSize: 11, margin: 0 }}>
+                    <Tag color={entry.color ?? 'blue'} style={{ fontSize: 11, margin: 0, flexShrink: 0 }}>
                       {entry.value}
                     </Tag>
                   ) : entry.kind === 'code' ? (
-                    <Text code style={{ fontSize: 12 }}>
+                    <Text code ellipsis style={{ fontSize: 12, minWidth: 0 }}>
                       {entry.value}
                     </Text>
                   ) : (
-                    <Text type="secondary" style={{ fontSize: 12 }}>
+                    <Text type="secondary" ellipsis style={{ fontSize: 12, minWidth: 0 }}>
                       {entry.value}
                     </Text>
                   )}
                 </span>
               ))}
-              {inlineActions}
+              {inlineActions && (
+                // Only rendered when there is an action: an empty flex item
+                // would still cost the row one 16px gap at its end.
+                <span style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center' }}>
+                  {inlineActions}
+                </span>
+              )}
             </div>
           )}
         </div>

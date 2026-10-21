@@ -133,6 +133,55 @@ export async function verifyMigratedProviderCards({ send, evaluate, baseUrl, art
   `);
   check('the official channel has no delete entry in its menu', officialMenuHasDelete, false);
 
+  // The meta line never wraps: the facts compress and the trailing
+  // 「模型测试」 keeps its place on the same line (user-reported 2026-10-21 —
+  // a long endpoint plus all four role bindings pushed the action onto a
+  // second row). The fixture reproduces exactly that shape, so a passing
+  // check means compression actually happened, not that the row was short.
+  const metaLineGeometry = await evaluate(`
+    (() => {
+      const root = document.querySelector('[data-fixture="claude-desktop-long-list"]');
+      const code = [...root.querySelectorAll('code')]
+        .find(node => node.textContent.includes('a-very-long-endpoint-name'));
+      const test = [...root.querySelectorAll('button')]
+        .find(node => node.textContent.replace(/\\s+/g, ' ').trim() === '模型测试');
+      if (!code || !test) return null;
+      // antd renders \`<span class="ant-typography">…<code/></span>\`; the
+      // ellipsis class and the title live on the spans around it.
+      const typography = code.closest('.ant-typography');
+      const entry = typography?.parentElement;
+      const row = entry?.parentElement;
+      const codeRect = code.getBoundingClientRect();
+      const testRect = test.getBoundingClientRect();
+      const rowRect = row?.getBoundingClientRect();
+      const cardRect = root.querySelector('.ant-card').getBoundingClientRect();
+      return {
+        rowHeight: rowRect ? Math.round(rowRect.height) : -1,
+        centerDelta: Math.abs(
+          (codeRect.top + codeRect.bottom) / 2 - (testRect.top + testRect.bottom) / 2,
+        ),
+        insideCard: testRect.right <= cardRect.right + 1,
+        entryTitle: entry?.getAttribute('title') ?? '',
+      };
+    })()
+  `);
+  // A single line is ~20px; a wrap would roughly double the row height. The
+  // fixture reproduces the reported shape (a long endpoint plus all four role
+  // bindings), so this only passes when the facts actually compressed.
+  check(
+    'the meta line keeps 模型测试 on the same row as the facts',
+    Boolean(metaLineGeometry)
+      && metaLineGeometry.rowHeight > 0
+      && metaLineGeometry.rowHeight <= 26
+      && metaLineGeometry.centerDelta <= 6
+      && metaLineGeometry.insideCard,
+  );
+  check(
+    'a compressed entry still carries its full value on hover',
+    Boolean(metaLineGeometry)
+      && metaLineGeometry.entryTitle.includes('a-very-long-endpoint-name'),
+  );
+
   // A claude-safe provider that maps routes onto other claude ids needs the
   // gateway (Direct 3P mode forbids model mapping). It must offer
   // 「应用并代理」 and no bare 应用 — the AnyRouter case, 2026-10-21.
@@ -154,6 +203,21 @@ export async function verifyMigratedProviderCards({ send, evaluate, baseUrl, art
   check(
     'the Claude Desktop cell states its role bindings',
     Boolean(desktopSubtitle && /Sonnet:\s*claude-sonnet-4-5/.test(desktopSubtitle)),
+  );
+
+  // The official channel has no endpoint/key/binding to state, and no account
+  // list of its own: its cell states the sign-in owner instead of leaving the
+  // reserved line blank, and offers no connectivity probe it cannot run.
+  const desktopOfficialSubtitle = await fixture('subtitle("claude-desktop-official-card")');
+  check(
+    'the official Claude Desktop cell states who owns the sign-in',
+    Boolean(desktopOfficialSubtitle
+      && desktopOfficialSubtitle.includes('官方登录')
+      && desktopOfficialSubtitle.includes('由 Claude Desktop 管理')),
+  );
+  check(
+    'the official Claude Desktop card offers no connectivity probe',
+    !(await fixture('text("claude-desktop-official-list")')).includes('模型测试'),
   );
 
   /* ---------------------------------------------------------------- Gemini CLI */
@@ -191,6 +255,15 @@ export async function verifyMigratedProviderCards({ send, evaluate, baseUrl, art
   check(
     'the account rows span the card content width',
     Boolean(rowEdges) && Math.abs(rowEdges.right - cardContentEdges.right) <= 2,
+  );
+
+  // The official channel's second line is the explanation of what applying it
+  // does, with the user's notes after it (the official branch used to replace
+  // the whole line, and Claude Desktop's line was empty).
+  check(
+    'the official Claude Desktop card explains what applying it does',
+    desktopOfficialText.includes('官方登录模式')
+      && desktopOfficialText.includes('官方渠道备注'),
   );
 
   // A virtual (disk-only) login can only be saved.
@@ -300,6 +373,23 @@ export async function verifyMigratedProviderCards({ send, evaluate, baseUrl, art
     grokCustomText.includes('https://grok.example.test/v1')
       && grokCustomText.includes('grok-4 (high)')
       && grokCustomText.includes('API Key:'),
+  );
+
+  // An official channel with no saved login cannot be applied: the action stays
+  // visible (a missing button reads as a missing feature) but locked, and it
+  // explains itself on hover — the shared `primaryAction.disabledReason`.
+  const grokEmptyApply = await evaluate(`
+    (() => {
+      const root = document.querySelector('[data-fixture="grok-official-empty-list"]');
+      const button = [...root.querySelectorAll('button')]
+        .find(node => node.textContent.replace(/\\s+/g, ' ').trim() === '应用');
+      if (!button) return 'no-apply-button';
+      return { disabled: button.disabled === true };
+    })()
+  `);
+  check(
+    'the unsigned-in Grok official card keeps a locked 应用 button',
+    Boolean(grokEmptyApply && grokEmptyApply.disabled === true),
   );
 
   /* ---------------------------------------------------------------- OmO Native */

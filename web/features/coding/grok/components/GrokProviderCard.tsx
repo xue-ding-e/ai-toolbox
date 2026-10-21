@@ -352,6 +352,13 @@ const GrokProviderCard: React.FC<GrokProviderCardProps> = ({
     provider,
     officialAccounts.length,
   );
+  /**
+   * An official channel with no saved login has nothing to apply: applying
+   * it would rewrite `[model.*]` / auth state for an account that does not
+   * exist. The button stays visible (a missing button reads as a missing
+   * feature) and explains itself on hover — the shared `disabledReason`.
+   */
+  const officialApplyBlocked = isOfficialProvider && officialAccounts.length === 0;
 
   const refreshTrayAfterGatewayChange = () => {
     void refreshTrayMenu().catch((error) => {
@@ -674,6 +681,9 @@ const GrokProviderCard: React.FC<GrokProviderCardProps> = ({
       const entries: ProviderCardMetaEntry[] = [{
         kind: 'text',
         value: <OfficialAccountHint>{t('grok.provider.officialAccountHint')}</OfficialAccountHint>,
+        // A node value cannot double as its own hover text; the one-line row
+        // may compress this sentence, so the hover carries the full wording.
+        title: t('grok.provider.officialAccountHint'),
       }];
       // Notes are editable in both modes and the bespoke card always showed
       // them on this line; the switching hint only replaces the connection
@@ -857,7 +867,10 @@ const GrokProviderCard: React.FC<GrokProviderCardProps> = ({
             label: t('grok.provider.apply'),
             icon: <CheckOutlined />,
             onClick: () => onSelect(provider),
-            disabled: provider.isDisabled,
+            disabled: provider.isDisabled || officialApplyBlocked,
+            disabledReason: officialApplyBlocked
+              ? t('grok.provider.officialApplyNoAccount')
+              : undefined,
           }
         : undefined,
     },
