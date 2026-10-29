@@ -1008,7 +1008,7 @@ xAI native Responses passthrough 不是用户开关控制，而是严格自动�
 
 - Claude 4.x Copilot model id 归一化，覆盖 date/dash/dot 和 `[1M]` 形态。
 - Chat target 删除 assistant content 中 `thinking` / `redacted_thinking`。
-- Chat orphan tool message 降级成 user 文本 `[Tool result for ...]`。
+- Chat target 的 orphan tool message 由 §2.2 通用批次清理降级成 user 内容 `[Tool result for ...]`；Copilot 先做模型/思考块兼容，不再提前独立扫描工具结果。这样同一 assistant 的多个有效 tool reply 保持相邻，夹在其中的孤儿结果延后，`image_url` 图片仍留在 user part。
 - Responses orphan `function_call_output` 降级成 user message。
 - Responses `function_call` item `id=call_id`；缺 name 时 name=`function`。
 
@@ -1030,6 +1030,7 @@ xAI native Responses passthrough 不是用户开关控制，而是严格自动�
 - `copilot_token_exchange_detection_is_explicit_or_github_token_shaped`
 - `copilot_token_exchange_sends_github_token_and_caches_response`
 - `copilot_openai_chat_body_normalizes_model_and_sanitizes_orphan_tool_message`
+- `copilot_chat_keeps_parallel_replies_and_orphan_image`
 - `copilot_responses_body_normalizes_function_item_ids_and_orphan_outputs`
 - `copilot_headers_override_forwarded_fingerprint_and_infer_agent_turn`
 - `copilot_headers_detect_compact_subagent_and_vision`

@@ -7965,7 +7965,6 @@ fn apply_openai_chat_provider_body_compat_before_generic(
         Some(ProviderBodyCompat::Copilot) => {
             apply_copilot_model_normalization(object);
             strip_copilot_openai_chat_thinking_blocks(object);
-            sanitize_copilot_openai_chat_orphan_tool_messages(object);
         }
         Some(
             ProviderBodyCompat::AnthropicBedrock
@@ -8149,58 +8148,6 @@ fn strip_copilot_openai_chat_thinking_blocks(object: &mut serde_json::Map<String
             });
             if parts.is_empty() {
                 message_object.insert("content".to_string(), Value::String(String::new()));
-            }
-        }
-    }
-}
-
-fn sanitize_copilot_openai_chat_orphan_tool_messages(object: &mut serde_json::Map<String, Value>) {
-    let Some(messages) = object.get_mut("messages").and_then(Value::as_array_mut) else {
-        return;
-    };
-
-    let mut previous_assistant_tool_call_ids: HashSet<String> = HashSet::new();
-    for message in messages {
-        let Some(message_object) = message.as_object_mut() else {
-            previous_assistant_tool_call_ids.clear();
-            continue;
-        };
-        match message_object.get("role").and_then(Value::as_str) {
-            Some("assistant") => {
-                previous_assistant_tool_call_ids = message_object
-                    .get("tool_calls")
-                    .and_then(Value::as_array)
-                    .map(|tool_calls| {
-                        tool_calls
-                            .iter()
-                            .filter_map(|tool_call| tool_call.get("id").and_then(Value::as_str))
-                            .filter(|id| !id.trim().is_empty())
-                            .map(ToString::to_string)
-                            .collect()
-                    })
-                    .unwrap_or_default();
-            }
-            Some("tool") => {
-                let tool_call_id = message_object
-                    .get("tool_call_id")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string();
-                if tool_call_id.is_empty()
-                    || !previous_assistant_tool_call_ids.contains(&tool_call_id)
-                {
-                    let content = chat_message_content_to_text(message_object.get("content"));
-                    message_object.insert("role".to_string(), Value::String("user".to_string()));
-                    message_object.remove("tool_call_id");
-                    message_object.insert(
-                        "content".to_string(),
-                        Value::String(format!("[Tool result for {tool_call_id}]: {content}")),
-                    );
-                }
-                previous_assistant_tool_call_ids.clear();
-            }
-            _ => {
-                previous_assistant_tool_call_ids.clear();
             }
         }
     }
@@ -17214,6 +17161,49 @@ data: {data}\r\n\r\n"
         let assistant_parts = value["messages"][2]["content"].as_array().unwrap();
         assert_eq!(assistant_parts.len(), 1);
         assert_eq!(assistant_parts[0]["text"], "visible");
+    }
+
+    #[test]
+    fn copilot_chat_keeps_parallel_replies_and_orphan_image() {
+        let body = apply_outbound_adapter_compat_for_provider_type(
+            br#"{
+                "model":"gpt-4.1",
+                "messages":[
+                    {"role":"assistant","tool_calls":[
+                        {"id":"call_a","type":"function","function":{"name":"a","arguments":"{}"}},
+                        {"id":"call_b","type":"function","function":{"name":"b","arguments":"{}"}}
+                    ]},
+                    {"role":"tool","tool_call_id":"call_a","content":"answer a"},
+                    {"role":"tool","tool_call_id":"missing","content":[
+                        {"type":"text","text":"orphan text"},
+                        {"type":"image_url","image_url":{"url":"https://example.invalid/image.png"}}
+                    ]},
+                    {"role":"tool","tool_call_id":"call_b","content":"answer b"},
+                    {"role":"user","content":"continue"}
+                ]
+            }"#
+            .to_vec(),
+            None,
+            AiProtocol::OpenAiChat,
+            "github_copilot",
+        )
+        .unwrap();
+        let value = serde_json::from_slice::<Value>(&body).unwrap();
+        let messages = value["messages"].as_array().unwrap();
+        assert_eq!(messages[0]["tool_calls"].as_array().unwrap().len(), 2);
+        assert_eq!(messages[1]["tool_call_id"], "call_a");
+        assert_eq!(messages[2]["tool_call_id"], "call_b");
+        assert_eq!(messages[3]["role"], "user");
+        assert_eq!(
+            messages[3]["content"][0]["text"],
+            "[Tool result for missing]:"
+        );
+        assert_eq!(messages[3]["content"][1]["text"], "orphan text");
+        assert_eq!(
+            messages[3]["content"][2]["image_url"]["url"],
+            "https://example.invalid/image.png"
+        );
+        assert_eq!(messages[4]["content"], "continue");
     }
 
     /// Codex history can carry `function_call_output` items without a

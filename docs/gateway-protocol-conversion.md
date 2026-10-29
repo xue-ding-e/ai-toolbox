@@ -348,6 +348,7 @@ Responses 的每个 `function_call` / `custom_tool_call` 是独立 input item，
 - reasoning 和 assistant commentary 不切断工具批次；前置、调用间和尾部 reasoning 按既有归属规则合并一次，保留 signature/context。tool output、非 assistant 消息、独立输入、raw-only item 和 compaction 结束当前 turn，不能跨这些边界把不同轮次拼在一起。raw input 的恢复位置见 §8.1。
 - 工具结果保留正文，带 ID 的结果逆序仍按 ID 配对，不合成缺失结果。Gemini 出站需要移除 ID 时先恢复调用顺序，见 §8.5。关闭 `parallel_tool_calls` 只影响后续生成，不能据此破坏历史批次。图片继续在整批 tool results 之后由 Chat writer 输出 synthetic user 媒体消息。
 - 上述 transformer 保真规则处理正常批次。最终发给第三方 OpenAI Chat-compatible provider 的 runtime 通用清理另处理畸形历史：仅在同批出现孤儿 tool result 时，才把未获结果的 assistant call 移出 `tool_calls` 并把原始 call JSON 留在 assistant 文本；有效结果保持连续，孤儿结果延后为 user 内容，其中只验证 `image_url` 图片保真。没有孤儿时，尚待执行的 call 原样保留。详见 provider 兼容文档 §2.2；该清理不反向修改 transformer IR 或同协议客户端历史。
+- Copilot 的 Chat target 也走这条通用清理链。它原先的 provider-local 孤儿扫描会在第一个有效 tool reply 后清空待答 ID，使同批第二个有效结果误判为孤儿，还会把孤儿 `image_url` 当纯文本丢掉；现只保留 Copilot 模型名与 thinking block 的前置兼容，工具批次由通用清理统一处理。
 - 归并属于纯 transformer 的 Responses 入站语义，供 Chat/Anthropic/Gemini 出站复用；不增加 provider 开关、数据库状态或 runtime 全局消息重排。同协议 Responses 继续原始 body 直通。
 - `CodexHistoryStore` 负责找回缺失 call item，不能替代 IR 的批次归并。JSON/SSE 已记录完整调用、或 `previous_response_id` 成功补回整批后，下一轮仍必须通过相同转换入口。
 
