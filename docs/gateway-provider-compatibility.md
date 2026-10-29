@@ -175,6 +175,7 @@ Codex 侧门控：只有 `name == "OpenAI"`（或 Azure）的 provider 默认启
 - tool call arguments 空值补 `"{}"`。
 - 删除 Google 私有 `thought_signature/thoughtSignature`，以及 `google`、`extra_content/extra_fields` 中包含 signature 的容器。
 - 删除不支持 tool call 及对应 tool result。
+- Chat 工具历史在通用清理阶段保留已配对的 assistant `tool_calls` 与后续 `role:tool` 批次；空/未知/重复 `tool_call_id` 的结果排到该批有效结果之后，降级成带来源说明的 `role:user` 内容。只验证并保留 Chat user part 的 `image_url` 图片；其它无法识别的 part 转成 JSON 文本，不宣称支持音频/文件媒体。**仅当同批实际出现孤儿结果**时，才从 assistant `tool_calls` 移除仍未收到结果的 call，并将其完整原始 JSON 追加到 assistant 文本，保留函数名、参数和 ID；没有孤儿的待执行 call 原样保留，不能仅因结果尚未出现而改写。无法证明身份的结果不编造 call ID。此修复只覆盖发送到 Chat-compatible provider 前的畸形工具历史，不改变 transformer 对正常并行工具批次的保真规则；回归为 `generic_chat_body_demotes_tool_results_without_a_matching_call`、`generic_chat_keeps_valid_tool_batch_and_orphan_media`、`generic_chat_demotes_unanswered_assistant_call_without_inventing_result`、`generic_chat_keeps_pending_call_when_no_orphan_result_exists`。
 - 删除空 assistant message。
 
 这些是 runtime provider compat，不属于 transformer roundtrip 语义。

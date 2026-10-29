@@ -7,7 +7,12 @@
 
 use std::io::Read;
 
-pub(super) const MAX_DECOMPRESSED_BODY_BYTES: usize = 16 * 1024 * 1024;
+/// Upper bound for a decompressed body (inbound request or upstream response).
+///
+/// Codex Desktop can send `Content-Encoding: zstd` on long threads. Keep this
+/// in step with `MAX_REQUEST_BODY_BYTES` so a compressed request is not rejected
+/// solely because the decoded body exceeds the previous 16 MiB ceiling.
+pub(super) const MAX_DECOMPRESSED_BODY_BYTES: usize = 64 * 1024 * 1024;
 const DECOMPRESSED_BODY_TOO_LARGE_ERROR: &str =
     "Decompressed body exceeds the maximum allowed size";
 

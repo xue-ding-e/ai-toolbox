@@ -14,7 +14,11 @@ pub(super) struct PreservedHeader {
     pub(super) value: HeaderValue,
 }
 
-pub(super) const MAX_HEADER_PRESERVING_BODY_BYTES: usize = 16 * 1024 * 1024;
+/// Upper bound for a fully buffered upstream response body.
+///
+/// Some non-streaming replies exceed the previous 16 MiB ceiling. Keep a
+/// finite bound while allowing bodies up to the request-body limit.
+pub(super) const MAX_HEADER_PRESERVING_BODY_BYTES: usize = 64 * 1024 * 1024;
 const DEFAULT_BODY_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
 type HyperClient = Client<

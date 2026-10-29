@@ -9256,11 +9256,23 @@ fn is_supported_openai_chat_tool(tool: &Value) -> bool {
 
 fn sanitize_openai_chat_messages(messages: &mut Vec<Value>, placement: InstructionPlacement) {
     let mut removed_tool_call_ids = Vec::new();
+    let mut open_tool_call_ids: HashSet<String> = HashSet::new();
     let mut filtered_messages = Vec::with_capacity(messages.len());
+    let mut pending_assistant_index = None;
+    let mut deferred_orphans = Vec::new();
 
     for mut message in std::mem::take(messages) {
         if is_removed_tool_result_message(&message, &removed_tool_call_ids) {
             continue;
+        }
+
+        if message.get("role").and_then(Value::as_str) != Some("tool") {
+            finish_chat_tool_batch(
+                &mut filtered_messages,
+                &mut open_tool_call_ids,
+                &mut pending_assistant_index,
+                &mut deferred_orphans,
+            );
         }
 
         if let Value::Object(object) = &mut message {
@@ -9276,10 +9288,169 @@ fn sanitize_openai_chat_messages(messages: &mut Vec<Value>, placement: Instructi
             }
         }
 
+        // Codex history can contain `function_call_output` items whose
+        // `call_id` was lost (delegation/sub-agent results in particular).
+        // After conversion those become `role: tool` with an empty
+        // `tool_call_id`. A strict Chat upstream rejects them. Keep all valid
+        // tool replies adjacent to their assistant call, then move orphan
+        // results to user content without inventing an identity for them.
+        match message.get("role").and_then(Value::as_str) {
+            Some("assistant") => {
+                open_tool_call_ids = assistant_tool_call_ids(&message);
+                if !open_tool_call_ids.is_empty() {
+                    pending_assistant_index = Some(filtered_messages.len());
+                }
+            }
+            Some("tool") => {
+                if let Some(tool_call_id) =
+                    matching_open_tool_call_id(&message, &open_tool_call_ids)
+                {
+                    // Each call may be answered only once; a duplicated result
+                    // would otherwise look "matched" a second time.
+                    open_tool_call_ids.remove(&tool_call_id);
+                } else {
+                    deferred_orphans.push(orphan_tool_result_to_user_message(message));
+                    continue;
+                }
+            }
+            _ => {}
+        }
+
         filtered_messages.push(message);
     }
 
+    finish_chat_tool_batch(
+        &mut filtered_messages,
+        &mut open_tool_call_ids,
+        &mut pending_assistant_index,
+        &mut deferred_orphans,
+    );
+
     *messages = normalize_chat_system_messages(filtered_messages, placement);
+}
+
+fn finish_chat_tool_batch(
+    messages: &mut Vec<Value>,
+    open_tool_call_ids: &mut HashSet<String>,
+    pending_assistant_index: &mut Option<usize>,
+    deferred_orphans: &mut Vec<Value>,
+) {
+    if let Some(index) = pending_assistant_index.take() {
+        if !open_tool_call_ids.is_empty() && !deferred_orphans.is_empty() {
+            // An unanswered assistant call is invalid in Chat history. Drop
+            // only those calls when this batch actually contains an orphan
+            // result. The orphan may belong to any call, so preserve the
+            // original call JSON as text instead of inventing an identity.
+            if let Some(object) = messages.get_mut(index).and_then(Value::as_object_mut) {
+                let mut removed_calls = Vec::new();
+                if let Some(calls) = object.get_mut("tool_calls").and_then(Value::as_array_mut) {
+                    calls.retain(|call| {
+                        let unanswered = call
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .is_some_and(|id| open_tool_call_ids.contains(id));
+                        if unanswered {
+                            removed_calls.push(call.clone());
+                        }
+                        !unanswered
+                    });
+                    if calls.is_empty() {
+                        object.remove("tool_calls");
+                    }
+                }
+                if !removed_calls.is_empty() {
+                    append_chat_text_content(
+                        object,
+                        &format!(
+                            "[Tool calls without matching results]: {}",
+                            Value::Array(removed_calls)
+                        ),
+                    );
+                }
+            }
+        }
+    }
+    open_tool_call_ids.clear();
+    messages.append(deferred_orphans);
+}
+
+fn append_chat_text_content(object: &mut serde_json::Map<String, Value>, text: &str) {
+    match object.get_mut("content") {
+        Some(Value::String(content)) => {
+            if !content.is_empty() {
+                content.push_str("\n\n");
+            }
+            content.push_str(text);
+        }
+        Some(Value::Array(parts)) => parts.push(serde_json::json!({"type":"text","text":text})),
+        _ => {
+            object.insert("content".to_string(), Value::String(text.to_string()));
+        }
+    }
+}
+
+fn assistant_tool_call_ids(message: &Value) -> HashSet<String> {
+    message
+        .get("tool_calls")
+        .and_then(Value::as_array)
+        .map(|tool_calls| {
+            tool_calls
+                .iter()
+                .filter_map(|tool_call| tool_call.get("id").and_then(Value::as_str))
+                .filter(|id| !id.trim().is_empty())
+                .map(ToString::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn matching_open_tool_call_id(
+    message: &Value,
+    open_tool_call_ids: &HashSet<String>,
+) -> Option<String> {
+    message
+        .get("tool_call_id")
+        .and_then(Value::as_str)
+        .filter(|tool_call_id| open_tool_call_ids.contains(*tool_call_id))
+        .map(ToString::to_string)
+}
+
+fn orphan_tool_result_to_user_message(message: Value) -> Value {
+    let Value::Object(mut object) = message else {
+        return message;
+    };
+    let tool_call_id = object
+        .remove("tool_call_id")
+        .and_then(|value| value.as_str().map(ToString::to_string))
+        .unwrap_or_default();
+    let content = object.remove("content").unwrap_or(Value::Null);
+    let prefix = format!(
+        "[Tool result for {}]: ",
+        if tool_call_id.is_empty() {
+            "unknown call"
+        } else {
+            tool_call_id.as_str()
+        }
+    );
+    let content = match content {
+        Value::String(text) => Value::String(format!("{prefix}{text}")),
+        Value::Array(parts) => {
+            let mut user_parts = vec![serde_json::json!({"type":"text","text":prefix.trim_end()})];
+            for part in parts {
+                if part.get("type").and_then(Value::as_str) == Some("image_url") {
+                    user_parts.push(part);
+                } else if let Some(text) = openai_chat_part_text(&part) {
+                    user_parts.push(serde_json::json!({"type":"text","text":text}));
+                } else {
+                    user_parts.push(serde_json::json!({"type":"text","text":part.to_string()}));
+                }
+            }
+            Value::Array(user_parts)
+        }
+        Value::Null => Value::String(prefix.trim_end().to_string()),
+        other => Value::String(format!("{prefix}{other}")),
+    };
+    serde_json::json!({"role":"user","content":content})
 }
 
 fn is_removed_tool_result_message(message: &Value, removed_tool_call_ids: &[String]) -> bool {
@@ -17043,6 +17214,165 @@ data: {data}\r\n\r\n"
         let assistant_parts = value["messages"][2]["content"].as_array().unwrap();
         assert_eq!(assistant_parts.len(), 1);
         assert_eq!(assistant_parts[0]["text"], "visible");
+    }
+
+    /// Codex history can carry `function_call_output` items without a
+    /// `call_id` (delegation/sub-agent results). Converting them produced
+    /// `role: tool` with an empty `tool_call_id`, and a strict Chat upstream
+    /// rejected the entire request with "Messages with role 'tool' must be a
+    /// response to a preceding message with 'tool_calls'". The generic
+    /// sanitizer must demote such results instead of forwarding them.
+    #[test]
+    fn generic_chat_body_demotes_tool_results_without_a_matching_call() {
+        let body = apply_outbound_adapter_compat_for_provider_type(
+            br#"{
+                "model":"deepseek-v4-pro",
+                "messages":[
+                    {"role":"user","content":"start"},
+                    {"role":"assistant","content":"calling","tool_calls":[
+                        {"id":"call_ok","type":"function","function":{"name":"exec","arguments":"{}"}}
+                    ]},
+                    {"role":"tool","tool_call_id":"call_ok","content":"kept"},
+                    {"role":"tool","tool_call_id":"call_ok","content":"duplicate answer"},
+                    {"role":"tool","tool_call_id":"","content":"lost id result"},
+                    {"role":"tool","tool_call_id":"call_other","content":"no such call"},
+                    {"role":"user","content":"continue"}
+                ]
+            }"#
+            .to_vec(),
+            None,
+            AiProtocol::OpenAiChat,
+            "custom",
+        )
+        .unwrap();
+        let value = serde_json::from_slice::<Value>(&body).unwrap();
+        let messages = value["messages"].as_array().unwrap();
+
+        let kept = messages
+            .iter()
+            .find(|message| message["tool_call_id"] == "call_ok")
+            .expect("a matching tool result must stay a tool message");
+        assert_eq!(kept["role"], "tool");
+        assert!(
+            messages
+                .iter()
+                .all(|message| message["role"] != "tool" || message["tool_call_id"] == "call_ok"),
+            "every surviving tool message must answer the preceding call: {messages:?}"
+        );
+        assert!(
+            messages.iter().any(|message| {
+                message["role"] == "user"
+                    && message["content"] == "[Tool result for unknown call]: lost id result"
+            }),
+            "an empty tool_call_id must be demoted to user text: {messages:?}"
+        );
+        assert!(
+            messages.iter().any(|message| {
+                message["role"] == "user"
+                    && message["content"] == "[Tool result for call_other]: no such call"
+            }),
+            "an unmatched tool_call_id must be demoted to user text: {messages:?}"
+        );
+        assert!(
+            messages.iter().any(|message| {
+                message["role"] == "user"
+                    && message["content"] == "[Tool result for call_ok]: duplicate answer"
+            }),
+            "a second answer to the same call must be demoted: {messages:?}"
+        );
+    }
+
+    #[test]
+    fn generic_chat_keeps_valid_tool_batch_and_orphan_media() {
+        let body = apply_outbound_adapter_compat_for_provider_type(
+            br#"{
+                "model":"deepseek-v4-pro",
+                "messages":[
+                    {"role":"assistant","tool_calls":[
+                        {"id":"call_a","type":"function","function":{"name":"a","arguments":"{}"}},
+                        {"id":"call_b","type":"function","function":{"name":"b","arguments":"{}"}},
+                        {"id":"call_missing","type":"function","function":{"name":"c","arguments":"{\"query\":\"replay\"}"}}
+                    ]},
+                    {"role":"tool","tool_call_id":"","content":[
+                        {"type":"text","text":"orphan text"},
+                        {"type":"image_url","image_url":{"url":"https://example.invalid/image.png"}}
+                    ]},
+                    {"role":"tool","tool_call_id":"call_b","content":"answer b"},
+                    {"role":"tool","tool_call_id":"call_a","content":"answer a"},
+                    {"role":"user","content":"continue"}
+                ]
+            }"#
+            .to_vec(),
+            None,
+            AiProtocol::OpenAiChat,
+            "custom",
+        )
+        .unwrap();
+        let value = serde_json::from_slice::<Value>(&body).unwrap();
+        let messages = value["messages"].as_array().unwrap();
+        assert_eq!(messages[0]["role"], "assistant");
+        assert_eq!(messages[0]["tool_calls"].as_array().unwrap().len(), 2);
+        let assistant_text = messages[0]["content"].as_str().unwrap();
+        assert!(assistant_text.contains("[Tool calls without matching results]"));
+        assert!(assistant_text.contains("call_missing"));
+        assert!(assistant_text.contains("\"name\":\"c\""));
+        assert!(assistant_text.contains("replay"));
+        assert_eq!(messages[1]["tool_call_id"], "call_b");
+        assert_eq!(messages[2]["tool_call_id"], "call_a");
+        assert_eq!(messages[3]["role"], "user");
+        assert_eq!(
+            messages[3]["content"][0]["text"],
+            "[Tool result for unknown call]:"
+        );
+        assert_eq!(messages[3]["content"][1]["text"], "orphan text");
+        assert_eq!(
+            messages[3]["content"][2]["image_url"]["url"],
+            "https://example.invalid/image.png"
+        );
+        assert_eq!(messages[4]["content"], "continue");
+    }
+
+    #[test]
+    fn generic_chat_demotes_unanswered_assistant_call_without_inventing_result() {
+        let mut messages = vec![
+            serde_json::json!({"role":"assistant","tool_calls":[
+                {"id":"missing","type":"function","function":{"name":"exec","arguments":"{\"file\":\"notes\"}"}}
+            ]}),
+            serde_json::json!({"role":"tool","tool_call_id":"","content":"unidentified output"}),
+            serde_json::json!({"role":"user","content":"next turn"}),
+        ];
+        sanitize_openai_chat_messages(&mut messages, InstructionPlacement::PreserveOrder);
+        assert!(messages[0].get("tool_calls").is_none());
+        let assistant_text = messages[0]["content"].as_str().unwrap();
+        assert!(assistant_text.contains("[Tool calls without matching results]"));
+        assert!(assistant_text.contains("missing"));
+        assert!(assistant_text.contains("exec"));
+        assert!(assistant_text.contains("notes"));
+        assert_eq!(messages[1]["role"], "user");
+        assert_eq!(
+            messages[1]["content"],
+            "[Tool result for unknown call]: unidentified output"
+        );
+        assert_eq!(messages[2]["content"], "next turn");
+    }
+
+    #[test]
+    fn generic_chat_keeps_pending_call_when_no_orphan_result_exists() {
+        let original_call = serde_json::json!({
+            "id":"pending",
+            "type":"function",
+            "function":{"name":"exec","arguments":"{\"file\":\"notes\"}"}
+        });
+        let mut messages = vec![serde_json::json!({
+            "role":"assistant",
+            "reasoning_content":"still deciding",
+            "tool_calls":[original_call.clone()]
+        })];
+        sanitize_openai_chat_messages(&mut messages, InstructionPlacement::PreserveOrder);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["tool_calls"][0], original_call);
+        assert_eq!(messages[0]["reasoning_content"], "still deciding");
+        assert!(messages[0].get("content").is_none());
     }
 
     #[test]

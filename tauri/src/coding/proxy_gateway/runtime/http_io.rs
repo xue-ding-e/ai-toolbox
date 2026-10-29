@@ -17,7 +17,13 @@ use tokio::net::TcpStream;
 use tokio::time;
 
 pub(super) const MAX_REQUEST_HEADER_BYTES: usize = 64 * 1024;
-pub(super) const MAX_REQUEST_BODY_BYTES: usize = 16 * 1024 * 1024;
+/// Upper bound for a gateway request body (after reading, and for a
+/// decompressed gzip/br body).
+///
+/// Codex can resend a long conversation on each turn. Raise the previous
+/// 16 MiB ceiling while keeping memory bounded per in-flight request. This
+/// limit does not guarantee that every long-context conversation will fit.
+pub(super) const MAX_REQUEST_BODY_BYTES: usize = 64 * 1024 * 1024;
 
 pub(super) type DebugBodyStream =
     Pin<Box<dyn Stream<Item = Result<Vec<u8>, String>> + Send + 'static>>;
@@ -928,6 +934,29 @@ mod tests {
             header_value(&request.headers, "content-type"),
             Some("application/json")
         );
+    }
+
+    #[test]
+    fn decode_inbound_request_body_accepts_payload_above_previous_limit() {
+        let payload = vec![b'x'; 16 * 1024 * 1024 + 1];
+        let compressed = zstd::stream::encode_all(std::io::Cursor::new(&payload), 0).unwrap();
+        let mut request = DebugHttpRequest {
+            id: 1,
+            method: "POST".to_string(),
+            path: "/openai/v1/responses".to_string(),
+            headers: vec![
+                ("content-encoding".to_string(), "zstd".to_string()),
+                ("content-length".to_string(), compressed.len().to_string()),
+            ],
+            body: compressed,
+        };
+
+        decode_inbound_request_body(&mut request).unwrap();
+        assert_eq!(request.body.len(), payload.len());
+        assert_eq!(request.body[0], b'x');
+        assert_eq!(request.body[payload.len() - 1], b'x');
+        assert!(header_value(&request.headers, "content-encoding").is_none());
+        assert!(header_value(&request.headers, "content-length").is_none());
     }
 
     #[test]
