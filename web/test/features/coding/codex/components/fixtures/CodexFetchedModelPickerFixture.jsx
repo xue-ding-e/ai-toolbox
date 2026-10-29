@@ -50,7 +50,19 @@ const fixture = window.modelPickerFixture = {
   pickerInput: () => document.querySelector('[class*="modelPicker"] input'),
   modelInput: () => document.querySelector('[class*="modelInput"] input'),
   toml: () => document.querySelector('textarea[aria-label="Fixture TOML editor"]').value,
-  options: () => visibleElements('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option').map(element => element.textContent),
+  options: () => {
+    const input = fixture.pickerInput();
+    if (input?.getAttribute('aria-expanded') !== 'true') return [];
+    const listId = input.getAttribute('aria-controls');
+    if (!listId) return [];
+    const list = document.getElementById(listId);
+    const dropdown = list?.closest('.ant-select-dropdown');
+    if (!dropdown || dropdown.classList.contains('ant-select-dropdown-hidden')) return [];
+    // AntD's enter animation can briefly give mounted options a zero rect.
+    // The expanded combobox and its own listbox are the stable open-state source.
+    return [...dropdown.querySelectorAll('.ant-select-item-option')]
+      .map(element => element.textContent);
+  },
   async click(key) {
     const button = visibleElements('button').find(element => element.textContent.replace(/\s/g, '') === String(i18n.t(key)).replace(/\s/g, ''));
     if (!button || button.disabled) throw new Error('Button unavailable: ' + key);

@@ -123,6 +123,7 @@ sequenceDiagram
 
 - 浏览器登录的后台额度请求通过 `codex-official-accounts-changed` 静默重读账号；成功关闭登录弹窗后仍须消费该事件，不能只依赖已结束的 OAuth session 监听器或 `config-changed: window`。
 - 模型选择器的浏览器回归须等待目标候选列表真正渲染完成，不能只等 `options.length > 0`：旧列表或过渡空列表会让 provider 切换、关闭重开、请求失败后的 bundled fallback 断言竞态失败。保留最终完整列表与回退断言，不靠复跑掩盖。
+- 夹具读取 AntD Select 候选时，按当前展开输入框的 `aria-controls` 找所属 listbox/dropdown，再检查 mounted option；不要用逐项矩形高度判断列表是否存在。进场动画会让已挂载候选瞬时高度为 0，导致相邻两次读取从完整列表跳成空数组，误报产品数据丢失。
 
 - 至少验证：修改根目录后页面重新读取到新的路径来源。
 - 至少验证：导入同源 provider 冲突时有明确覆盖/副本分支。
