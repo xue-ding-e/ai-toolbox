@@ -11,6 +11,8 @@
 //! the target WSL distribution for a WSL Direct Pi root.
 
 use std::path::Path;
+#[cfg(any(target_os = "windows", test))]
+use std::path::PathBuf;
 use std::process::{Output, Stdio};
 
 use serde_json::{Map, Value};
@@ -146,12 +148,58 @@ fn missing_env_var_error(label: &str, names: &[String]) -> String {
     }
 }
 
+#[cfg(any(target_os = "windows", test))]
+fn git_bash_candidates(git_exe: &Path) -> Vec<PathBuf> {
+    // Git for Windows can live outside Program Files, and its PATH entry is
+    // commonly cmd/git.exe rather than a directory that also exposes bash.
+    git_exe
+        .parent()
+        .into_iter()
+        .flat_map(|parent| parent.ancestors().take(3))
+        .flat_map(|root| {
+            [
+                root.join("bin").join("bash.exe"),
+                root.join("usr").join("bin").join("bash.exe"),
+            ]
+        })
+        .collect()
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn is_wsl_bash_relay(path: &Path, windows_dir: &Path) -> bool {
+    let normalize = |path: &Path| {
+        path.to_string_lossy()
+            .replace('\\', "/")
+            .trim_start_matches("//?/")
+            .trim_end_matches('/')
+            .to_ascii_lowercase()
+    };
+    let path = normalize(path);
+    let root = normalize(windows_dir);
+    path == format!("{root}/system32/bash.exe") || path == format!("{root}/sysnative/bash.exe")
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn select_native_bash(
+    candidates: impl IntoIterator<Item = PathBuf>,
+    windows_dir: &Path,
+    is_file: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    candidates
+        .into_iter()
+        .find(|path| !is_wsl_bash_relay(path, windows_dir) && is_file(path))
+}
+
 #[cfg(target_os = "windows")]
-fn resolve_local_bash() -> Option<std::path::PathBuf> {
+fn resolve_local_bash() -> Option<PathBuf> {
     // Pi searches Git for Windows in the well-known Program Files locations
     // before falling back to `bash` on PATH. Checking the candidates first also
     // matters because `where bash` often resolves to the System32 WSL relay,
     // which is not the bash Pi would pick.
+    let windows_dir = std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+    let mut candidates = Vec::new();
     for env_key in ["ProgramFiles", "ProgramFiles(x86)"] {
         let Ok(root) = std::env::var(env_key) else {
             continue;
@@ -159,14 +207,22 @@ fn resolve_local_bash() -> Option<std::path::PathBuf> {
         if root.trim().is_empty() {
             continue;
         }
-        let candidate = Path::new(&root).join("Git").join("bin").join("bash.exe");
-        if candidate.exists() {
-            return Some(candidate);
-        }
+        candidates.push(Path::new(&root).join("Git").join("bin").join("bash.exe"));
+    }
+    if let Some(path) = select_native_bash(candidates, &windows_dir, Path::is_file) {
+        return Some(path);
     }
 
+    let git = cli_resolver::resolve_named_cli_program("git", Vec::new());
+    if git.path.is_absolute() {
+        if let Some(path) =
+            select_native_bash(git_bash_candidates(&git.path), &windows_dir, Path::is_file)
+        {
+            return Some(path);
+        }
+    }
     let from_path = cli_resolver::resolve_named_cli_program("bash", Vec::new());
-    from_path.path.exists().then_some(from_path.path)
+    select_native_bash([from_path.path], &windows_dir, Path::is_file)
 }
 
 #[cfg(target_os = "windows")]
@@ -198,11 +254,17 @@ fn local_shell_command(command: &str) -> Command {
 }
 
 async fn run_local_shell_command(command: &str) -> Option<Output> {
-    let mut shell = local_shell_command(command);
+    // PATH discovery may execute `where` and inspect the filesystem. Keep it
+    // off the async executor that also serves interactive account requests.
+    let command = command.to_string();
+    let mut shell = tokio::task::spawn_blocking(move || local_shell_command(&command))
+        .await
+        .ok()?;
     shell
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
     tokio::time::timeout(COMMAND_TIMEOUT, shell.output())
         .await
         .ok()?
@@ -210,21 +272,27 @@ async fn run_local_shell_command(command: &str) -> Option<Output> {
 }
 
 async fn run_wsl_shell_command(distro: &str, command: &str) -> Option<Output> {
-    // Pi uses bash inside the distro; minimal images without bash fall back to sh.
-    for program in ["bash", "sh"] {
-        let mut wsl = wsl_command(distro, program, &["-c", command]);
-        wsl.stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
-        match tokio::time::timeout(COMMAND_TIMEOUT, wsl.output()).await {
-            Ok(Ok(output)) => return Some(output),
-            // The shell itself could not be started; try the next candidate.
-            Ok(Err(_)) => continue,
-            // A timeout must not be retried, or a hanging command doubles the wait.
-            Err(_) => return None,
-        }
-    }
-    None
+    // A missing Linux bash still produces a successfully spawned wsl.exe with
+    // a nonzero exit code. Choose the interpreter inside the distro so we do
+    // not mistake that for the user's command failing or execute it twice.
+    let mut wsl = wsl_shell_command(distro, command);
+    wsl.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    tokio::time::timeout(COMMAND_TIMEOUT, wsl.output())
+        .await
+        .ok()?
+        .ok()
+}
+
+fn wsl_shell_command(distro: &str, command: &str) -> Command {
+    wsl_command(distro, "sh", &[
+        "-c",
+        "if command -v bash >/dev/null 2>&1; then exec bash -c \"$1\"; else exec sh -c \"$1\"; fi",
+        "pi-config-value",
+        command,
+    ])
 }
 
 async fn run_shell_command(command: &str, host: &ConfigValueHost) -> Option<String> {
@@ -406,6 +474,7 @@ mod tests {
 
     #[tokio::test]
     async fn executes_shell_commands_and_trims_output() {
+        let _guard = test_env::lock();
         let value = resolve_local("!echo ai-toolbox-config-value", "test")
             .await
             .unwrap();
@@ -414,8 +483,59 @@ mod tests {
 
     #[tokio::test]
     async fn failed_commands_report_the_command() {
+        let _guard = test_env::lock();
         let error = resolve_local("!exit 1", "test").await.unwrap_err();
         assert_eq!(error, "Failed to resolve test from shell command: exit 1");
+    }
+
+    #[test]
+    fn local_shell_finds_portable_git_bash_before_the_wsl_relay() {
+        let windows = Path::new("C:/Windows");
+        let git = Path::new("D:/Portable/Git/cmd/git.exe");
+        let native = PathBuf::from("D:/Portable/Git/bin/bash.exe");
+        let relay = PathBuf::from("C:/Windows/System32/bash.exe");
+        let mut candidates = git_bash_candidates(git);
+        candidates.push(relay.clone());
+        let selected =
+            select_native_bash(candidates, windows, |path| path == native || path == relay);
+        assert_eq!(selected, Some(native));
+    }
+
+    #[test]
+    fn local_shell_ignores_wsl_even_when_its_launcher_exists() {
+        let windows = Path::new("D:/WinNT");
+        let relays = [
+            PathBuf::from("D:/WinNT/System32/bash.exe"),
+            PathBuf::from(r"d:\winnt\Sysnative\bash.exe"),
+        ];
+        assert!(select_native_bash(relays, windows, |_| true).is_none());
+        assert!(is_wsl_bash_relay(
+            Path::new(r"\\?\C:\WINDOWS\system32\bash.exe"),
+            Path::new("c:/windows")
+        ));
+        assert!(!is_wsl_bash_relay(
+            Path::new("D:/Git/usr/bin/bash.exe"),
+            windows
+        ));
+    }
+
+    #[test]
+    fn wsl_shell_selects_available_interpreter_without_interpolating_command() {
+        let source = "printf '%s' \"$TOKEN\"; printf '%s' '$(literal)'";
+        let command = wsl_shell_command("TestDistro", source);
+        let args = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(args.last().map(String::as_str), Some(source));
+        assert!(args.iter().any(|arg| arg == "sh"));
+        let selector = args
+            .iter()
+            .find(|arg| arg.contains("command -v bash"))
+            .unwrap();
+        assert!(selector.contains("exec sh -c \"$1\""));
+        assert!(!selector.contains(source));
     }
 
     #[tokio::test]
