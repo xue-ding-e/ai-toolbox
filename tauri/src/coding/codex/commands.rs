@@ -3716,6 +3716,23 @@ fn aggregate_site_model_specs(settings_config: &Value) -> Vec<CodexCatalogModelS
             });
         }
     }
+    // Match the single-provider context chain. Neutral catalogs use the
+    // top-level `model_context_window` as their fallback; the official vendor
+    // mirror instead keeps its own declared window and ignores that top-level
+    // value. An explicit per-row `contextWindow` wins in either case.
+    let vendor_models = codex_official_vendor_catalog_models(site_config_toml);
+    let site_context_window = extract_codex_top_level_u64(site_config_toml, "model_context_window");
+    for (index, spec) in specs.iter_mut().enumerate() {
+        if spec.context_window.is_some() {
+            continue;
+        }
+        spec.context_window = match vendor_models.as_deref() {
+            Some(vendor_models) => parse_codex_positive_u64(
+                codex_vendor_catalog_model_entry(vendor_models, spec, index).get("context_window"),
+            ),
+            None => site_context_window,
+        };
+    }
     specs
 }
 
@@ -3810,6 +3827,12 @@ fn codex_aggregate_catalog_entries_with_failover(
     // memory extraction all send bare names. They are published as hidden
     // entries so they never consume one of the five visible model hints.
     let mut bare_models: Vec<String> = Vec::new();
+    // Capability metadata of the first site that declares each bare name.
+    // Promoted/hidden bare-name rows address that exact same upstream model, so
+    // they have to advertise its context window and capability overrides
+    // instead of falling back to the neutral template defaults (which used to
+    // cap a 1M-window provider at the 272k aggregate default).
+    let mut bare_model_specs: BTreeMap<String, CodexCatalogModelSpec> = BTreeMap::new();
 
     for (site_id, site_label, settings_config) in sites {
         if site_id.trim().is_empty() {
@@ -3830,6 +3853,9 @@ fn codex_aggregate_catalog_entries_with_failover(
             });
 
             let model_display_name = codex_catalog_display_name(&spec);
+            bare_model_specs
+                .entry(spec.model.clone())
+                .or_insert_with(|| spec.clone());
 
             entries.push(AggregateCatalogEntry {
                 slug,
@@ -4006,11 +4032,21 @@ fn codex_aggregate_catalog_entries_with_failover(
             hidden: false,
             priority,
             display_name: model.clone(),
-            context_window: None,
-            reasoning_levels: None,
-            default_reasoning_level: None,
-            service_tiers: None,
-            input_modalities: None,
+            context_window: bare_model_specs
+                .get(model.as_str())
+                .and_then(|spec| spec.context_window),
+            reasoning_levels: bare_model_specs
+                .get(model.as_str())
+                .and_then(|spec| spec.reasoning_levels.clone()),
+            default_reasoning_level: bare_model_specs
+                .get(model.as_str())
+                .and_then(|spec| spec.default_reasoning_level.clone()),
+            service_tiers: bare_model_specs
+                .get(model.as_str())
+                .and_then(|spec| spec.service_tiers.clone()),
+            input_modalities: bare_model_specs
+                .get(model.as_str())
+                .and_then(|spec| spec.input_modalities.clone()),
             // Promoted rows keep the same "addressable, no override" contract as
             // the hidden aliases: the bare name must not move auto-review to
             // whichever site its entry happens to name (there is none).
@@ -4048,12 +4084,22 @@ fn codex_aggregate_catalog_entries_with_failover(
             site_id: None,
             hidden: true,
             priority: HIDDEN_ALIAS_PRIORITY_BASE + hidden_offset,
-            display_name: model,
-            context_window: None,
-            reasoning_levels: None,
-            default_reasoning_level: None,
-            service_tiers: None,
-            input_modalities: None,
+            display_name: model.clone(),
+            context_window: bare_model_specs
+                .get(model.as_str())
+                .and_then(|spec| spec.context_window),
+            reasoning_levels: bare_model_specs
+                .get(model.as_str())
+                .and_then(|spec| spec.reasoning_levels.clone()),
+            default_reasoning_level: bare_model_specs
+                .get(model.as_str())
+                .and_then(|spec| spec.default_reasoning_level.clone()),
+            service_tiers: bare_model_specs
+                .get(model.as_str())
+                .and_then(|spec| spec.service_tiers.clone()),
+            input_modalities: bare_model_specs
+                .get(model.as_str())
+                .and_then(|spec| spec.input_modalities.clone()),
             // Bare-name aliases exist so Codex's bare spawn/subagent/review
             // names stay addressable; they advertise no override, exactly as
             // before this change.
@@ -7124,6 +7170,191 @@ approval_policy = "never"
             slugs,
             vec!["site1.gpt-5.6-luna", "site1.gpt-5.6-terra", "site2.glm-5"]
         );
+    }
+
+    /// The bare name is what `model = "..."` in config.toml addresses. When a
+    /// site declares a 1M window, the promoted alias and the hidden alias for
+    /// the same upstream model must publish 1M too — not the 272k aggregate
+    /// default. Regression: a 1M provider showed 272k in the Codex UI because
+    /// only the site-prefixed slug kept the declared window.
+    #[test]
+    fn aggregate_catalog_bare_aliases_keep_the_declared_context_window() {
+        let sites = vec![(
+            "site1".to_string(),
+            "Site 1".to_string(),
+            json!({
+                "config": "model = \"dfmodel\"\nmodel_context_window = 750000\n",
+                "modelCatalog": {
+                    "models": [
+                        {
+                            "model": "dfmodel",
+                            "displayName": "dfmodel",
+                            "contextWindow": 1000000,
+                            "serviceTiers": ["ultrafast"],
+                            "modalities": { "input": ["image", "audio", "text"] }
+                        },
+                        { "model": "kimi-k2", "contextWindow": 500000 }
+                    ]
+                }
+            }),
+        )];
+
+        let naming = aggregate_naming_with_exposed(&["dfmodel"]);
+        let (entries, _) = codex_aggregate_catalog_entries(&sites, &naming).unwrap();
+        let catalog =
+            aggregate_catalog_from_entries(&entries, CODEX_AGGREGATE_DEFAULT_CONTEXT_WINDOW);
+        let models = catalog["models"].as_array().unwrap();
+        let by_slug = |slug: &str| {
+            models
+                .iter()
+                .find(|model| model["slug"].as_str() == Some(slug))
+                .unwrap_or_else(|| panic!("catalog is missing `{slug}`"))
+        };
+
+        // Promoted (picker-visible) bare alias.
+        let promoted = by_slug("dfmodel");
+        assert_eq!(promoted["context_window"].as_u64(), Some(1_000_000));
+        assert_eq!(promoted["max_context_window"].as_u64(), Some(1_000_000));
+        assert_eq!(
+            promoted["service_tiers"][0]["id"].as_str(),
+            Some("ultrafast")
+        );
+        assert!(promoted["input_modalities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|modality| modality.as_str() == Some("audio")));
+
+        // Unticked bare name stays addressable through its hidden alias and
+        // keeps its own declared window as well.
+        let hidden = by_slug("kimi-k2");
+        assert_eq!(hidden["visibility"].as_str(), Some("hide"));
+        assert_eq!(hidden["context_window"].as_u64(), Some(500_000));
+    }
+
+    /// A model row without an explicit `contextWindow` inherits the site's
+    /// top-level `model_context_window`, matching what the same provider
+    /// advertises when applied alone.
+    #[test]
+    fn aggregate_catalog_applies_the_site_context_window_default() {
+        let sites = vec![(
+            "site1".to_string(),
+            "Site 1".to_string(),
+            json!({
+                "config": "model = \"dfmodel\"\nmodel_context_window = 1000000\n",
+                "modelCatalog": { "models": [{ "model": "dfmodel" }] }
+            }),
+        )];
+
+        let naming = aggregate_naming_with_exposed(&[]);
+        let (entries, _) = codex_aggregate_catalog_entries(&sites, &naming).unwrap();
+        let catalog =
+            aggregate_catalog_from_entries(&entries, CODEX_AGGREGATE_DEFAULT_CONTEXT_WINDOW);
+        let models = catalog["models"].as_array().unwrap();
+
+        for slug in ["site1.dfmodel", "dfmodel"] {
+            let entry = models
+                .iter()
+                .find(|model| model["slug"].as_str() == Some(slug))
+                .unwrap_or_else(|| panic!("catalog is missing `{slug}`"));
+            assert_eq!(
+                entry["context_window"].as_u64(),
+                Some(1_000_000),
+                "`{slug}` must inherit the site's model_context_window"
+            );
+        }
+    }
+
+    /// A bare name uses the first selected site that declares it. Its catalog
+    /// capabilities must describe that same first choice, not a later fallback.
+    #[test]
+    fn aggregate_catalog_bare_alias_uses_first_declaring_site_capabilities() {
+        let first = (
+            "site-a".to_string(),
+            "Site A".to_string(),
+            json!({
+                "config": "model_context_window = 1000000\n",
+                "modelCatalog": { "models": [{
+                    "model": "shared-model",
+                    "reasoningLevels": ["low", "high"],
+                    "defaultReasoningLevel": "high",
+                    "serviceTiers": ["ultrafast"],
+                    "modalities": { "input": ["text"] }
+                }] }
+            }),
+        );
+        let second = (
+            "site-b".to_string(),
+            "Site B".to_string(),
+            json!({ "modelCatalog": { "models": [{
+                "model": "shared-model",
+                "contextWindow": 50000,
+                "serviceTiers": ["priority"],
+                "modalities": { "input": ["text", "image"] }
+            }] } }),
+        );
+        let sites = vec![first, second];
+        let (entries, _) =
+            codex_aggregate_catalog_entries(&sites, &aggregate_naming_with_exposed(&[])).unwrap();
+        let catalog =
+            aggregate_catalog_from_entries(&entries, CODEX_AGGREGATE_DEFAULT_CONTEXT_WINDOW);
+        let models = catalog["models"].as_array().unwrap();
+        let by_slug = |slug: &str| models.iter().find(|entry| entry["slug"] == slug).unwrap();
+
+        let bare = by_slug("shared-model");
+        assert_eq!(bare["visibility"], "hide");
+        assert_eq!(
+            bare["context_window"],
+            by_slug("site-a.shared-model")["context_window"]
+        );
+        assert_eq!(bare["context_window"], 1_000_000);
+        assert_eq!(bare["input_modalities"], json!(["text"]));
+        assert_eq!(bare["service_tiers"][0]["id"], "ultrafast");
+        assert_eq!(bare["default_reasoning_level"], "high");
+        assert_eq!(bare["supported_reasoning_levels"][0]["effort"], "low");
+        assert_eq!(bare["supported_reasoning_levels"][1]["effort"], "high");
+        assert_eq!(
+            bare["supported_reasoning_levels"],
+            by_slug("site-a.shared-model")["supported_reasoning_levels"]
+        );
+        assert_eq!(by_slug("site-b.shared-model")["context_window"], 50_000);
+        assert_eq!(
+            by_slug("site-b.shared-model")["input_modalities"],
+            json!(["text", "image"])
+        );
+    }
+
+    /// A native DeepSeek site mirrors the vendor's context before the neutral
+    /// top-level fallback; explicit per-row context still takes precedence.
+    #[test]
+    fn aggregate_catalog_deepseek_vendor_context_beats_top_level_fallback() {
+        let sites = vec![(
+            "deepseek".to_string(),
+            "DeepSeek".to_string(),
+            json!({
+                "config": format!("model_context_window = 100000\n{DEEPSEEK_NATIVE_CONFIG}"),
+                "modelCatalog": { "models": [
+                    { "model": "deepseek-flash" },
+                    { "model": "deepseek-v4-pro", "contextWindow": 500000 }
+                ] }
+            }),
+        )];
+        let (entries, _) = codex_aggregate_catalog_entries(&sites, &aggregate_naming(".")).unwrap();
+        let catalog =
+            aggregate_catalog_from_entries(&entries, CODEX_AGGREGATE_DEFAULT_CONTEXT_WINDOW);
+        let models = catalog["models"].as_array().unwrap();
+        let by_slug = |slug: &str| models.iter().find(|entry| entry["slug"] == slug).unwrap();
+
+        assert_eq!(
+            by_slug("deepseek.deepseek-flash")["context_window"],
+            1_048_576
+        );
+        assert_eq!(by_slug("deepseek-flash")["context_window"], 1_048_576);
+        assert_eq!(
+            by_slug("deepseek.deepseek-v4-pro")["context_window"],
+            500_000
+        );
+        assert_eq!(by_slug("deepseek-v4-pro")["context_window"], 500_000);
     }
 
     /// Swapping the tick order swaps the promoted priorities, so the user's
