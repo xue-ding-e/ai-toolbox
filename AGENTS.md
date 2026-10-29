@@ -366,6 +366,8 @@ pnpm inspect eval "(() => {
 
 **Assert on the real state, not just the UI.** After driving a control, read what actually persisted — `window.__TAURI_INTERNALS__.invoke('<command>', …)` calls the same backend commands the UI does, so `get_settings` confirms a write landed rather than the control merely *looking* changed. That is how the stale-modal trap above was caught.
 
+**Check bridge mutability before attempting instrumentation.** In the Windows release build, `Object.getOwnPropertyDescriptor(window.__TAURI_INTERNALS__, 'invoke').writable` is `false`: assigning a timing wrapper can silently do nothing. An empty wrapper log therefore does not prove the UI skipped IPC. Verify actual clicks through the SDK event listener and persisted results instead; for account refresh, compare `lastLimitsFetchedAt` before/after the click and require usable limits with no error. Record elapsed time as an observed upper bound, and never log invoke arguments, auth snapshots, tokens or authorization-code URLs.
+
 **Restore what you changed.** Driving the live app touches the user's real configuration. Put settings back and close what you opened before finishing; a debug session that leaves the app re-configured is worse than no verification.
 
 ## Code Style Guidelines
