@@ -516,6 +516,7 @@ fn command_name(param: &str) -> Result<ReturnType, String> {
 - 当前仓库的全局 `http_client` 需要显式使用 `rustls` TLS 后端；不要回退到 Windows Schannel / native-tls 默认行为。
 - 原因不是“风格统一”，而是实战兼容性：某些机器上 `reqwest + Schannel` 会在 TLS 建连阶段直接报 `SEC_E_NO_CREDENTIALS` / “安全包中没有可用的凭证”，表现为浏览器、Node、curl 正常，但 Rust `send()` 在真正发出业务请求前就失败。
 - 如果新增特殊 HTTP client（自定义 timeout、禁压缩、直连、HTTP/1 only 等），也必须在同一 builder 链路里显式保留 `use_rustls_tls()`，不要只复制 timeout / proxy / compression 配置而漏掉 TLS 后端。
+- 账号认证与用量这类短请求优先用 `http_client::account_client` 复用连接池；原生证书/代理加载放在 `spawn_blocking`，不能同步堵住异步执行器。缓存按代理模式和地址区分，设置变化立即替换；系统/环境代理的外部变化通过 60 秒 TTL 重新发现。保留 20 秒总请求 / 10 秒建连上限，流式网关仍用原来的 streaming 客户端。传输错误须展开并脱敏 source chain，不能只显示 `error sending request for url`；重试只对明确可重放的只读请求使用，不能推广到一次性 OAuth code 或轮换 refresh token 的 POST。
 
 #### Linux AppImage WebView Compatibility
 

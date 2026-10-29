@@ -41,7 +41,6 @@ import {
   getCodexCommonConfig,
   listCodexProviders,
   listCodexOfficialAccounts,
-  startCodexOfficialAccountOauth,
   startCodexOfficialAccountDeviceAuth,
   type CodexDeviceAuthStartResult,
   saveCodexOfficialLocalAccount,
@@ -65,6 +64,7 @@ import {
 } from '@/services/codexApi';
 import { codexPromptApi } from '@/services/codexPromptApi';
 import CodexDeviceAuthModal from '../components/CodexDeviceAuthModal';
+import CodexBrowserOauthModal from '../components/CodexBrowserOauthModal';
 import { refreshTrayMenu, hasAllApiHubExtension } from '@/services/appApi';
 import { formatQuotaResetRemainingText, formatOfficialAccountCredits } from '../utils/codexQuotaDisplay';
 import {
@@ -76,6 +76,7 @@ import {
 } from '../utils/codexAccountRefresh';
 import { useKeepAlive } from '@/components/layout/KeepAliveOutlet';
 import { useCodexDaemonNotice } from '../hooks/useCodexDaemonNotice';
+import { useCodexBrowserOauth } from '../hooks/useCodexBrowserOauth';
 import { TRAY_CONFIG_REFRESH_EVENT, DEEP_LINK_IMPORT_COMPLETED } from '@/constants/configEvents';
 import { useSettingsStore } from '@/stores';
 import CodexProviderCard from '../components/CodexProviderCard';
@@ -637,6 +638,26 @@ const CodexPage: React.FC = () => {
     }
   }, [t]);
 
+  const browserOauth = useCodexBrowserOauth(async () => {
+    message.success(t('codex.provider.officialAccountOauthSuccess'));
+    await loadConfig();
+    await refreshTrayMenu();
+  });
+
+  React.useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    // Login completes before quota retrieval. Reconcile the eventual result
+    // quietly, including when the user closed the sign-in dialog meanwhile.
+    void listen('codex-official-accounts-changed', () => {
+      if (!disposed) void loadConfig(true);
+    }).then((dispose) => {
+      if (disposed) dispose();
+      else unlisten = dispose;
+    }).catch((error) => console.error('Failed to listen for Codex account updates:', error));
+    return () => { disposed = true; unlisten?.(); };
+  }, [loadConfig]);
+
   const loadFavoriteProviders = React.useCallback(async () => {
     try {
       const allFavoriteProviders = await listFavoriteProviders();
@@ -897,19 +918,6 @@ const CodexPage: React.FC = () => {
     }
   };
 
-  const startBrowserOfficialAccountOauth = async (provider: CodexProvider) => {
-    try {
-      await startCodexOfficialAccountOauth(provider.id);
-      message.success(t('codex.provider.officialAccountOauthSuccess'));
-      await loadConfig();
-      await refreshTrayMenu();
-    } catch (error) {
-      console.error('Failed to start Codex official account OAuth:', error);
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      message.error(errorMsg || t('common.error'));
-    }
-  };
-
   const startDeviceOfficialAccountOauth = async (provider: CodexProvider) => {
     try {
       const session = await startCodexOfficialAccountDeviceAuth(provider.id);
@@ -934,7 +942,7 @@ const CodexPage: React.FC = () => {
             icon={<LinkOutlined />}
             onClick={() => {
               loginMethodModal.destroy();
-              void startBrowserOfficialAccountOauth(provider);
+              void browserOauth.start(provider.id);
             }}
           >
             {t('codex.provider.browserOauth')}
@@ -3189,6 +3197,12 @@ const CodexPage: React.FC = () => {
             await loadConfig();
             await refreshTrayMenu();
           }}
+        />
+        <CodexBrowserOauthModal
+          view={browserOauth.view}
+          onClose={browserOauth.close}
+          onRetry={(providerId) => void browserOauth.start(providerId)}
+          onReopenBrowser={() => void browserOauth.reopenBrowser()}
         />
       </div>
     </SectionSidebarLayout>

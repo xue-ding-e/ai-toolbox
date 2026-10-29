@@ -25,6 +25,11 @@
 - official account 命令必须区分 `provider_id == "__local__"` 和 `account_id == "__local__"`：前者是临时 provider，后端必须拒绝 OAuth/apply/delete/refresh/copy 等 official-account 管理入口；后者是在真实持久化 official provider 下展示本机运行时登录态的虚拟账号。
 - 从页面粘贴导入的 `auth.json` 只保存为官方账号快照，不覆盖当前 live `auth.json`；只有用户显式应用该账号时才写入运行时文件。
 - Official OAuth freshness: apply 路径已有 `ensure_fresh_official_runtime_auth`（lead 3 天）。启动 / 周期巡检由 `coding::auth_refresh` 调用 `refresh_applied_codex_accounts_if_needed`（所有已入库官方账号，排除 `__local__` 虚拟账号；默认 interval 12h）。未应用账号只把新 token 写回 SQLite；**仅 applied** 才写 live `auth.json`，写后须 `config-changed` + `wsl-sync-request-codex`（与 apply 对齐）。额度 `wham/usage` 不进该调度器。
+- 浏览器 OAuth 的回调端口只能使用上游已注册的 `1455` / `1457`（默认 → 备用）；不要使用随机端口。2026-10-30 实测随机 `localhost:42823` 会在 authorize 阶段返回 `invalid_authorize_request`；上游事实源是 `openai/codex` 的 `codex-rs/login/src/server.rs` 中 DEFAULT_PORT / FALLBACK_PORT 及 Hydra allow-list 注释。两个端口都占用时直接提示使用设备码，不向未知端口持有者发送取消请求。
+- 浏览器登录是独立后台 session：start 立即返回 `sessionId/authorizeUrl/expiresAt`，前端先订阅 `codex-auth-status` 再 start、打开浏览器；cancel 仅取消等待回调。监听必须异步、有整体期限与单连接读写期限；favicon、预连接、分段头、错误 state 不能消费合法登录。交换开始后即使弹窗关闭也要完成并保存凭证，不能丢弃一次性 code 换回的 refresh token。
+- 新浏览器登录不读取或继承当前 live `auth.json`，不写 live 文件；交换后先保存快照、报告 authorized，再后台查额度。额度慢或失败不能阻断登录成功，更不能丢掉新凭证。
+- 后台额度持久化后发 `codex-official-accounts-changed`，页面用 `loadConfig(true)` 静默重读；不能只发 `config-changed: window`，全局前端监听器只会为 `tray` 来源派发页面重读，后者不会更新已打开的账号列表。
+- OAuth / device / usage 请求走 `http_client::account_client`：保留用户代理策略、rustls 和连接池；usage 的一次传输重试共用 20 秒预算，不得叠成两次完整超时。授权码交换和 token 轮换不可盲目重试。错误记录 source chain 和耗时，禁止记录授权 URL、code、state、令牌或请求表单。
 
 - 聚合 catalog 生成必须遵守 `cross_site_failover`：开启时继续发布原有 bare aliases；关闭时仍发布每个站点的限定 slug，但只发布可唯一路由的裸名。多个已选站点声明同一模型时，若裸名没有被持久化 slug 表精确绑定为同模型的站点 slug（如 `model_only` 首个 slug），隐藏 alias 不发布；显式子代理暴露该歧义裸名则拒绝接管，不能让 Codex 派发一个 runtime 必须拒绝的模型。
 
@@ -127,6 +132,8 @@ sequenceDiagram
   同时检查 apply 与 previous-managed 清理两条投影路径、Gateway 接管路径和 `__local__` 收编；回归 `cargo test --lib requires_openai_auth`。改优先级或 preserve 交互时必须同期核对三种组合：preserve=false、preserve=true + `auto`（应移除）、preserve=true + `keep`（应两个字段都在）。
 
 ## 最小验证
+
+- 改浏览器 OAuth 时跑 `cargo test --lib browser_oauth -- --test-threads=1`、`pnpm test:codex-browser-oauth`；覆盖注册端口冲突、错误路径/state 后正常回调、分段头、取消释放端口、超时、交换快照先落库且不等待额度，以及前端快速成功/关闭/重开/启动中取消的竞态。
 
 - 改 daemon/桌面客户端检测或新增写 Codex 配置的入口时，跑 `cargo test --lib daemon_status` 与 `node --import ./scripts/register-node-ts-extension-loader.mjs --test web/test/features/coding/codex/utils/codexDaemonNotice.test.ts`。真机核验：`codex app-server daemon version` 未运行时 exit 1、`start` 后 exit 0 且 stdout 含 `appServerVersion`（核完 `stop` 还原）；ChatGPT 客户端在跑时 `tasklist /FI "IMAGENAME eq ChatGPT.exe"` 必须命中（**在 Git Bash 里手跑要把 `/FI` 转义或用 PowerShell**，否则 `/FI` 会被当成路径展开，这不影响 Rust 侧因为用的是 `Command` 而非 shell）。
 - 改额度刷新 / 凭证准备 / 401 恢复时，跑 `cargo test --lib usage_credential_tests -- --test-threads=1`：这 19 个用例覆盖 issue #440 的全部验收场景（复用库内凭证不交换、过期续期、采纳运行时新凭证、跨账号不借用、未应用不改 live、401 强制恢复、二次 401 要求重授权、refresh token 被拒/缺失、轮换先落库、瞬态错误不交换、`__local__` 续期与 401 恢复、后台收敛未应用账号、锁内重读、切换账号后不写 live、坏快照不发请求、账号头跟随最终凭证、失败保留旧窗口）。用例依赖 `TEST_AUTH_ROOT` 与 `TEST_ENDPOINTS` 两个进程级测试钩子，**必须串行执行**；新增用例要复用 `TestEnv` / `MockServer` 并拿 `TEST_GUARD`，`MockServer` 的 accept 循环已处理 Windows 上 accept 继承非阻塞的问题，别删 `set_nonblocking(false)`。

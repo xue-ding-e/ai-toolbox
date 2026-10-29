@@ -213,9 +213,27 @@ const state = {
 // Opt-in usage scenarios exercise the real page and command wrapper with synthetic data.
 const pendingUsage = [];
 const pendingAccountLists = [];
+const pendingOauthStarts = [];
 let deferAccountList = false;
+let oauthListenerId = null;
+let accountsListenerId = null;
 const baseInvoke = createCodexPageInvoke(state);
 const invoke = async (command, args) => {
+  if (command === 'plugin:event|listen' && args.event === 'codex-official-accounts-changed') {
+    accountsListenerId = args.handler;
+  }
+  if (parameters.has('browserOauth') && command === 'plugin:event|listen'
+    && args.event === 'codex-auth-status') {
+    oauthListenerId = args.handler;
+  }
+  if (parameters.has('browserOauth') && command === 'start_codex_official_account_oauth') {
+    state.requests.push({ command, args: structuredClone(args) });
+    return new Promise((resolve, reject) => pendingOauthStarts.push({ resolve, reject }));
+  }
+  if (parameters.has('browserOauth') && command === 'cancel_codex_official_account_oauth') {
+    state.requests.push({ command, args: structuredClone(args) });
+    return null;
+  }
   if (parameters.has('credits') && command === 'list_codex_official_accounts' && deferAccountList) {
     deferAccountList = false;
     const snapshot = await baseInvoke(command, args);
@@ -278,6 +296,29 @@ const iconName = (element) => element?.querySelector('.anticon')?.getAttribute('
 
 window.codexCardViewFixture = {
   state,
+  emitAccountsChanged() {
+    const callback = eventListeners.get(accountsListenerId);
+    if (!callback) throw new Error('No account update listener');
+    callback({ event: 'codex-official-accounts-changed', id: 2, payload: 'provider-c' });
+  },
+  oauthListenerInstalled: () => oauthListenerId !== null && eventListeners.has(oauthListenerId),
+  pendingOauthStartCount: () => pendingOauthStarts.length,
+  resolveOauthStart(sessionId = 'oauth-session-1') {
+    const pending = pendingOauthStarts.shift();
+    if (!pending) throw new Error('No pending browser OAuth start');
+    pending.resolve({
+      sessionId,
+      authorizeUrl: 'https://example.invalid/oauth?session=' + sessionId,
+      expiresAt: Math.floor(Date.now() / 1000) + 300,
+    });
+  },
+  emitOauthStatus(sessionId, status, error) {
+    const callback = eventListeners.get(oauthListenerId);
+    if (!callback) throw new Error('No browser OAuth status listener');
+    callback({ event: 'codex-auth-status', id: 1, payload: {
+      sessionId, status, message: error,
+    } });
+  },
   pendingUsageCount: () => pendingUsage.length,
   deferNextAccountList() { deferAccountList = true; },
   pendingAccountListCount: () => pendingAccountLists.length,

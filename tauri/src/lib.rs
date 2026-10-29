@@ -2464,6 +2464,7 @@ pub fn run() {
             coding::codex::list_codex_providers,
             coding::codex::list_codex_official_accounts,
             coding::codex::start_codex_official_account_oauth,
+            coding::codex::cancel_codex_official_account_oauth,
             coding::codex::start_codex_official_account_device_auth,
             coding::codex::cancel_codex_official_account_device_auth,
             coding::codex::save_codex_official_local_account,

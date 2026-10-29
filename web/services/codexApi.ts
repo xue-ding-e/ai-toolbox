@@ -198,8 +198,18 @@ export const listCodexOfficialAccounts = async (providerId: string): Promise<Cod
 
 export const startCodexOfficialAccountOauth = async (
   providerId: string,
-): Promise<CodexOfficialAccount> => {
-  return await invoke<CodexOfficialAccount>('start_codex_official_account_oauth', { providerId });
+): Promise<CodexBrowserAuthStartResult> => {
+  return await invoke<CodexBrowserAuthStartResult>('start_codex_official_account_oauth', { providerId });
+};
+
+export interface CodexBrowserAuthStartResult {
+  sessionId: string;
+  authorizeUrl: string;
+  expiresAt: number;
+}
+
+export const cancelCodexOfficialAccountOauth = async (sessionId: string): Promise<void> => {
+  await invoke('cancel_codex_official_account_oauth', { sessionId });
 };
 
 export interface CodexDeviceAuthStartResult {

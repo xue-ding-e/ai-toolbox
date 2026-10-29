@@ -5,11 +5,12 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::net::TcpListener;
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 use tempfile::NamedTempFile;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{watch, Mutex as AsyncMutex};
 
 use super::adapter;
@@ -17,7 +18,9 @@ use super::commands::{
     apply_config_internal, get_codex_root_dir_from_db_async, get_codex_root_dir_without_db,
 };
 use super::constants::CODEX_LOCAL_PROVIDER_ID;
-use super::types::{CodexCredits, CodexOfficialAccount, CodexOfficialAccountContent, CodexProvider};
+use super::types::{
+    CodexCredits, CodexOfficialAccount, CodexOfficialAccountContent, CodexProvider,
+};
 use crate::coding::db_id::db_new_id;
 use crate::db::helpers::{
     db_delete, db_get, db_list, db_patch_fields, db_put, db_query_by_field,
@@ -32,6 +35,8 @@ const CODEX_OAUTH_AUTH_URL: &str = "https://auth.openai.com/oauth/authorize";
 const CODEX_OAUTH_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 const CODEX_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
 const CODEX_OAUTH_DEFAULT_PORT: u16 = 1455;
+// These ports are registered in the Codex OAuth redirect URI allow-list.
+const CODEX_OAUTH_FALLBACK_PORT: u16 = 1457;
 const CODEX_OAUTH_CALLBACK_PATH: &str = "/auth/callback";
 const CODEX_DEVICE_USER_CODE_URL: &str = "https://auth.openai.com/api/accounts/deviceauth/usercode";
 const CODEX_DEVICE_TOKEN_URL: &str = "https://auth.openai.com/api/accounts/deviceauth/token";
@@ -48,6 +53,8 @@ static OAUTH_REFRESH_CACHE: LazyLock<
     AsyncMutex<HashMap<String, (std::time::Instant, OAuthTokenResponse)>>,
 > = LazyLock::new(|| AsyncMutex::new(HashMap::new()));
 static DEVICE_AUTH_SESSIONS: LazyLock<Mutex<HashMap<String, watch::Sender<bool>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+static BROWSER_AUTH_SESSIONS: LazyLock<Mutex<HashMap<String, watch::Sender<bool>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Test-only endpoint override so the OAuth exchange and usage request can be
@@ -69,11 +76,7 @@ fn clear_test_endpoints() {
 
 fn codex_usage_url() -> String {
     #[cfg(test)]
-    if let Some((usage_url, _)) = TEST_ENDPOINTS
-        .lock()
-        .expect("test endpoint lock")
-        .as_ref()
-    {
+    if let Some((usage_url, _)) = TEST_ENDPOINTS.lock().expect("test endpoint lock").as_ref() {
         return usage_url.clone();
     }
     CODEX_USAGE_URL.to_string()
@@ -81,11 +84,7 @@ fn codex_usage_url() -> String {
 
 fn codex_oauth_token_url() -> String {
     #[cfg(test)]
-    if let Some((_, token_url)) = TEST_ENDPOINTS
-        .lock()
-        .expect("test endpoint lock")
-        .as_ref()
-    {
+    if let Some((_, token_url)) = TEST_ENDPOINTS.lock().expect("test endpoint lock").as_ref() {
         return token_url.clone();
     }
     CODEX_OAUTH_TOKEN_URL.to_string()
@@ -143,6 +142,14 @@ pub struct CodexDeviceAuthStartResult {
     pub user_code: String,
     pub expires_at: i64,
     pub poll_interval_seconds: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexBrowserAuthStartResult {
+    pub session_id: String,
+    pub authorize_url: String,
+    pub expires_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -291,15 +298,12 @@ fn build_codex_authorize_url(redirect_uri: &str, state: &str, code_challenge: &s
     authorize_url
 }
 
-fn open_browser(url: &str) -> Result<(), String> {
-    tauri_plugin_opener::open_url(url, None::<&str>)
-        .map_err(|error| format!("Failed to open OAuth login page: {error}"))
-}
-
 fn bind_oauth_listener() -> Result<(TcpListener, u16), String> {
     let listener = TcpListener::bind(("127.0.0.1", CODEX_OAUTH_DEFAULT_PORT))
-        .or_else(|_| TcpListener::bind(("127.0.0.1", 0)))
-        .map_err(|error| format!("Failed to bind Codex OAuth callback listener: {error}"))?;
+        .or_else(|_| TcpListener::bind(("127.0.0.1", CODEX_OAUTH_FALLBACK_PORT)))
+        .map_err(|error| format!(
+            "Codex OAuth callback ports 1455 and 1457 are unavailable. Cancel another login or use device code login: {error}"
+        ))?;
     let port = listener
         .local_addr()
         .map_err(|error| format!("Failed to resolve Codex OAuth callback port: {error}"))?
@@ -307,85 +311,106 @@ fn bind_oauth_listener() -> Result<(TcpListener, u16), String> {
     Ok((listener, port))
 }
 
-fn wait_for_oauth_callback(listener: TcpListener, state: &str) -> Result<String, String> {
-    wait_for_oauth_callback_with_timeout(listener, state, Duration::from_secs(300))
-}
-
-fn wait_for_oauth_callback_with_timeout(
+async fn wait_for_oauth_callback_with_timeout(
     listener: TcpListener,
     state: &str,
     timeout: Duration,
+    mut cancelled: watch::Receiver<bool>,
 ) -> Result<String, String> {
     listener
         .set_nonblocking(true)
         .map_err(|error| format!("Failed to configure OAuth listener: {error}"))?;
-    listener
-        .set_ttl(64)
-        .map_err(|error| format!("Failed to configure OAuth listener ttl: {error}"))?;
-    let start = std::time::Instant::now();
-    let (mut stream, _) = loop {
-        match listener.accept() {
-            Ok(connection) => break connection,
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                if start.elapsed() >= timeout {
-                    return Err("Timed out waiting for OAuth callback".to_string());
-                }
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            Err(error) => return Err(format!("Failed to receive OAuth callback: {error}")),
+    let listener = tokio::net::TcpListener::from_std(listener)
+        .map_err(|error| format!("Failed to configure OAuth listener: {error}"))?;
+    tokio::select! {
+        result = tokio::time::timeout(timeout, receive_oauth_callback(&listener, state)) => {
+            result.map_err(|_| "expired".to_string())?
         }
-    };
-    stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
-        .map_err(|error| format!("Failed to set OAuth callback stream timeout: {error}"))?;
-
-    let mut request_buffer = [0u8; 8192];
-    let read_size = stream
-        .read(&mut request_buffer)
-        .map_err(|error| format!("Failed to read OAuth callback request: {error}"))?;
-    let request = String::from_utf8_lossy(&request_buffer[..read_size]);
-    let request_line = request
-        .lines()
-        .next()
-        .ok_or_else(|| "OAuth callback request is empty".to_string())?;
-    let request_path = request_line
-        .split_whitespace()
-        .nth(1)
-        .ok_or_else(|| "OAuth callback request line is invalid".to_string())?;
-    let query_string = request_path
-        .split_once('?')
-        .map(|(_, query)| query)
-        .ok_or_else(|| "OAuth callback is missing query string".to_string())?;
-    let query_params = parse_query_string(query_string);
-
-    let response_body = if let Some(error) = query_params.get("error") {
-        format!("OAuth login failed: {error}")
-    } else {
-        "OAuth login completed. You can return to AI Toolbox.".to_string()
-    };
-    let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        response_body.len(),
-        response_body
-    );
-    let _ = stream.write_all(response.as_bytes());
-    let _ = stream.flush();
-
-    if let Some(error) = query_params.get("error") {
-        return Err(format!("OAuth authorize failed: {error}"));
+        _ = async {
+            while !*cancelled.borrow() {
+                if cancelled.changed().await.is_err() { break; }
+            }
+        } => Err("cancelled".to_string()),
     }
+}
 
-    let returned_state = query_params
-        .get("state")
-        .ok_or_else(|| "OAuth callback missing state".to_string())?;
-    if returned_state != state {
-        return Err("OAuth callback state mismatch".to_string());
+async fn receive_oauth_callback(
+    listener: &tokio::net::TcpListener,
+    state: &str,
+) -> Result<String, String> {
+    loop {
+        let (mut stream, _) = listener
+            .accept()
+            .await
+            .map_err(|error| format!("Failed to receive OAuth callback: {error}"))?;
+        // Browsers may preconnect, fragment headers, or ask for a favicon. None
+        // of those requests should consume the pending authorization session.
+        let request = tokio::time::timeout(Duration::from_secs(2), async {
+            let mut bytes = Vec::new();
+            let mut buffer = [0u8; 1024];
+            while bytes.len() < 8192 {
+                let size = stream.read(&mut buffer).await?;
+                if size == 0 {
+                    break;
+                }
+                bytes.extend_from_slice(&buffer[..size]);
+                if bytes.windows(4).any(|value| value == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            Ok::<_, std::io::Error>(String::from_utf8_lossy(&bytes).into_owned())
+        })
+        .await;
+        let Ok(Ok(request)) = request else {
+            continue;
+        };
+        let mut line = request
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .split_whitespace();
+        let method = line.next().unwrap_or_default();
+        let target = line.next().unwrap_or_default();
+        let (path, query) = target.split_once('?').unwrap_or((target, ""));
+        let params = parse_query_string(query);
+        let valid_state = params.get("state").map(String::as_str) == Some(state);
+        let code = params
+            .get("code")
+            .filter(|value| !value.trim().is_empty())
+            .cloned();
+        let valid = method == "GET" && path == CODEX_OAUTH_CALLBACK_PATH && valid_state;
+        let (status, message) = if !valid {
+            (
+                "400 Bad Request",
+                "Invalid OAuth callback. Continue the login in your browser.",
+            )
+        } else if params.contains_key("error") || code.is_none() {
+            (
+                "400 Bad Request",
+                "OAuth authorization failed. Return to AI Toolbox to try again.",
+            )
+        } else {
+            (
+                "200 OK",
+                "Authorization received. Return to AI Toolbox to finish signing in.",
+            )
+        };
+        let response = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{message}", message.len()
+        );
+        let _ = tokio::time::timeout(
+            Duration::from_secs(2),
+            stream.write_all(response.as_bytes()),
+        )
+        .await;
+        if !valid {
+            continue;
+        }
+        if params.contains_key("error") {
+            return Err("OAuth authorization was declined. Try signing in again.".to_string());
+        }
+        return code.ok_or_else(|| "OAuth callback missing authorization code".to_string());
     }
-
-    query_params
-        .get("code")
-        .cloned()
-        .ok_or_else(|| "OAuth callback missing authorization code".to_string())
 }
 
 fn parse_query_string(query: &str) -> BTreeMap<String, String> {
@@ -427,10 +452,10 @@ async fn exchange_authorization_code(
     redirect_uri: &str,
     code_verifier: &str,
 ) -> Result<OAuthTokenResponse, String> {
-    let client = crate::http_client::client_with_timeout(db, 20).await?;
+    let client = crate::http_client::account_client(db).await?;
 
     client
-        .post(CODEX_OAUTH_TOKEN_URL)
+        .post(codex_oauth_token_url())
         .form(&OAuthTokenRequest {
             grant_type: "authorization_code",
             client_id: CODEX_OAUTH_CLIENT_ID,
@@ -440,7 +465,12 @@ async fn exchange_authorization_code(
         })
         .send()
         .await
-        .map_err(|error| format!("Failed to exchange authorization code: {error}"))?
+        .map_err(|error| {
+            format!(
+                "Failed to exchange authorization code: {}",
+                crate::http_client::describe_error(&error)
+            )
+        })?
         .error_for_status()
         .map_err(|error| format!("OAuth token exchange failed: {error}"))?
         .json::<OAuthTokenResponse>()
@@ -452,7 +482,7 @@ async fn refresh_oauth_token(
     db: &SqliteDbState,
     refresh_token: &str,
 ) -> Result<OAuthTokenResponse, String> {
-    let client = crate::http_client::client_with_timeout(db, 20).await?;
+    let client = crate::http_client::account_client(db).await?;
     let response = client
         .post(codex_oauth_token_url())
         .form(&OAuthRefreshRequest {
@@ -462,7 +492,12 @@ async fn refresh_oauth_token(
         })
         .send()
         .await
-        .map_err(|error| format!("Failed to refresh OAuth token: {error}"))?;
+        .map_err(|error| {
+            format!(
+                "Failed to refresh OAuth token: {}",
+                crate::http_client::describe_error(&error)
+            )
+        })?;
     let status = response.status();
     let body = response
         .text()
@@ -636,9 +671,10 @@ fn auth_email(auth: &Value) -> Option<String> {
 /// Refresh tokens are compared last on purpose: rotation legitimately changes
 /// them, so an equal account id or email must win.
 fn auth_identities_match(left: &Value, right: &Value) -> bool {
-    if let (Some(left_id), Some(right_id)) =
-        (usage_account_id_from_auth(left), usage_account_id_from_auth(right))
-    {
+    if let (Some(left_id), Some(right_id)) = (
+        usage_account_id_from_auth(left),
+        usage_account_id_from_auth(right),
+    ) {
         return left_id == right_id;
     }
     if let (Some(left_email), Some(right_email)) = (auth_email(left), auth_email(right)) {
@@ -852,8 +888,7 @@ async fn write_runtime_credential_if_still_applied(
         return Ok(false);
     }
     let current_auth = read_auth_json_from_disk(Some(db)).await?;
-    if !auth_has_official_runtime(&current_auth)
-        || !auth_identities_match(&current_auth, next_auth)
+    if !auth_has_official_runtime(&current_auth) || !auth_identities_match(&current_auth, next_auth)
     {
         return Ok(false);
     }
@@ -907,13 +942,11 @@ fn parse_imported_auth_json(content: &str) -> Result<Value, String> {
 static TEST_AUTH_ROOT: LazyLock<Mutex<Option<std::path::PathBuf>>> =
     LazyLock::new(|| Mutex::new(None));
 
-async fn codex_auth_root(db: Option<&crate::db::SqliteDbState>) -> Result<std::path::PathBuf, String> {
+async fn codex_auth_root(
+    db: Option<&crate::db::SqliteDbState>,
+) -> Result<std::path::PathBuf, String> {
     #[cfg(test)]
-    if let Some(root) = TEST_AUTH_ROOT
-        .lock()
-        .expect("test auth root lock")
-        .clone()
-    {
+    if let Some(root) = TEST_AUTH_ROOT.lock().expect("test auth root lock").clone() {
         return Ok(root);
     }
     match db {
@@ -1656,9 +1689,8 @@ fn parse_usage_snapshot(body: &Value, plan_type: Option<&str>) -> UsageSnapshot 
     } else {
         // Legacy primary windows without durations are weekly for no-5h tiers.
         // Never relabel an explicitly timed 5h window as weekly.
-        weekly_window.or(short_window.filter(|window| {
-            extract_limit_window_seconds(window.value).is_none()
-        }))
+        weekly_window
+            .or(short_window.filter(|window| extract_limit_window_seconds(window.value).is_none()))
     };
 
     UsageSnapshot {
@@ -1703,17 +1735,21 @@ impl UsageRequestError {
     }
 }
 
-async fn request_usage_snapshot(
+/// One attempt at the usage endpoint, with the transport failure left unflattened
+/// so the caller can decide whether it is worth repeating.
+async fn send_usage_request(
     db: &crate::db::SqliteDbState,
     access_token: &str,
     account_id: Option<&str>,
     plan_type: Option<&str>,
-) -> Result<UsageSnapshot, UsageRequestError> {
-    let client = crate::http_client::client_with_timeout(db, 20)
+) -> Result<UsageSnapshot, UsageAttemptError> {
+    let client = crate::http_client::account_client(db)
         .await
-        .map_err(|message| UsageRequestError {
-            status: None,
-            message,
+        .map_err(|message| {
+            UsageAttemptError::Fatal(UsageRequestError {
+                status: None,
+                message,
+            })
         })?;
 
     let mut request = client
@@ -1731,26 +1767,121 @@ async fn request_usage_snapshot(
         request = request.header("Chatgpt-Account-Id", account_id);
     }
 
-    let response = request.send().await.map_err(|error| UsageRequestError {
-        status: None,
-        message: format!("Failed to fetch usage: {error}"),
-    })?;
+    let response = request
+        .send()
+        .await
+        .map_err(|error| UsageAttemptError::Send {
+            retryable: crate::http_client::is_transient_transport_error(&error),
+            error: UsageRequestError {
+                status: None,
+                // reqwest's Display drops the cause; keep the whole chain so the
+                // stored failure says *why* (proxy refused the tunnel, DNS,
+                // timeout, TLS) instead of just naming the URL.
+                message: format!(
+                    "Failed to fetch usage: {}",
+                    crate::http_client::describe_error(&error)
+                ),
+            },
+        })?;
     let status = response.status();
     if !status.is_success() {
-        return Err(UsageRequestError {
+        return Err(UsageAttemptError::Fatal(UsageRequestError {
             status: Some(status.as_u16()),
             message: format!("Codex usage request failed: HTTP status {status}"),
-        });
+        }));
     }
 
-    let body = response
-        .json::<Value>()
-        .await
-        .map_err(|error| UsageRequestError {
+    let body = response.json::<Value>().await.map_err(|error| {
+        UsageAttemptError::Fatal(UsageRequestError {
             status: Some(status.as_u16()),
             message: format!("Failed to parse usage response: {error}"),
-        })?;
+        })
+    })?;
     Ok(parse_usage_snapshot(&body, plan_type))
+}
+
+/// A failed attempt that may still be repeated verbatim.
+enum UsageAttemptError {
+    /// Never reached the upstream (connect/tunnel/timeout). Repeating the same
+    /// request cannot double-consume a quota window, so one retry is safe.
+    Send {
+        retryable: bool,
+        error: UsageRequestError,
+    },
+    /// The upstream answered, or the request could not be built. Keep as-is.
+    Fatal(UsageRequestError),
+}
+
+impl UsageAttemptError {
+    fn into_request_error(self) -> UsageRequestError {
+        match self {
+            Self::Send { error, .. } | Self::Fatal(error) => error,
+        }
+    }
+
+    fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            Self::Send {
+                retryable: true,
+                ..
+            }
+        )
+    }
+}
+
+/// Transport failures through a local proxy (the common Chinese-network setup)
+/// are frequently one-off: the tunnel is refused while the proxy picks a node,
+/// or the node drops the first connection. Without a retry the very first
+/// hiccup becomes the persisted `last_error` the user sees until they refresh
+/// again, which is exactly how a single blip reads as "usage detection is
+/// broken". One retry only — never a loop, and never for HTTP status errors.
+const USAGE_TRANSPORT_RETRY_DELAY: Duration = Duration::from_millis(400);
+
+async fn request_usage_snapshot(
+    db: &crate::db::SqliteDbState,
+    access_token: &str,
+    account_id: Option<&str>,
+    plan_type: Option<&str>,
+) -> Result<UsageSnapshot, UsageRequestError> {
+    let started = std::time::Instant::now();
+    let result = tokio::time::timeout(Duration::from_secs(20), async {
+    match send_usage_request(db, access_token, account_id, plan_type).await {
+        Ok(snapshot) => Ok(snapshot),
+        Err(error) if error.is_retryable() => {
+            log::debug!(
+                "Codex usage request failed on transport, retrying once: {}",
+                error_message(&error)
+            );
+            tokio::time::sleep(USAGE_TRANSPORT_RETRY_DELAY).await;
+            send_usage_request(db, access_token, account_id, plan_type)
+                .await
+                .map_err(UsageAttemptError::into_request_error)
+        }
+        Err(error) => Err(error.into_request_error()),
+    }
+    }).await.unwrap_or_else(|_| Err(UsageRequestError {
+        status: None,
+        message: "Codex usage request timed out after 20 seconds. Check the configured proxy and retry.".to_string(),
+    }));
+    match &result {
+        Ok(_) => log::debug!(
+            "Codex usage request completed in {} ms",
+            started.elapsed().as_millis()
+        ),
+        Err(error) => log::warn!(
+            "Codex usage request failed after {} ms: {}",
+            started.elapsed().as_millis(),
+            error.message
+        ),
+    }
+    result
+}
+
+fn error_message(error: &UsageAttemptError) -> &str {
+    match error {
+        UsageAttemptError::Send { error, .. } | UsageAttemptError::Fatal(error) => &error.message,
+    }
 }
 
 pub(crate) async fn fetch_usage_snapshot(
@@ -1974,8 +2105,13 @@ async fn persist_refreshed_account_snapshot(
     let payload = adapter::to_db_value_official_account(&parsed_content);
     db.with_conn(|conn| {
         let fields = [
-            "email", "auth_snapshot", "auth_mode", "account_id", "plan_type",
-            "last_refresh", "updated_at",
+            "email",
+            "auth_snapshot",
+            "auth_mode",
+            "account_id",
+            "plan_type",
+            "last_refresh",
+            "updated_at",
         ]
         .map(|key| (key, payload.get(key).cloned().unwrap_or(Value::Null)));
         db_patch_fields(conn, DbTable::CodexOfficialAccount, &account.id, &fields).map(|_| ())
@@ -2007,7 +2143,9 @@ async fn persist_usage_result(
                 )
                 .map(|_| ())
             })
-            .map_err(|storage_error| format!("{error}; failed to save usage error: {storage_error}"))?;
+            .map_err(|storage_error| {
+                format!("{error}; failed to save usage error: {storage_error}")
+            })?;
             Err(error)
         }
     }
@@ -2114,7 +2252,7 @@ pub async fn start_codex_official_account_device_auth(
         return Err("A Codex device authorization session is already active".to_string());
     }
 
-    let client = crate::http_client::client_with_timeout(state.db(), 30).await?;
+    let client = crate::http_client::account_client(state.db()).await?;
     let response = client
         .post(CODEX_DEVICE_USER_CODE_URL)
         .json(&serde_json::json!({ "client_id": CODEX_OAUTH_CLIENT_ID }))
@@ -2201,7 +2339,7 @@ async fn poll_codex_device_auth(
     let result = async {
         let db_state = app.state::<SqliteDbState>();
         let db = db_state.db();
-        let client = crate::http_client::client_with_timeout(db, 30).await?;
+        let client = crate::http_client::account_client(db).await?;
         loop {
             if *cancel_receiver.borrow() {
                 return Err("cancelled".to_string());
@@ -2305,50 +2443,119 @@ pub async fn start_codex_official_account_oauth(
     state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     provider_id: String,
-) -> Result<CodexOfficialAccount, String> {
-    let db = state.db();
+) -> Result<CodexBrowserAuthStartResult, String> {
+    let db = state.db().clone();
     ensure_persisted_provider_id(&provider_id)?;
     let provider = query_provider(&db, &provider_id).await?;
     if provider.category != "official" {
         return Err("Only official Codex providers can add official accounts".to_string());
     }
 
-    let existing_auth = read_auth_json_from_disk(Some(&db)).await?;
     let oauth_state = generate_random_urlsafe(32);
     let (code_verifier, code_challenge) = generate_pkce_pair();
-    let (oauth_listener, callback_port) = bind_oauth_listener()?;
+    let session_id = db_new_id();
+    let (sender, receiver) = watch::channel(false);
+    let (oauth_listener, callback_port) = {
+        let mut sessions = BROWSER_AUTH_SESSIONS
+            .lock()
+            .map_err(|_| "Codex browser auth session lock is poisoned".to_string())?;
+        if !sessions.is_empty() {
+            return Err(
+                "A Codex browser login is already active. Cancel it before starting again."
+                    .to_string(),
+            );
+        }
+        let listener = bind_oauth_listener()?;
+        sessions.insert(session_id.clone(), sender);
+        listener
+    };
     let redirect_uri = build_oauth_redirect_uri(callback_port);
     let authorize_url = build_codex_authorize_url(&redirect_uri, &oauth_state, &code_challenge);
-
-    open_browser(&authorize_url)?;
-    let authorization_code =
-        tokio::task::spawn_blocking(move || wait_for_oauth_callback(oauth_listener, &oauth_state))
-            .await
-            .map_err(|error| format!("OAuth callback task failed: {error}"))??;
-    let token_response =
-        exchange_authorization_code(&db, &authorization_code, &redirect_uri, &code_verifier)
+    let expires_at = chrono::Utc::now().timestamp() + 300;
+    let task_session_id = session_id.clone();
+    tauri::async_runtime::spawn(async move {
+        let result = async {
+            let code = wait_for_oauth_callback_with_timeout(
+                oauth_listener,
+                &oauth_state,
+                Duration::from_secs(300),
+                receiver,
+            )
             .await?;
-    let auth_snapshot = build_auth_snapshot(&token_response, Some(&existing_auth))?;
-    let plan_type = usage_plan_type_from_auth(&auth_snapshot);
-    let usage_account_id = usage_account_id_from_auth(&auth_snapshot);
-    let usage_snapshot = fetch_usage_snapshot(
-        &db,
-        &token_response.access_token,
-        usage_account_id.as_deref(),
-        plan_type.as_deref(),
-    )
-    .await
-    .ok();
-    let content = build_account_content_from_auth_snapshot(
-        &provider_id,
-        &auth_snapshot,
-        usage_snapshot.as_ref(),
-        None,
-    )?;
-    let account = save_official_account(&db, &content).await?;
+            emit_codex_auth_status(&app, &task_session_id, "exchanging", None, None);
+            // Once exchange starts it must finish and persist, even if the UI
+            // closes: authorization codes are one-shot and refresh tokens rotate.
+            exchange_and_save_browser_account(
+                &db,
+                &provider_id,
+                &code,
+                &redirect_uri,
+                &code_verifier,
+            )
+            .await
+        }
+        .await;
+        if let Ok(mut sessions) = BROWSER_AUTH_SESSIONS.lock() {
+            sessions.remove(&task_session_id);
+        }
+        match result {
+            Ok(account) => {
+                emit_codex_auth_status(
+                    &app,
+                    &task_session_id,
+                    "authorized",
+                    None,
+                    Some(account.id.clone()),
+                );
+                let _ = app.emit("config-changed", "window");
+                // Usage is ancillary. Save the login first; a slow quota endpoint
+                // must neither delay success nor discard the only fresh token.
+                if let Err(error) = refresh_persisted_account_usage(&db, &account.id).await {
+                    log::debug!("Codex post-login usage refresh failed: {error}");
+                }
+                let _ = app.emit("codex-official-accounts-changed", &provider_id);
+                let _ = app.emit("config-changed", "window");
+            }
+            Err(error) if error == "cancelled" || error == "expired" => {
+                emit_codex_auth_status(&app, &task_session_id, &error, None, None);
+            }
+            Err(error) => {
+                log::warn!("Codex browser OAuth failed: {error}");
+                emit_codex_auth_status(&app, &task_session_id, "error", Some(error), None);
+            }
+        }
+    });
+    Ok(CodexBrowserAuthStartResult {
+        session_id,
+        authorize_url,
+        expires_at,
+    })
+}
 
-    let _ = app.emit("config-changed", "window");
-    Ok(account)
+async fn exchange_and_save_browser_account(
+    db: &SqliteDbState,
+    provider_id: &str,
+    code: &str,
+    redirect_uri: &str,
+    verifier: &str,
+) -> Result<CodexOfficialAccount, String> {
+    let token = exchange_authorization_code(db, code, redirect_uri, verifier).await?;
+    let auth = build_auth_snapshot(&token, None)?;
+    let content = build_account_content_from_auth_snapshot(provider_id, &auth, None, None)?;
+    save_official_account(db, &content).await
+}
+
+#[tauri::command]
+pub fn cancel_codex_official_account_oauth(session_id: String) -> Result<(), String> {
+    if let Some(sender) = BROWSER_AUTH_SESSIONS
+        .lock()
+        .map_err(|_| "Codex browser auth session lock is poisoned".to_string())?
+        .get(&session_id)
+    {
+        // The worker removes the session after dropping its callback listener.
+        let _ = sender.send(true);
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -2616,8 +2823,10 @@ pub async fn refresh_codex_official_account_limits(
         let prepared = refresh_local_account_usage(&db).await?;
         // Built from the credential that answered the request: re-reading the
         // file could pick up a login the user switched to mid-refresh.
-        let mut account =
-            assign_provider_id(build_virtual_local_account(&prepared.credential), &provider_id);
+        let mut account = assign_provider_id(
+            build_virtual_local_account(&prepared.credential),
+            &provider_id,
+        );
         apply_usage_snapshot_to_account(&mut account, &prepared.usage);
         account.last_limits_fetched_at = Some(Local::now().to_rfc3339());
         if prepared.runtime_written {
@@ -2630,8 +2839,7 @@ pub async fn refresh_codex_official_account_limits(
     if account.provider_id != provider_id {
         return Err("Official account does not belong to the selected provider".to_string());
     }
-    let (refreshed, runtime_written) =
-        refresh_persisted_account_usage(&db, &account.id).await?;
+    let (refreshed, runtime_written) = refresh_persisted_account_usage(&db, &account.id).await?;
     if runtime_written {
         emit_runtime_credential_changed(&app);
     }
@@ -2671,9 +2879,7 @@ struct LocalUsageResult {
 async fn refresh_local_account_usage(db: &SqliteDbState) -> Result<LocalUsageResult, String> {
     let auth = read_auth_json_from_disk(Some(db)).await?;
     if !auth_has_official_runtime(&auth) {
-        return Err(
-            "Current local auth.json does not contain an official Codex login".to_string(),
-        );
+        return Err("Current local auth.json does not contain an official Codex login".to_string());
     }
     let (mut credential, mut runtime_written) = prepare_local_credential(db, &auth, false).await?;
     match request_usage_from_local(db, &credential).await {
@@ -2819,16 +3025,15 @@ async fn request_usage_from_prepared(
 ) -> Result<UsageSnapshot, UsageRequestError> {
     // Account id and plan type come from the credential actually used, so a
     // recovered token never travels with the previous login's context.
-    let usage_account_id = usage_account_id_from_auth(&prepared.auth)
-        .or_else(|| prepared.account.account_id.clone());
-    let plan_type = usage_plan_type_from_auth(&prepared.auth)
-        .or_else(|| prepared.account.plan_type.clone());
-    let access_token = access_token_from_auth(&prepared.auth).map_err(|message| {
-        UsageRequestError {
+    let usage_account_id =
+        usage_account_id_from_auth(&prepared.auth).or_else(|| prepared.account.account_id.clone());
+    let plan_type =
+        usage_plan_type_from_auth(&prepared.auth).or_else(|| prepared.account.plan_type.clone());
+    let access_token =
+        access_token_from_auth(&prepared.auth).map_err(|message| UsageRequestError {
             status: None,
             message,
-        }
-    })?;
+        })?;
     request_usage_snapshot(
         db,
         access_token,
@@ -2882,18 +3087,26 @@ mod tests {
     #[test]
     fn codex_credits_parse_strings_numbers_and_preserve_subscription_windows() {
         for balance in [serde_json::json!("62500.25"), serde_json::json!(62500.25)] {
-            let snapshot = parse_usage_snapshot(&serde_json::json!({
-                "rate_limit": {"primary_window": {
-                    "used_percent": 25, "limit_window_seconds": WEEK_WINDOW_SECONDS
-                }},
-                "rate_limit_reset_credits": {"available_count": 2},
-                "credits": {"has_credits": true, "unlimited": false, "balance": balance}
-            }), Some("pro"));
+            let snapshot = parse_usage_snapshot(
+                &serde_json::json!({
+                    "rate_limit": {"primary_window": {
+                        "used_percent": 25, "limit_window_seconds": WEEK_WINDOW_SECONDS
+                    }},
+                    "rate_limit_reset_credits": {"available_count": 2},
+                    "credits": {"has_credits": true, "unlimited": false, "balance": balance}
+                }),
+                Some("pro"),
+            );
             assert_eq!(snapshot.limit_weekly_text.as_deref(), Some("75%"));
             assert_eq!(snapshot.reset_credits_available, Some(2));
-            assert_eq!(snapshot.credits, Some(CodexCredits {
-                has_credits: Some(true), unlimited: Some(false), balance: Some(62500.25)
-            }));
+            assert_eq!(
+                snapshot.credits,
+                Some(CodexCredits {
+                    has_credits: Some(true),
+                    unlimited: Some(false),
+                    balance: Some(62500.25)
+                })
+            );
         }
     }
 
@@ -2901,11 +3114,17 @@ mod tests {
     fn codex_credits_preserve_zero_negative_and_conflicting_availability() {
         for balance in ["0", "-0.25", " 12.5 "] {
             for has_credits in [false, true] {
-                let snapshot = parse_usage_snapshot(&serde_json::json!({
-                    "credits": {"has_credits": has_credits, "unlimited": true, "balance": balance}
-                }), None);
+                let snapshot = parse_usage_snapshot(
+                    &serde_json::json!({
+                        "credits": {"has_credits": has_credits, "unlimited": true, "balance": balance}
+                    }),
+                    None,
+                );
                 let credits = snapshot.credits.expect("credits without rate windows");
-                assert_eq!(credits.balance, Some(balance.trim().parse::<f64>().unwrap()));
+                assert_eq!(
+                    credits.balance,
+                    Some(balance.trim().parse::<f64>().unwrap())
+                );
                 assert_eq!(credits.has_credits, Some(has_credits));
                 assert_eq!(credits.unlimited, Some(true));
             }
@@ -2914,20 +3133,34 @@ mod tests {
 
     #[test]
     fn codex_credits_malformed_fields_do_not_fail_or_invent_a_balance() {
-        for body in [serde_json::json!({}), serde_json::json!({"credits": null}),
-            serde_json::json!({"credits": []}), serde_json::json!({"credits": "bad"}),
-            serde_json::json!({"credits": {"has_credits": "true", "unlimited": 1}})] {
+        for body in [
+            serde_json::json!({}),
+            serde_json::json!({"credits": null}),
+            serde_json::json!({"credits": []}),
+            serde_json::json!({"credits": "bad"}),
+            serde_json::json!({"credits": {"has_credits": "true", "unlimited": 1}}),
+        ] {
             assert_eq!(parse_usage_snapshot(&body, None).credits, None);
         }
-        for balance in [serde_json::json!(null), serde_json::json!(true), serde_json::json!({}),
-            serde_json::json!(""), serde_json::json!("NaN"), serde_json::json!("Infinity"),
-            serde_json::json!("1e999"), serde_json::json!("not-a-number")] {
-            let snapshot = parse_usage_snapshot(&serde_json::json!({
-                "credits": {"has_credits": true, "balance": balance},
-                "rate_limit": {"primary_window": {
-                    "used_percent": 25, "limit_window_seconds": WEEK_WINDOW_SECONDS
-                }}
-            }), Some("pro"));
+        for balance in [
+            serde_json::json!(null),
+            serde_json::json!(true),
+            serde_json::json!({}),
+            serde_json::json!(""),
+            serde_json::json!("NaN"),
+            serde_json::json!("Infinity"),
+            serde_json::json!("1e999"),
+            serde_json::json!("not-a-number"),
+        ] {
+            let snapshot = parse_usage_snapshot(
+                &serde_json::json!({
+                    "credits": {"has_credits": true, "balance": balance},
+                    "rate_limit": {"primary_window": {
+                        "used_percent": 25, "limit_window_seconds": WEEK_WINDOW_SECONDS
+                    }}
+                }),
+                Some("pro"),
+            );
             assert_eq!(snapshot.credits.unwrap().balance, None);
             assert_eq!(snapshot.limit_weekly_text.as_deref(), Some("75%"));
         }
@@ -2937,13 +3170,18 @@ mod tests {
     async fn codex_credits_round_trip_refresh_clear_and_failure_are_account_scoped() {
         let db = SqliteDbState::in_memory_for_test().unwrap();
         let auth = serde_json::json!({"tokens": {"account_id": "synthetic-account"}});
-        let snapshot = parse_usage_snapshot(&serde_json::json!({
-            "credits": {"has_credits": true, "unlimited": false, "balance": "42.5"},
-            "rate_limit": {"primary_window": {
-                "used_percent": 25, "limit_window_seconds": WEEK_WINDOW_SECONDS
-            }}
-        }), Some("pro"));
-        let content = build_account_content_from_auth_snapshot("provider-a", &auth, Some(&snapshot), None).unwrap();
+        let snapshot = parse_usage_snapshot(
+            &serde_json::json!({
+                "credits": {"has_credits": true, "unlimited": false, "balance": "42.5"},
+                "rate_limit": {"primary_window": {
+                    "used_percent": 25, "limit_window_seconds": WEEK_WINDOW_SECONDS
+                }}
+            }),
+            Some("pro"),
+        );
+        let content =
+            build_account_content_from_auth_snapshot("provider-a", &auth, Some(&snapshot), None)
+                .unwrap();
         let first = save_official_account(&db, &content).await.unwrap();
         let second = save_official_account(&db, &content).await.unwrap();
         assert_eq!(first.credits.as_ref().unwrap().balance, Some(42.5));
@@ -2960,26 +3198,48 @@ mod tests {
         assert_eq!(stored["credits"]["has_credits"], true);
         assert!(stored["credits"].get("hasCredits").is_none());
 
-        let refreshed = persist_refreshed_account_snapshot(&db, &first, &auth).await.unwrap();
+        let refreshed = persist_refreshed_account_snapshot(&db, &first, &auth)
+            .await
+            .unwrap();
         assert_eq!(refreshed.credits, first.credits);
-        assert_eq!(refreshed.last_limits_fetched_at, first.last_limits_fetched_at);
+        assert_eq!(
+            refreshed.last_limits_fetched_at,
+            first.last_limits_fetched_at
+        );
 
-        let error = persist_usage_result(&db, &first.id, Err("synthetic usage failure".to_string())).await;
+        let error =
+            persist_usage_result(&db, &first.id, Err("synthetic usage failure".to_string())).await;
         assert_eq!(error.unwrap_err(), "synthetic usage failure");
         let failed = load_official_account(&db, &first.id).await.unwrap();
         assert_eq!(failed.credits, None);
         assert_eq!(failed.last_limits_fetched_at, first.last_limits_fetched_at);
         assert_eq!(failed.limit_weekly_text.as_deref(), Some("75%"));
-        assert_eq!(failed.last_error.as_deref(), Some("synthetic usage failure"));
-        assert_eq!(load_official_account(&db, &second.id).await.unwrap().credits, second.credits);
+        assert_eq!(
+            failed.last_error.as_deref(),
+            Some("synthetic usage failure")
+        );
+        assert_eq!(
+            load_official_account(&db, &second.id)
+                .await
+                .unwrap()
+                .credits,
+            second.credits
+        );
 
-        let recovered = persist_usage_result(&db, &first.id, Ok(snapshot)).await.unwrap();
+        let recovered = persist_usage_result(&db, &first.id, Ok(snapshot))
+            .await
+            .unwrap();
         assert_eq!(recovered.credits, first.credits);
         assert_eq!(recovered.last_error, None);
         let omitted = parse_usage_snapshot(&serde_json::json!({}), None);
-        let cleared = persist_usage_result(&db, &first.id, Ok(omitted)).await.unwrap();
+        let cleared = persist_usage_result(&db, &first.id, Ok(omitted))
+            .await
+            .unwrap();
         assert_eq!(cleared.credits, None);
-        assert_eq!(load_official_account(&db, &first.id).await.unwrap().credits, None);
+        assert_eq!(
+            load_official_account(&db, &first.id).await.unwrap().credits,
+            None
+        );
     }
 
     #[test]
@@ -2989,7 +3249,10 @@ mod tests {
         }));
         assert_eq!(old.credits, None);
         assert_eq!(old.limit_weekly_text.as_deref(), Some("75%"));
-        assert_eq!(build_virtual_local_account(&serde_json::json!({})).credits, None);
+        assert_eq!(
+            build_virtual_local_account(&serde_json::json!({})).credits,
+            None
+        );
     }
 
     #[test]
@@ -3017,17 +3280,25 @@ mod tests {
             .credits
         };
         // Rows written by the current build use snake_case.
-        assert_eq!(read(serde_json::json!({
-            "has_credits": true, "unlimited": false, "balance": 42.5
-        })), Some(CodexCredits {
-            has_credits: Some(true), unlimited: Some(false), balance: Some(42.5)
-        }));
+        assert_eq!(
+            read(serde_json::json!({
+                "has_credits": true, "unlimited": false, "balance": 42.5
+            })),
+            Some(CodexCredits {
+                has_credits: Some(true),
+                unlimited: Some(false),
+                balance: Some(42.5)
+            })
+        );
         // Rows written by the first build of this field stay readable.
-        assert_eq!(read(serde_json::json!({
-            "hasCredits": true, "unlimited": false, "balance": 42.5
-        })), read(serde_json::json!({
-            "has_credits": true, "unlimited": false, "balance": 42.5
-        })));
+        assert_eq!(
+            read(serde_json::json!({
+                "hasCredits": true, "unlimited": false, "balance": 42.5
+            })),
+            read(serde_json::json!({
+                "has_credits": true, "unlimited": false, "balance": 42.5
+            }))
+        );
         assert_eq!(read(serde_json::json!(null)), None);
         assert_eq!(read(serde_json::json!({"balance": "nope"})), None);
     }
@@ -3036,11 +3307,25 @@ mod tests {
     async fn codex_credits_preparation_failure_clears_persisted_balance() {
         let db = SqliteDbState::in_memory_for_test().unwrap();
         let auth = serde_json::json!({"tokens": {"account_id": "synthetic-account"}});
-        let snapshot = parse_usage_snapshot(&serde_json::json!({
-            "credits": {"has_credits": true, "balance": "42"}
-        }), None);
-        for auth_snapshot in [None, Some("not-json"), Some("{}"), Some(r#"{"tokens":{"access_token":" "}}"#)] {
-            let content = build_account_content_from_auth_snapshot("provider-a", &auth, Some(&snapshot), None).unwrap();
+        let snapshot = parse_usage_snapshot(
+            &serde_json::json!({
+                "credits": {"has_credits": true, "balance": "42"}
+            }),
+            None,
+        );
+        for auth_snapshot in [
+            None,
+            Some("not-json"),
+            Some("{}"),
+            Some(r#"{"tokens":{"access_token":" "}}"#),
+        ] {
+            let content = build_account_content_from_auth_snapshot(
+                "provider-a",
+                &auth,
+                Some(&snapshot),
+                None,
+            )
+            .unwrap();
             let account = save_official_account(&db, &content).await.unwrap();
             // The refresh path re-reads the row, so the bad snapshot must be stored.
             db.with_conn(|conn| {
@@ -3048,7 +3333,12 @@ mod tests {
                     conn,
                     DbTable::CodexOfficialAccount,
                     &account.id,
-                    &[("auth_snapshot", auth_snapshot.map(|value| Value::String(value.to_string())).unwrap_or(Value::Null))],
+                    &[(
+                        "auth_snapshot",
+                        auth_snapshot
+                            .map(|value| Value::String(value.to_string()))
+                            .unwrap_or(Value::Null),
+                    )],
                 )
                 .map(|_| ())
             })
@@ -3059,7 +3349,10 @@ mod tests {
             let stored = load_official_account(&db, &account.id).await.unwrap();
             assert_eq!(stored.credits, None);
             assert!(stored.last_error.is_some());
-            assert_eq!(stored.last_limits_fetched_at, account.last_limits_fetched_at);
+            assert_eq!(
+                stored.last_limits_fetched_at,
+                account.last_limits_fetched_at
+            );
         }
     }
 
@@ -3067,18 +3360,33 @@ mod tests {
     async fn codex_credits_oauth_refresh_does_not_restore_an_older_usage_snapshot() {
         let db = SqliteDbState::in_memory_for_test().unwrap();
         let auth = serde_json::json!({"tokens": {"account_id": "synthetic-account"}});
-        let old_usage = parse_usage_snapshot(&serde_json::json!({
-            "credits": {"has_credits": true, "balance": "42"}
-        }), None);
-        let content = build_account_content_from_auth_snapshot("provider-a", &auth, Some(&old_usage), None).unwrap();
+        let old_usage = parse_usage_snapshot(
+            &serde_json::json!({
+                "credits": {"has_credits": true, "balance": "42"}
+            }),
+            None,
+        );
+        let content =
+            build_account_content_from_auth_snapshot("provider-a", &auth, Some(&old_usage), None)
+                .unwrap();
         let old_account = save_official_account(&db, &content).await.unwrap();
-        let new_usage = parse_usage_snapshot(&serde_json::json!({
-            "credits": {"has_credits": false, "balance": "-1.5"}
-        }), None);
-        let latest = persist_usage_result(&db, &old_account.id, Ok(new_usage)).await.unwrap();
-        let refreshed = persist_refreshed_account_snapshot(&db, &old_account, &auth).await.unwrap();
+        let new_usage = parse_usage_snapshot(
+            &serde_json::json!({
+                "credits": {"has_credits": false, "balance": "-1.5"}
+            }),
+            None,
+        );
+        let latest = persist_usage_result(&db, &old_account.id, Ok(new_usage))
+            .await
+            .unwrap();
+        let refreshed = persist_refreshed_account_snapshot(&db, &old_account, &auth)
+            .await
+            .unwrap();
         assert_eq!(refreshed.credits, latest.credits);
-        assert_eq!(refreshed.last_limits_fetched_at, latest.last_limits_fetched_at);
+        assert_eq!(
+            refreshed.last_limits_fetched_at,
+            latest.last_limits_fetched_at
+        );
         assert_eq!(refreshed.last_error, latest.last_error);
     }
 
@@ -3187,12 +3495,12 @@ mod tests {
 
     #[test]
     fn browser_oauth_authorize_url_uses_actual_callback_port_and_official_scopes() {
-        let redirect_uri = build_oauth_redirect_uri(24680);
+        let redirect_uri = build_oauth_redirect_uri(CODEX_OAUTH_FALLBACK_PORT);
         let authorize_url = build_codex_authorize_url(&redirect_uri, "state-value", "challenge");
 
-        assert_eq!(redirect_uri, "http://localhost:24680/auth/callback");
+        assert_eq!(redirect_uri, "http://localhost:1457/auth/callback");
         assert!(
-            authorize_url.contains("redirect_uri=http%3A%2F%2Flocalhost%3A24680%2Fauth%2Fcallback")
+            authorize_url.contains("redirect_uri=http%3A%2F%2Flocalhost%3A1457%2Fauth%2Fcallback")
         );
         assert!(authorize_url.contains(
             "scope=openid%20profile%20email%20offline_access%20api.connectors.read%20api.connectors.invoke"
@@ -3205,44 +3513,95 @@ mod tests {
     #[test]
     fn browser_oauth_falls_back_when_default_port_is_occupied() {
         let occupied_listener = TcpListener::bind(("127.0.0.1", CODEX_OAUTH_DEFAULT_PORT)).ok();
-        let (_callback_listener, callback_port) = bind_oauth_listener().expect("bind callback");
-
-        if occupied_listener.is_some() {
-            assert_ne!(callback_port, CODEX_OAUTH_DEFAULT_PORT);
+        if let Ok((_callback_listener, callback_port)) = bind_oauth_listener() {
+            // Even when an external login owns the preferred port, only the
+            // registered fallback may be sent to OpenAI. Never use port zero.
+            assert_eq!(callback_port, CODEX_OAUTH_FALLBACK_PORT);
         }
-        assert_ne!(callback_port, 0);
+        let _fallback = TcpListener::bind(("127.0.0.1", CODEX_OAUTH_FALLBACK_PORT)).ok();
+        assert!(bind_oauth_listener().unwrap_err().contains("1455 and 1457"));
+        drop(occupied_listener);
     }
 
-    #[test]
-    fn browser_oauth_callback_rejects_invalid_state() {
+    #[tokio::test]
+    async fn browser_oauth_callback_ignores_stray_requests_and_invalid_state() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind callback listener");
         let address = listener.local_addr().expect("callback address");
-        let callback_thread =
-            std::thread::spawn(move || wait_for_oauth_callback(listener, "expected-state"));
-
-        let mut stream = std::net::TcpStream::connect(address).expect("connect callback");
+        let (_cancel_sender, cancel_receiver) = watch::channel(false);
+        let task = tokio::spawn(wait_for_oauth_callback_with_timeout(
+            listener,
+            "expected-state",
+            Duration::from_secs(5),
+            cancel_receiver,
+        ));
+        for path in [
+            "/favicon.ico",
+            "/unrelated?code=bad&state=expected-state",
+            "/auth/callback?code=bad&state=wrong-state",
+        ] {
+            let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
+            stream
+                .write_all(format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes())
+                .await
+                .unwrap();
+            let mut response = String::new();
+            stream.read_to_string(&mut response).await.unwrap();
+            assert!(response.starts_with("HTTP/1.1 400"));
+            assert!(!task.is_finished());
+        }
+        let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
         stream
-            .write_all(
-                b"GET /auth/callback?code=auth-code&state=wrong-state HTTP/1.1\r\nHost: localhost\r\n\r\n",
-            )
-            .expect("write callback request");
-        let error = callback_thread
-            .join()
-            .expect("callback thread")
-            .expect_err("invalid state must fail");
-        assert!(error.contains("state mismatch"));
+            .write_all(b"GET /auth/callback?code=auth-code&state=expected-state HTTP/1.1\r\n")
+            .await
+            .unwrap();
+        tokio::task::yield_now().await;
+        stream.write_all(b"Host: localhost\r\n\r\n").await.unwrap();
+        assert_eq!(task.await.unwrap().unwrap(), "auth-code");
     }
 
-    #[test]
-    fn browser_oauth_callback_times_out_without_connection() {
+    #[tokio::test]
+    async fn browser_oauth_callback_times_out_without_connection() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind callback listener");
+        let (_sender, receiver) = watch::channel(false);
         let error = wait_for_oauth_callback_with_timeout(
             listener,
             "expected-state",
             Duration::from_millis(10),
+            receiver,
         )
+        .await
         .expect_err("callback must time out");
-        assert!(error.contains("Timed out"));
+        assert_eq!(error, "expired");
+    }
+
+    #[tokio::test]
+    async fn browser_oauth_cancel_releases_listener_even_with_an_idle_connection() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let (sender, receiver) = watch::channel(false);
+        let session = format!("test-browser-{}", uuid::Uuid::new_v4());
+        BROWSER_AUTH_SESSIONS
+            .lock()
+            .unwrap()
+            .insert(session.clone(), sender);
+        let task = tokio::spawn(wait_for_oauth_callback_with_timeout(
+            listener,
+            "state",
+            Duration::from_secs(300),
+            receiver,
+        ));
+        let _idle = tokio::net::TcpStream::connect(address).await.unwrap();
+        cancel_codex_official_account_oauth(session.clone()).unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.unwrap_err(), "cancelled");
+        BROWSER_AUTH_SESSIONS.lock().unwrap().remove(&session);
+        assert!(
+            TcpListener::bind(address).is_ok(),
+            "cancel must release the callback port"
+        );
     }
 
     #[test]
@@ -3394,7 +3753,10 @@ mod tests {
             assert_eq!(snapshot.limit_weekly_reset_at, Some(12345));
         }
         body["plan_type"] = serde_json::json!("prolite");
-        assert_eq!(parse_usage_snapshot(&body, Some("plus")).limit_5h_text, None);
+        assert_eq!(
+            parse_usage_snapshot(&body, Some("plus")).limit_5h_text,
+            None
+        );
         body["plan_type"] = serde_json::json!("plus");
         let snapshot = parse_usage_snapshot(&body, Some("pro"));
         assert_eq!(snapshot.limit_5h_text.as_deref(), Some("60%"));
@@ -3794,13 +4156,13 @@ mod usage_credential_tests {
     impl MockRequest {
         fn header(&self, name: &str) -> Option<String> {
             let needle = format!("{}:", name.to_ascii_lowercase());
-            self.headers
-                .lines()
-                .find_map(|line| line.to_ascii_lowercase().starts_with(&needle).then(|| {
+            self.headers.lines().find_map(|line| {
+                line.to_ascii_lowercase().starts_with(&needle).then(|| {
                     line.split_once(':')
                         .map(|(_, value)| value.trim().to_string())
                         .unwrap_or_default()
-                }))
+                })
+            })
         }
     }
 
@@ -3885,9 +4247,7 @@ mod usage_credential_tests {
                     };
                     // Accepted sockets inherit the listener's nonblocking mode on
                     // Windows; reads must block or the request looks empty.
-                    socket
-                        .set_nonblocking(false)
-                        .expect("mock socket blocking");
+                    socket.set_nonblocking(false).expect("mock socket blocking");
                     socket
                         .set_read_timeout(Some(Duration::from_secs(10)))
                         .expect("mock read timeout");
@@ -3905,6 +4265,10 @@ mod usage_credential_tests {
                     };
                     requests_thread.lock().expect("requests lock").push(request);
                     served += 1;
+                    // Status zero models a transport reset before HTTP headers.
+                    if status == 0 {
+                        continue;
+                    }
                     let _ = write!(
                         socket,
                         "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -4028,11 +4392,7 @@ mod usage_credential_tests {
         )
     }
 
-    fn auth_with(
-        access_token: &str,
-        refresh_token: &str,
-        account_id: &str,
-    ) -> serde_json::Value {
+    fn auth_with(access_token: &str, refresh_token: &str, account_id: &str) -> serde_json::Value {
         serde_json::json!({
             "auth_mode": "chatgpt",
             "last_refresh": "2026-01-01T00:00:00Z",
@@ -4059,7 +4419,12 @@ mod usage_credential_tests {
             // A direct proxy keeps reqwest from picking up env proxies for the
             // loopback mock server.
             db.with_conn(|conn| {
-                db_put(conn, DbTable::Settings, "app", &serde_json::json!({"proxy_mode": "direct"}))
+                db_put(
+                    conn,
+                    DbTable::Settings,
+                    "app",
+                    &serde_json::json!({"proxy_mode": "direct"}),
+                )
             })
             .expect("settings");
             let provider_id = "provider-a".to_string();
@@ -4094,14 +4459,14 @@ mod usage_credential_tests {
                 .unwrap_or_else(|| serde_json::json!({}))
         }
 
-        async fn save_account(&self, auth: &serde_json::Value, applied: bool) -> CodexOfficialAccount {
-            let mut content = build_account_content_from_auth_snapshot(
-                &self.provider_id,
-                auth,
-                None,
-                None,
-            )
-            .expect("account content");
+        async fn save_account(
+            &self,
+            auth: &serde_json::Value,
+            applied: bool,
+        ) -> CodexOfficialAccount {
+            let mut content =
+                build_account_content_from_auth_snapshot(&self.provider_id, auth, None, None)
+                    .expect("account content");
             content.is_applied = applied;
             save_official_account(&self.db, &content)
                 .await
@@ -4134,6 +4499,61 @@ mod usage_credential_tests {
         }
     }
 
+    #[tokio::test]
+    async fn browser_oauth_saves_tokens_without_waiting_for_usage() {
+        let _guard = TEST_GUARD.lock().await;
+        let env = TestEnv::new();
+        let access = token("browser-access", 30 * 24 * 60 * 60);
+        let server = MockServer::start(
+            Vec::new(),
+            vec![reply(200, token_body(&access, "browser-refresh"))],
+        );
+        set_test_endpoints(&server.usage_url, &server.token_url);
+        let account = exchange_and_save_browser_account(
+            &env.db,
+            "provider-a",
+            "one-shot-code",
+            "http://localhost:1457/auth/callback",
+            "pkce-verifier",
+        )
+        .await
+        .unwrap();
+        let stored = env.stored_snapshot(&account.id).await;
+        assert_eq!(stored["tokens"]["refresh_token"], "browser-refresh");
+        assert_eq!(
+            server.usage_calls(),
+            0,
+            "login success must not await quota"
+        );
+        assert_eq!(
+            env.read_runtime_auth(),
+            serde_json::json!({}),
+            "login only saves a snapshot"
+        );
+        let bodies = server.token_request_bodies();
+        assert!(bodies[0].contains("redirect_uri=http%3A%2F%2Flocalhost%3A1457%2Fauth%2Fcallback"));
+        assert!(bodies[0].contains("code_verifier=pkce-verifier"));
+    }
+
+    #[tokio::test]
+    async fn transient_usage_transport_failure_retries_once_without_rotating_tokens() {
+        let _guard = TEST_GUARD.lock().await;
+        let env = TestEnv::new();
+        let server = MockServer::start(vec![reply(0, ""), ok_usage(25.0)], Vec::new());
+        set_test_endpoints(&server.usage_url, &server.token_url);
+        let access = token("access-a", 30 * 24 * 60 * 60);
+        let account = env
+            .save_account(&auth_with(&access, "refresh-a", "account-a"), false)
+            .await;
+        env.refresh(&account.id).await.unwrap();
+        assert_eq!(server.usage_calls(), 2);
+        assert_eq!(server.token_calls(), 0);
+        assert_eq!(
+            server.authorization_headers(),
+            vec![format!("Bearer {access}"), format!("Bearer {access}")]
+        );
+    }
+
     /// Scenario 1: usable stored credential, outside the refresh window.
     #[tokio::test]
     async fn usable_stored_credential_skips_exchange_and_persists_usage() {
@@ -4149,8 +4569,15 @@ mod usage_credential_tests {
         let refreshed = env.refresh(&account.id).await.expect("refresh");
 
         assert_eq!(server.usage_calls(), 1);
-        assert_eq!(server.token_calls(), 0, "no OAuth exchange when the token is fresh");
-        assert_eq!(server.authorization_headers(), vec![format!("Bearer {access}")]);
+        assert_eq!(
+            server.token_calls(),
+            0,
+            "no OAuth exchange when the token is fresh"
+        );
+        assert_eq!(
+            server.authorization_headers(),
+            vec![format!("Bearer {access}")]
+        );
         assert_eq!(refreshed.limit_weekly_text.as_deref(), Some("75%"));
         assert_eq!(refreshed.last_error, None);
         assert!(refreshed.last_limits_fetched_at.is_some());
@@ -4201,7 +4628,11 @@ mod usage_credential_tests {
         let runtime_auth = auth_with(&runtime_access, "refresh-runtime", "account-a");
         let account = env
             .save_account(
-                &auth_with(&token("access-stored", -3600), "refresh-stored", "account-a"),
+                &auth_with(
+                    &token("access-stored", -3600),
+                    "refresh-stored",
+                    "account-a",
+                ),
                 true,
             )
             .await;
@@ -4209,7 +4640,11 @@ mod usage_credential_tests {
 
         env.refresh(&account.id).await.expect("refresh");
 
-        assert_eq!(server.token_calls(), 0, "the runtime credential is used as-is");
+        assert_eq!(
+            server.token_calls(),
+            0,
+            "the runtime credential is used as-is"
+        );
         assert_eq!(
             server.authorization_headers(),
             vec![format!("Bearer {runtime_access}")]
@@ -4305,10 +4740,15 @@ mod usage_credential_tests {
 
         let original_access = token("access-original", 20 * 24 * 60 * 60);
         let account = env
-            .save_account(&auth_with(&original_access, "refresh-original", "account-a"), false)
+            .save_account(
+                &auth_with(&original_access, "refresh-original", "account-a"),
+                false,
+            )
             .await;
 
-        env.refresh(&account.id).await.expect("refresh after recovery");
+        env.refresh(&account.id)
+            .await
+            .expect("refresh after recovery");
 
         assert_eq!(server.usage_calls(), 2, "one retry, not a loop");
         assert_eq!(server.token_calls(), 1);
@@ -4338,12 +4778,19 @@ mod usage_credential_tests {
 
         let account = env
             .save_account(
-                &auth_with(&token("access-original", 20 * 24 * 60 * 60), "refresh-original", "account-a"),
+                &auth_with(
+                    &token("access-original", 20 * 24 * 60 * 60),
+                    "refresh-original",
+                    "account-a",
+                ),
                 false,
             )
             .await;
 
-        let error = env.refresh(&account.id).await.expect_err("still unauthorized");
+        let error = env
+            .refresh(&account.id)
+            .await
+            .expect_err("still unauthorized");
 
         assert!(error.contains(CODEX_REAUTH_REQUIRED_MARKER), "{error}");
         assert_eq!(server.usage_calls(), 2);
@@ -4401,7 +4848,10 @@ mod usage_credential_tests {
             .remove("refresh_token");
 
         let account = env.save_account(&auth, false).await;
-        let error = env.refresh(&account.id).await.expect_err("no refresh token");
+        let error = env
+            .refresh(&account.id)
+            .await
+            .expect_err("no refresh token");
 
         assert!(error.contains(CODEX_REAUTH_REQUIRED_MARKER), "{error}");
         assert_eq!(server.usage_calls(), 0);
@@ -4480,7 +4930,11 @@ mod usage_credential_tests {
             set_test_endpoints(&server.usage_url, &server.token_url);
             let account = env
                 .save_account(
-                    &auth_with(&token("access-a", 20 * 24 * 60 * 60), "refresh-a", "account-a"),
+                    &auth_with(
+                        &token("access-a", 20 * 24 * 60 * 60),
+                        "refresh-a",
+                        "account-a",
+                    ),
                     false,
                 )
                 .await;
@@ -4543,7 +4997,11 @@ mod usage_credential_tests {
         set_test_endpoints(&server.usage_url, &server.token_url);
         let account = env
             .save_account(
-                &auth_with(&token("access-a", 20 * 24 * 60 * 60), "refresh-a", "account-a"),
+                &auth_with(
+                    &token("access-a", 20 * 24 * 60 * 60),
+                    "refresh-a",
+                    "account-a",
+                ),
                 false,
             )
             .await;
@@ -4558,7 +5016,11 @@ mod usage_credential_tests {
 
         env.refresh(&account.id).await.expect("refresh");
 
-        assert_eq!(server.token_calls(), 0, "the rotated credential is still fresh");
+        assert_eq!(
+            server.token_calls(),
+            0,
+            "the rotated credential is still fresh"
+        );
         assert_eq!(
             server.authorization_headers(),
             vec![format!("Bearer {rotated_access}")]
@@ -4616,7 +5078,11 @@ mod usage_credential_tests {
         // The row was applied when the request started but is no longer applied.
         let account = env
             .save_account(
-                &auth_with(&token("access-a", 20 * 24 * 60 * 60), "refresh-a", "account-a"),
+                &auth_with(
+                    &token("access-a", 20 * 24 * 60 * 60),
+                    "refresh-a",
+                    "account-a",
+                ),
                 false,
             )
             .await;
@@ -4643,7 +5109,11 @@ mod usage_credential_tests {
         ] {
             let account = env
                 .save_account(
-                    &auth_with(&token("access-a", 20 * 24 * 60 * 60), "refresh-a", "account-a"),
+                    &auth_with(
+                        &token("access-a", 20 * 24 * 60 * 60),
+                        "refresh-a",
+                        "account-a",
+                    ),
                     false,
                 )
                 .await;
@@ -4659,7 +5129,10 @@ mod usage_credential_tests {
                 })
                 .unwrap();
 
-            let error = env.refresh(&account.id).await.expect_err("unusable snapshot");
+            let error = env
+                .refresh(&account.id)
+                .await
+                .expect_err("unusable snapshot");
             assert!(!error.is_empty());
         }
 
@@ -4687,7 +5160,11 @@ mod usage_credential_tests {
         set_test_endpoints(&server.usage_url, &server.token_url);
         let account = env
             .save_account(
-                &auth_with(&token("access-a", 20 * 24 * 60 * 60), "refresh-a", "account-a"),
+                &auth_with(
+                    &token("access-a", 20 * 24 * 60 * 60),
+                    "refresh-a",
+                    "account-a",
+                ),
                 false,
             )
             .await;
@@ -4700,7 +5177,10 @@ mod usage_credential_tests {
             .filter(|request| !request.path.contains("/oauth/token"))
             .filter_map(|request| request.header("Chatgpt-Account-Id"))
             .collect();
-        assert_eq!(headers, vec!["account-a".to_string(), "account-a".to_string()]);
+        assert_eq!(
+            headers,
+            vec!["account-a".to_string(), "account-a".to_string()]
+        );
     }
 
     /// Scenario 16: a failed refresh stays a failure on the stored row.
@@ -4712,7 +5192,11 @@ mod usage_credential_tests {
         set_test_endpoints(&success.usage_url, &success.token_url);
         let account = env
             .save_account(
-                &auth_with(&token("access-a", 20 * 24 * 60 * 60), "refresh-a", "account-a"),
+                &auth_with(
+                    &token("access-a", 20 * 24 * 60 * 60),
+                    "refresh-a",
+                    "account-a",
+                ),
                 false,
             )
             .await;
@@ -4722,7 +5206,10 @@ mod usage_credential_tests {
 
         let failing = MockServer::start(vec![reply(503, "{}")], Vec::new());
         set_test_endpoints(&failing.usage_url, &failing.token_url);
-        let error = env.refresh(&account.id).await.expect_err("second refresh fails");
+        let error = env
+            .refresh(&account.id)
+            .await
+            .expect_err("second refresh fails");
 
         let stored = load_official_account(&env.db, &account.id).await.unwrap();
         assert_eq!(stored.last_error.as_deref(), Some(error.as_str()));

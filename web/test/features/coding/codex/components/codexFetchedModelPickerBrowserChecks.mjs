@@ -18,6 +18,9 @@ export async function verifyCodexFetchedModelPicker({ send, evaluate, baseUrl, a
     throw new Error('Timed out: ' + expression);
   };
   const action = expression => evaluate('modelPickerFixture.' + expression);
+  const waitForOptions = async labels => {
+    await waitFor(`JSON.stringify(modelPickerFixture.options()) === ${JSON.stringify(JSON.stringify(labels))}`);
+  };
   const key = async (key, code, windowsVirtualKeyCode) => {
     await send('Input.dispatchKeyEvent', { type: 'keyDown', key, code, windowsVirtualKeyCode });
     await send('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode });
@@ -54,6 +57,7 @@ export async function verifyCodexFetchedModelPicker({ send, evaluate, baseUrl, a
     check(label + ' fetch does not replace unknown current model', await action('modelInput().value'), 'gpt-6.1-sol');
     check(label + ' fetch preserves TOML', (await action('toml()')).includes('model = "gpt-6.1-sol"'));
     await openPicker();
+    await waitForOptions(expectedLabels);
     check(label + ' all eight fetched models can be inspected', await action('options()'), expectedLabels);
     await screenshot(language + '-eight-models');
     await action('search("synthetic-model-7")');
@@ -65,6 +69,7 @@ export async function verifyCodexFetchedModelPicker({ send, evaluate, baseUrl, a
     await key('Escape', 'Escape', 27);
     check(label + ' Escape cancels browsing without changing model', await action('modelInput().value'), 'gpt-6.1-sol');
     await openPicker();
+    await waitForOptions(expectedLabels);
     check(label + ' reopening clears the previous search', (await action('options()')).length, 8);
     await action('search("synthetic-model-7")');
     await waitFor('modelPickerFixture.options().length === 1');
@@ -89,6 +94,7 @@ export async function verifyCodexFetchedModelPicker({ send, evaluate, baseUrl, a
   await action('click("codex.fetchModels.button")');
   await action('resolveNext(["stale-cancelled-model"])');
   await openPicker();
+  await waitForOptions(expectedLabels);
   check('late cancelled fetch cannot overwrite reopened session', await action('options()'), expectedLabels);
   check('stale result is not visible', !(await action('options()')).some(text => text.includes('stale-cancelled-model')));
   await key('Escape', 'Escape', 27);
@@ -100,10 +106,12 @@ export async function verifyCodexFetchedModelPicker({ send, evaluate, baseUrl, a
   await action('click("codex.fetchModels.button")');
   await action('resolveNext(["stale-provider-model"])');
   await openPicker();
+  await waitForOptions(expectedLabels);
   check('late result from previous provider cannot overwrite current results', await action('options()'), expectedLabels);
   await key('Escape', 'Escape', 27);
   await action('rejectNext()'); await action('click("codex.fetchModels.button")');
   await openPicker();
+  await waitFor('modelPickerFixture.options().some(text => text.includes("gpt-5.2")) && modelPickerFixture.options().every(text => !text.includes("synthetic-model"))');
   const fallbackLabels = await action('options()');
   check('official failure exposes bundled fallback instead of the previous list', fallbackLabels.some(text => text.includes('gpt-5.2')) && fallbackLabels.every(text => !text.includes('synthetic-model')));
   await key('Escape', 'Escape', 27);
@@ -115,6 +123,7 @@ export async function verifyCodexFetchedModelPicker({ send, evaluate, baseUrl, a
     return row.left >= 0 && row.right <= innerWidth;
   })()`));
   await openPicker();
+  await waitForOptions(expectedLabels);
   await screenshot('narrow-model-picker');
   check('narrow picker still exposes all models', await action('options()'), expectedLabels);
   check('fixture invoked only fake allowlisted commands', await action('state.requests.every(request => ["read_opencode_config", "proxy_gateway_supported_cli_keys", "fetch_codex_official_models"].includes(request.command))'));
