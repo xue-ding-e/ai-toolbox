@@ -54,6 +54,7 @@ sequenceDiagram
 - **`data` 里是否带 `id` 不可依赖**：写入不会自动剔除，读取时 `db_get` 用列值覆盖 `id`，所以读回再写不会污染读取结果；`db_patch_fields` 在写回前显式移除 `id`。新代码不要假设 `data` 里有或没有 `id`。
 - **版本过新必须硬失败**：`ensure_supported_user_version` 在设置任何 PRAGMA 之前跑；`user_version > TARGET_SCHEMA_VERSION` 时返回带 `AI_TOOLBOX_SQLITE_SCHEMA_TOO_NEW` 前缀的错误，`lib.rs` 据此进入无数据库的恢复界面（`startup_recovery` + 前端 `get_startup_recovery`），既不降级 schema 也不 `panic!`。回归见 `tauri/tests/sqlite_jsonb.rs` 的「过新版本时文件不被改动」用例。
 - **迁移前快照只对真实文件库做**：`in_memory_for_test` / `initialize_connection` 不产生快照；文件库在 `0 < user_version < TARGET` 时写到 `<db 目录>/sqlite-migration-backups/`，写不出来就阻断升级（错误信息里带 from/to 版本）。
+- **已标记 v30 但缺表达式索引**：实际文件库曾出现 `user_version=30` 且缺 `idx_request_logs_proxy_envelope`；Session Usage 的 scoped envelope 未命中因此退化为扫描大量日志，并在单连接锁内阻塞设置/供应商查询。v31 独立幂等重建该索引，不能只改 v30 迁移（已标记的库不会重跑）。回归从缺索引的真实 v30 文件出发，核对迁移前快照、旧行、partial expression index 和 lookup 的 `EXPLAIN QUERY PLAN`；已有索引的 v30 库也须重复升级不变。
 - **`change_hook` 目前只在测试里用**：`install_change_recorder` 记录 `(action, database, table, row_id)`，但生产启动路径没有安装它——**DB 层不发任何 Tauri 事件**。需要「改完通知前端」的模块必须自己 `emit`（如 `config-changed`），不要假设写库会触发同步或缓存失效。
 - **`backup::backup_to_path` 是唯一的安全拷贝入口**（先 `wal_checkpoint(TRUNCATE)` 再 `conn.backup`）：迁移前快照、备份 zip、恢复前回滚点都用它，不要另写 `conn.backup` 直调。`vacuum` 目前没有生产调用点。
 - **模型定价 seed 只增不改**：缓存文件、内置资源、远端同步一律 `INSERT OR IGNORE`，绝不覆盖用户改过的行；缓存文件解析失败只 `warn` 并跳过（不阻断启动）；远端同步成功后用 tmp + rename 写缓存。`set_cache_dir` 是 `OnceLock`，只能在启动时设置一次。

@@ -18,7 +18,7 @@ use ai_toolbox_lib::db::schema::{
 use ai_toolbox_lib::db::sqlite_state::{
     initialize_connection, SqliteDbState, SQLITE_MIGRATION_BACKUP_DIR,
 };
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 
 fn test_conn() -> Connection {
@@ -1331,4 +1331,149 @@ fn v30_migration_preserves_history_and_indexes_legacy_proxy_envelopes() {
             .count(),
         1
     );
+}
+
+#[test]
+fn v31_repairs_version_30_file_missing_proxy_envelope_index() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("missing-envelope-index.db");
+    {
+        let mut conn = Connection::open(&path).unwrap();
+        initialize_connection(&mut conn).unwrap();
+        conn.execute_batch(
+            "DROP INDEX idx_request_logs_proxy_envelope;
+             INSERT INTO proxy_request_logs
+               (request_id, provider_id, app_type, model, input_tokens, output_tokens,
+                created_at, data_source, request_kind)
+             VALUES
+               ('SESSION:codex:provider:old-proxy', 'provider', 'codex', 'gpt-5', 101, 12, 1780000000, 'proxy', 'request'),
+               ('SESSION:codex:session:old-native', 'session', 'codex', 'gpt-5', 202, 24, 1780000000, 'session', 'request');",
+        )
+        .unwrap();
+        migrations::set_user_version(&conn, 30).unwrap();
+    }
+
+    let db = SqliteDbState::open(path.clone()).expect("upgrade file with missing v30 index");
+    db.with_conn(|conn| {
+        assert_eq!(migrations::get_user_version(conn).unwrap(), TARGET_SCHEMA_VERSION);
+        let totals: (i64, i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(*), SUM(input_tokens), SUM(output_tokens) FROM proxy_request_logs",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(totals, (2, 303, 36));
+        let indexed_proxies: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM proxy_request_logs INDEXED BY idx_request_logs_proxy_envelope
+                 WHERE COALESCE(data_source, 'proxy') = 'proxy' AND request_kind = 'request'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(indexed_proxies, 1, "native rows must not enter the partial index");
+        let mut plan = conn
+            .prepare(
+                "EXPLAIN QUERY PLAN SELECT request_id FROM proxy_request_logs
+                 WHERE app_type = ?1
+                   AND substr(request_id, length('SESSION:' || app_type || ':' || provider_id || ':') + 1) = ?2
+                   AND request_id = 'SESSION:' || app_type || ':' || provider_id || ':' || ?2
+                   AND COALESCE(data_source, 'proxy') = 'proxy'
+                   AND request_kind = 'request'
+                   AND (?3 IS NULL OR request_id = ?3)
+                 LIMIT 1",
+            )
+            .unwrap();
+        let details = plan
+            .query_map(params!["codex", "not-present", Option::<String>::None], |row| {
+                row.get::<_, String>(3)
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(
+            details.iter().any(|detail| detail.contains("idx_request_logs_proxy_envelope")),
+            "the real lookup must use the expression index: {details:?}"
+        );
+        Ok(())
+    })
+    .unwrap();
+    drop(db);
+
+    let backup_path = fs::read_dir(root.path().join(SQLITE_MIGRATION_BACKUP_DIR))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let backup = Connection::open(backup_path).unwrap();
+    assert_eq!(migrations::get_user_version(&backup).unwrap(), 30);
+    let old_index_count: i64 = backup
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_request_logs_proxy_envelope'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        old_index_count, 0,
+        "snapshot must preserve the missing-index state"
+    );
+
+    let reopened = SqliteDbState::open(path).expect("reopen repaired database");
+    reopened
+        .with_conn(|conn| {
+            assert_eq!(
+                migrations::get_user_version(conn).unwrap(),
+                TARGET_SCHEMA_VERSION
+            );
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        fs::read_dir(root.path().join(SQLITE_MIGRATION_BACKUP_DIR))
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "db"))
+            .count(),
+        1,
+        "reopening the repaired version must not create another snapshot"
+    );
+}
+
+#[test]
+fn v31_keeps_existing_envelope_index_and_rows_on_repeat() {
+    let mut conn = test_conn();
+    conn.execute(
+        "INSERT INTO proxy_request_logs
+         (request_id, provider_id, app_type, model, input_tokens, created_at, data_source, request_kind)
+         VALUES ('SESSION:codex:p:existing', 'p', 'codex', 'gpt-5', 17, 1780000000, 'proxy', 'request')",
+        [],
+    )
+    .unwrap();
+    migrations::set_user_version(&conn, 30).unwrap();
+
+    migrations::run_all(&mut conn).expect("upgrade v30 with existing index");
+    migrations::run_all(&mut conn).expect("repeat upgraded migration");
+    assert_eq!(
+        migrations::get_user_version(&conn).unwrap(),
+        TARGET_SCHEMA_VERSION
+    );
+    let index_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_request_logs_proxy_envelope'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(index_count, 1);
+    let tokens: i64 = conn
+        .query_row(
+            "SELECT input_tokens FROM proxy_request_logs WHERE request_id = 'SESSION:codex:p:existing'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(tokens, 17);
 }
