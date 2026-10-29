@@ -149,6 +149,12 @@ Gateway 协议转换采用双文档维护：
 5. **验收检查**：完成 UI 改动后，至少自查亮色、暗色、system theme、长文本、空态、加载态、hover/active/disabled/selected 状态，以及是否出现卡片套卡片、硬编码颜色或布局跳动。
 6. **维护校验**：修改 `DESIGN.md` 本身时，必须运行 `pnpm design:lint`。该命令封装 Google `@google/design.md` CLI 的 `designmd lint DESIGN.md`，用于检查 DESIGN.md 格式、frontmatter token 和可被工具识别的设计规范问题。仅修改业务 UI 代码时不强制运行它，除非同时改了 `DESIGN.md`。
 
+## Fork 交付与分支维护
+
+- 用户 fork 的 `main` 只接受线性交付：使用 rebase，不运行 `git merge` 或新增 merge commit，不强制覆盖远端历史。`origin` 指向用户 fork，原作者仓库保留为 `upstream`。
+- 上游待同步区间若含合并节点，线性重放须保留主线各节点的实际文件树与既有冲突解决；逐节点和最终对照原提交做 tree/diff 等价检查。不能只看 rebase 成功就宣布没有丢改动。共享工作区的未提交文件必须在操作前后核对内容，并保留其它会话的修改。
+- 删除远端分支前核验当前 head、PR 是否真正 merged、有效改动是否已进入目标 main；被后续正式实现明确替代的一次性验证分支也可清理。仍有独立工作、活动 PR 或历史证据链接的分支保留，不能只按分支名或关闭状态批量删除。
+
 ## Project Overview
 
 AI Toolbox is a cross-platform desktop application built with:
