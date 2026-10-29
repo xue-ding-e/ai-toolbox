@@ -3616,6 +3616,8 @@ const HIDDEN_ALIAS_PRIORITY_BASE: u64 = 9000;
 struct AggregateCatalogEntry {
     /// The configured aggregate slug — what Codex shows and sends back verbatim.
     slug: String,
+    /// Bare upstream id used for model capability lookups before slug encoding.
+    upstream_model: String,
     /// Site that owns this entry; `None` for the hidden bare-name aliases, which
     /// are addressable but advertise no auto-review override. Used while
     /// building the catalog to turn the provider-level bare auto-review model id
@@ -3658,7 +3660,7 @@ fn aggregate_catalog_from_entries(
         .enumerate()
         .map(|(index, entry)| {
             let spec = CodexCatalogModelSpec {
-                model: entry.slug.clone(),
+                model: entry.upstream_model.clone(),
                 display_name: Some(entry.display_name.clone()),
                 context_window: entry.context_window,
                 auto_review_model_override: entry.auto_review_model_override.clone(),
@@ -3668,6 +3670,7 @@ fn aggregate_catalog_from_entries(
                 input_modalities: entry.input_modalities.clone(),
             };
             let mut value = codex_model_catalog_entry(&spec, index, default_context_window);
+            value["slug"] = serde_json::Value::String(entry.slug.clone());
             if entry.hidden {
                 if let Some(object) = value.as_object_mut() {
                     object.insert(
@@ -3859,6 +3862,7 @@ fn codex_aggregate_catalog_entries_with_failover(
 
             entries.push(AggregateCatalogEntry {
                 slug,
+                upstream_model: spec.model.clone(),
                 site_id: Some(site_id.clone()),
                 hidden: false,
                 // Rewritten once the promoted rows are known: the site slugs
@@ -4028,6 +4032,7 @@ fn codex_aggregate_catalog_entries_with_failover(
 
         entries.push(AggregateCatalogEntry {
             slug: model.clone(),
+            upstream_model: model.clone(),
             site_id: None,
             hidden: false,
             priority,
@@ -4081,6 +4086,7 @@ fn codex_aggregate_catalog_entries_with_failover(
         }
         entries.push(AggregateCatalogEntry {
             slug: model.clone(),
+            upstream_model: model.clone(),
             site_id: None,
             hidden: true,
             priority: HIDDEN_ALIAS_PRIORITY_BASE + hidden_offset,
@@ -6733,6 +6739,54 @@ approval_policy = "never"
         // Same neutral template fields the single-provider catalog emits.
         assert_eq!(model["visibility"], "list");
         assert_eq!(model["shell_type"], "unified_exec");
+    }
+
+    #[test]
+    fn aggregate_catalog_modalities_use_upstream_model_before_site_slug() {
+        let sites = vec![
+            aggregate_site(
+                "site",
+                "Site",
+                json!([
+                    { "model": "deepseek-chat" },
+                    { "model": "gemini-2.5-flash" },
+                    { "model": "unknown-relay-model" }
+                ]),
+            ),
+            aggregate_site(
+                "override",
+                "Override",
+                json!([
+                    { "model": "gemini-2.5-flash", "modalities": { "input": ["text"] } },
+                    { "model": "deepseek-chat", "modalities": { "input": ["text", "image"] } }
+                ]),
+            ),
+        ];
+        let (entries, _) = codex_aggregate_catalog_entries(&sites, &aggregate_naming(".")).unwrap();
+        let catalog = aggregate_catalog_from_entries(&entries, 200_000);
+        let models = catalog["models"].as_array().unwrap();
+        let modalities = |slug: &str| {
+            &models
+                .iter()
+                .find(|model| model["slug"] == slug)
+                .unwrap_or_else(|| panic!("catalog is missing `{slug}`"))["input_modalities"]
+        };
+
+        assert_eq!(modalities("site.deepseek-chat"), &json!(["text"]));
+        assert_eq!(modalities("deepseek-chat"), &json!(["text"]));
+        assert_eq!(
+            modalities("site.gemini-2.5-flash"),
+            &json!(["text", "image", "audio"])
+        );
+        assert_eq!(
+            modalities("site.unknown-relay-model"),
+            &json!(["text", "image"])
+        );
+        assert_eq!(modalities("override.gemini-2.5-flash"), &json!(["text"]));
+        assert_eq!(
+            modalities("override.deepseek-chat"),
+            &json!(["text", "image"])
+        );
     }
 
     #[test]
