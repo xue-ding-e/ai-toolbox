@@ -119,5 +119,42 @@ export async function verifyCodexBrowserOauth({ send, evaluate, baseUrl, screens
     if (screenshot) await screenshot('codex-browser-oauth-' + mode);
     await cancelModal();
   }
+
+  await send('Page.navigate', { url: `${baseUrl}/?browserOauth=1&runId=device-auth-check` });
+  await waitFor("window.codexCardViewFixture?.state.runId === 'device-auth-check' && document.querySelector('[data-provider-id=provider-c]')", 'device auth page');
+  const openDevice = async () => {
+    await clickNamed('OAuth 登录');
+    await waitFor("document.body.textContent.includes('选择登录方式')", 'device login chooser');
+    await clickNamed('设备码登录');
+    await waitFor("document.body.textContent.includes('Codex 设备码登录')", 'device auth modal');
+  };
+  const deviceCancels = "codexCardViewFixture.state.requests.filter(r => r.command === 'cancel_codex_official_account_device_auth')";
+  await openDevice();
+  await waitFor('codexCardViewFixture.pendingDeviceStartCount() === 1', 'device start pending');
+  check('device listener precedes start result', await evaluate('codexCardViewFixture.oauthListenerInstalled()'));
+  check('device modal opens during code request', await evaluate("document.body.textContent.includes('正在获取设备码')"));
+  const deviceListsBefore = await evaluate("codexCardViewFixture.state.requests.filter(r => r.command === 'list_codex_official_accounts').length");
+  await evaluate("codexCardViewFixture.emitOauthStatus('device-session-1', 'authorized'), codexCardViewFixture.resolveDeviceStart(), true");
+  await waitFor(`codexCardViewFixture.state.requests.filter(r => r.command === 'list_codex_official_accounts').length > ${deviceListsBefore}`, 'early device completion reload');
+  check('early device authorization closes modal', await evaluate("!document.querySelector('.ant-modal-wrap:not([style*=\"display: none\"]) .ant-modal-title')?.textContent.includes('Codex 设备码登录')"));
+
+  await openDevice();
+  await waitFor('codexCardViewFixture.pendingDeviceStartCount() === 1', 'device start before cancel');
+  await cancelModal();
+  await evaluate("codexCardViewFixture.resolveDeviceStart('device-session-2'), true");
+  await waitFor(`${deviceCancels}.length === 1`, 'device cancel intent');
+  check('closing before device start resolves cancels its session', await evaluate(`${deviceCancels}[0].args.sessionId`), 'device-session-2');
+
+  await openDevice();
+  await waitFor('codexCardViewFixture.pendingDeviceStartCount() === 1', 'device exchange scenario');
+  await evaluate("codexCardViewFixture.resolveDeviceStart('device-session-3'), true");
+  await waitFor("document.body.textContent.includes('CODE-123')", 'device code shown');
+  await evaluate("codexCardViewFixture.emitOauthStatus('device-session-3', 'exchanging'), true");
+  await waitFor("document.body.textContent.includes('正在保存账号')", 'device exchange status');
+  await cancelModal();
+  const listsBeforeDeviceUpdate = await evaluate("codexCardViewFixture.state.requests.filter(r => r.command === 'list_codex_official_accounts').length");
+  await evaluate('codexCardViewFixture.emitAccountsChanged(), true');
+  await waitFor(`codexCardViewFixture.state.requests.filter(r => r.command === 'list_codex_official_accounts').length > ${listsBeforeDeviceUpdate}`, 'device background save reload');
+  check('device account update reloads after dialog closes', true);
   return checks;
 }

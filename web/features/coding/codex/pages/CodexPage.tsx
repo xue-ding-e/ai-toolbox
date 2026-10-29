@@ -41,8 +41,6 @@ import {
   getCodexCommonConfig,
   listCodexProviders,
   listCodexOfficialAccounts,
-  startCodexOfficialAccountDeviceAuth,
-  type CodexDeviceAuthStartResult,
   saveCodexOfficialLocalAccount,
   importCodexOfficialAccountFromAuthJson,
   applyCodexOfficialAccount,
@@ -77,6 +75,7 @@ import {
 import { useKeepAlive } from '@/components/layout/KeepAliveOutlet';
 import { useCodexDaemonNotice } from '../hooks/useCodexDaemonNotice';
 import { useCodexBrowserOauth } from '../hooks/useCodexBrowserOauth';
+import { useCodexDeviceAuth } from '../hooks/useCodexDeviceAuth';
 import { TRAY_CONFIG_REFRESH_EVENT, DEEP_LINK_IMPORT_COMPLETED } from '@/constants/configEvents';
 import { useSettingsStore } from '@/stores';
 import CodexProviderCard from '../components/CodexProviderCard';
@@ -474,9 +473,6 @@ const CodexPage: React.FC = () => {
   const [savingCodexUnifiedHistory, setSavingCodexUnifiedHistory] = React.useState(false);
   const [refreshingOfficialAccountId, setRefreshingOfficialAccountId] = React.useState<string | null>(null);
   const [savingOfficialAccountId, setSavingOfficialAccountId] = React.useState<string | null>(null);
-  const [codexDeviceAuthSession, setCodexDeviceAuthSession] = React.useState<
-    CodexDeviceAuthStartResult | null
-  >(null);
   const [officialAccountDetails, setOfficialAccountDetails] = React.useState<{
     provider: CodexProvider;
     account: CodexOfficialAccount;
@@ -639,6 +635,11 @@ const CodexPage: React.FC = () => {
   }, [t]);
 
   const browserOauth = useCodexBrowserOauth(async () => {
+    message.success(t('codex.provider.officialAccountOauthSuccess'));
+    await loadConfig();
+    await refreshTrayMenu();
+  });
+  const deviceAuth = useCodexDeviceAuth(async () => {
     message.success(t('codex.provider.officialAccountOauthSuccess'));
     await loadConfig();
     await refreshTrayMenu();
@@ -918,17 +919,6 @@ const CodexPage: React.FC = () => {
     }
   };
 
-  const startDeviceOfficialAccountOauth = async (provider: CodexProvider) => {
-    try {
-      const session = await startCodexOfficialAccountDeviceAuth(provider.id);
-      setCodexDeviceAuthSession(session);
-    } catch (error) {
-      console.error('Failed to start Codex official account device auth:', error);
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      message.error(errorMsg || t('common.error'));
-    }
-  };
-
   const handleStartOfficialAccountOauth = (provider: CodexProvider) => {
     const loginMethodModal = Modal.confirm({
       title: t('codex.provider.loginMethodTitle'),
@@ -951,7 +941,7 @@ const CodexPage: React.FC = () => {
             block
             onClick={() => {
               loginMethodModal.destroy();
-              void startDeviceOfficialAccountOauth(provider);
+              void deviceAuth.start(provider.id);
             }}
           >
             {t('codex.provider.deviceAuth')}
@@ -3190,13 +3180,8 @@ const CodexPage: React.FC = () => {
           )}
         </Modal>
         <CodexDeviceAuthModal
-          authSession={codexDeviceAuthSession}
-          onClose={() => setCodexDeviceAuthSession(null)}
-          onCompleted={async () => {
-            setCodexDeviceAuthSession(null);
-            await loadConfig();
-            await refreshTrayMenu();
-          }}
+          view={deviceAuth.view}
+          onClose={deviceAuth.close}
         />
         <CodexBrowserOauthModal
           view={browserOauth.view}

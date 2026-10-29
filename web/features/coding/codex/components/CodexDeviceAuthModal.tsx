@@ -1,43 +1,27 @@
 import React from 'react';
-import { Button, Modal, Space, Typography, message } from 'antd';
+import { Alert, Button, Modal, Space, Typography, message } from 'antd';
 import { CopyOutlined, LinkOutlined } from '@ant-design/icons';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { useTranslation } from 'react-i18next';
-import {
-  cancelCodexOfficialAccountDeviceAuth,
-  type CodexDeviceAuthStartResult,
-} from '@/services/codexApi';
+import type { CodexDeviceAuthView } from '../hooks/useCodexDeviceAuth';
 
 const { Text } = Typography;
 
-interface CodexAuthStatusEvent {
-  sessionId: string;
-  status: string;
-  message?: string;
-  accountId?: string;
-}
-
 interface CodexDeviceAuthModalProps {
-  authSession: CodexDeviceAuthStartResult | null;
+  view: CodexDeviceAuthView | null;
   onClose: () => void;
-  onCompleted: () => Promise<void>;
 }
-
-const TERMINAL_STATUSES = new Set(['authorized', 'cancelled', 'expired', 'error']);
 
 const CodexDeviceAuthModal: React.FC<CodexDeviceAuthModalProps> = ({
-  authSession,
+  view,
   onClose,
-  onCompleted,
 }) => {
   const { t } = useTranslation();
-  const [status, setStatus] = React.useState('waiting_for_user');
+  const authSession = view?.session;
   const [remainingSeconds, setRemainingSeconds] = React.useState(0);
 
   React.useEffect(() => {
     if (!authSession) {
-      setStatus('waiting_for_user');
       setRemainingSeconds(0);
       return;
     }
@@ -49,49 +33,23 @@ const CodexDeviceAuthModal: React.FC<CodexDeviceAuthModalProps> = ({
     return () => window.clearInterval(timer);
   }, [authSession]);
 
-  React.useEffect(() => {
-    if (!authSession) return;
-    let disposed = false;
-    let unlisten: UnlistenFn | undefined;
-    void listen<CodexAuthStatusEvent>('codex-auth-status', (event) => {
-      if (disposed || event.payload.sessionId !== authSession.sessionId) return;
-      setStatus(event.payload.status);
-      if (event.payload.status === 'authorized') {
-        message.success(t('codex.provider.officialAccountOauthSuccess'));
-        void onCompleted();
-      } else if (TERMINAL_STATUSES.has(event.payload.status)
-        && event.payload.status !== 'cancelled') {
-        message.error(event.payload.message || t('common.error'));
-      }
-    }).then((stopListening) => {
-      if (disposed) stopListening();
-      else unlisten = stopListening;
-    });
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, [authSession, onCompleted, t]);
-
-  const handleClose = async () => {
-    if (authSession && !TERMINAL_STATUSES.has(status)) {
-      await cancelCodexOfficialAccountDeviceAuth(authSession.sessionId).catch(() => undefined);
-    }
-    onClose();
-  };
-
   return (
     <Modal
-      open={Boolean(authSession)}
+      open={Boolean(view)}
       title={t('codex.provider.deviceAuthTitle')}
-      onCancel={() => void handleClose()}
-      footer={<Button onClick={() => void handleClose()}>{t('common.cancel')}</Button>}
+      onCancel={onClose}
+      footer={<Button onClick={onClose}>{t('common.cancel')}</Button>}
       width={560}
     >
-      {authSession && (
+      {view && (
         <Space direction="vertical" size={16} style={{ width: '100%' }}>
-          <Text>{t('codex.provider.deviceAuthHint')}</Text>
-          <Space.Compact block>
+          <Text>{authSession ? t('codex.provider.deviceAuthHint')
+            : view.status === 'error' ? t('codex.provider.deviceAuthFailed')
+              : t('codex.provider.deviceAuthStarting')}</Text>
+          {view.error && <Alert type="warning" showIcon message={view.error} />}
+          {authSession && (
+            <>
+              <Space.Compact block>
             <Button
               icon={<LinkOutlined />}
               onClick={() => void openUrl(authSession.verificationUri)}
@@ -106,13 +64,19 @@ const CodexDeviceAuthModal: React.FC<CodexDeviceAuthModalProps> = ({
             >
               {t('common.copy')}
             </Button>
-          </Space.Compact>
-          <Typography.Title level={3} copyable style={{ margin: 0, textAlign: 'center' }}>
-            {authSession.userCode}
-          </Typography.Title>
-          <Text type="secondary">
-            {t('codex.provider.deviceAuthStatus', { status, seconds: remainingSeconds })}
-          </Text>
+              </Space.Compact>
+              <Typography.Title level={3} copyable style={{ margin: 0, textAlign: 'center' }}>
+                {authSession.userCode}
+              </Typography.Title>
+              <Text type="secondary">
+                {t('codex.provider.deviceAuthStatus', {
+                  status: view.status === 'exchanging'
+                    ? t('codex.provider.deviceAuthExchanging') : view.status,
+                  seconds: remainingSeconds,
+                })}
+              </Text>
+            </>
+          )}
         </Space>
       )}
     </Modal>

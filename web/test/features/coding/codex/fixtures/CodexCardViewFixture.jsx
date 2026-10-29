@@ -214,6 +214,7 @@ const state = {
 const pendingUsage = [];
 const pendingAccountLists = [];
 const pendingOauthStarts = [];
+const pendingDeviceStarts = [];
 let deferAccountList = false;
 let oauthListenerId = null;
 let accountsListenerId = null;
@@ -231,6 +232,14 @@ const invoke = async (command, args) => {
     return new Promise((resolve, reject) => pendingOauthStarts.push({ resolve, reject }));
   }
   if (parameters.has('browserOauth') && command === 'cancel_codex_official_account_oauth') {
+    state.requests.push({ command, args: structuredClone(args) });
+    return null;
+  }
+  if (parameters.has('browserOauth') && command === 'start_codex_official_account_device_auth') {
+    state.requests.push({ command, args: structuredClone(args) });
+    return new Promise((resolve) => pendingDeviceStarts.push(resolve));
+  }
+  if (parameters.has('browserOauth') && command === 'cancel_codex_official_account_device_auth') {
     state.requests.push({ command, args: structuredClone(args) });
     return null;
   }
@@ -303,6 +312,14 @@ window.codexCardViewFixture = {
   },
   oauthListenerInstalled: () => oauthListenerId !== null && eventListeners.has(oauthListenerId),
   pendingOauthStartCount: () => pendingOauthStarts.length,
+  pendingDeviceStartCount: () => pendingDeviceStarts.length,
+  resolveDeviceStart(sessionId = 'device-session-1') {
+    const resolve = pendingDeviceStarts.shift();
+    if (!resolve) throw new Error('No pending device auth start');
+    resolve({ sessionId, verificationUri: 'https://example.invalid/device',
+      userCode: 'CODE-123', expiresAt: Math.floor(Date.now() / 1000) + 300,
+      pollIntervalSeconds: 5 });
+  },
   resolveOauthStart(sessionId = 'oauth-session-1') {
     const pending = pendingOauthStarts.shift();
     if (!pending) throw new Error('No pending browser OAuth start');
@@ -314,7 +331,7 @@ window.codexCardViewFixture = {
   },
   emitOauthStatus(sessionId, status, error) {
     const callback = eventListeners.get(oauthListenerId);
-    if (!callback) throw new Error('No browser OAuth status listener');
+    if (!callback) throw new Error('No Codex auth status listener');
     callback({ event: 'codex-auth-status', id: 1, payload: {
       sessionId, status, message: error,
     } });

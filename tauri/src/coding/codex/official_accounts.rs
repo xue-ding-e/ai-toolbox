@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io::Write;
 use std::net::TcpListener;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 use tempfile::NamedTempFile;
@@ -52,10 +53,71 @@ static OAUTH_REFRESH_LOCK: LazyLock<AsyncMutex<()>> = LazyLock::new(|| AsyncMute
 static OAUTH_REFRESH_CACHE: LazyLock<
     AsyncMutex<HashMap<String, (std::time::Instant, OAuthTokenResponse)>>,
 > = LazyLock::new(|| AsyncMutex::new(HashMap::new()));
-static DEVICE_AUTH_SESSIONS: LazyLock<Mutex<HashMap<String, watch::Sender<bool>>>> =
+struct DeviceAuthSession {
+    cancel: watch::Sender<bool>,
+    exchange_started: bool,
+}
+
+static DEVICE_AUTH_SESSIONS: LazyLock<Mutex<HashMap<String, DeviceAuthSession>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static BROWSER_AUTH_SESSIONS: LazyLock<Mutex<HashMap<String, watch::Sender<bool>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+static NEXT_USAGE_REQUEST: AtomicU64 = AtomicU64::new(1);
+static USAGE_REQUESTS: LazyLock<Mutex<HashMap<String, UsageRequestState>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+struct UsageRequestState {
+    latest: u64,
+    active: usize,
+}
+
+/// Tracks only in-flight requests. The newest started request owns the row's
+/// usage fields; token rotations remain independently persisted before usage.
+struct UsageRequestGuard {
+    account_id: String,
+    generation: u64,
+}
+
+impl UsageRequestGuard {
+    fn begin(account_id: &str) -> Self {
+        let mut requests = USAGE_REQUESTS
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let generation = NEXT_USAGE_REQUEST.fetch_add(1, Ordering::Relaxed);
+        let state = requests
+            .entry(account_id.to_string())
+            .or_insert(UsageRequestState {
+                latest: generation,
+                active: 0,
+            });
+        state.latest = generation;
+        state.active += 1;
+        Self {
+            account_id: account_id.to_string(),
+            generation,
+        }
+    }
+
+    fn is_current(&self, requests: &HashMap<String, UsageRequestState>) -> bool {
+        requests
+            .get(&self.account_id)
+            .is_some_and(|state| state.latest == self.generation)
+    }
+}
+
+impl Drop for UsageRequestGuard {
+    fn drop(&mut self) {
+        let mut requests = USAGE_REQUESTS
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if let Some(state) = requests.get_mut(&self.account_id) {
+            state.active -= 1;
+            if state.active == 0 {
+                requests.remove(&self.account_id);
+            }
+        }
+    }
+}
 
 /// Test-only endpoint override so the OAuth exchange and usage request can be
 /// pointed at a local mock server.
@@ -700,6 +762,12 @@ fn runtime_credential_is_newer(runtime: &Value, stored: &Value) -> bool {
     }
 }
 
+fn credential_changed_since_attempt(latest: &Value, attempted: &Value) -> bool {
+    auth_identities_match(latest, attempted)
+        && (access_token_from_auth(latest).ok() != access_token_from_auth(attempted).ok()
+            || auth_refresh_token(latest) != auth_refresh_token(attempted))
+}
+
 /// Exchange the refresh token for a new credential. The caller must already
 /// hold `OAUTH_REFRESH_LOCK`, and must have re-read the stored credential
 /// inside the lock so a concurrently rotated refresh token is not consumed
@@ -856,6 +924,13 @@ async fn recover_persisted_account_credential(
     let _refresh_guard = OAUTH_REFRESH_LOCK.lock().await;
     let (latest, base) =
         newest_account_credential(db, &load_official_account(db, account_id).await?).await?;
+    if credential_changed_since_attempt(&base, attempted_auth) {
+        return Ok(PreparedOfficialCredential {
+            account: latest,
+            auth: base,
+            runtime_written: false,
+        });
+    }
     let next = exchange_official_auth_locked(db, &base, true).await?;
     let updated = persist_refreshed_account_snapshot(db, &latest, &next).await?;
     let runtime_written = write_runtime_credential_if_still_applied(db, account_id, &next).await?;
@@ -2002,9 +2077,23 @@ async fn persist_usage_snapshot(
     account_id: &str,
     usage_snapshot: &UsageSnapshot,
     last_error: Option<&str>,
+    request: Option<&UsageRequestGuard>,
 ) -> Result<CodexOfficialAccount, String> {
     let now = Local::now().to_rfc3339();
     db.with_conn(|conn| {
+        // The generation check and JSONB patch are one synchronous critical
+        // section. A newer request cannot start between them.
+        let requests = request.map(|_| {
+            USAGE_REQUESTS
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+        });
+        if request
+            .zip(requests.as_ref())
+            .is_some_and(|(request, requests)| !request.is_current(requests))
+        {
+            return Ok(());
+        }
         db_patch_fields(
             conn,
             DbTable::CodexOfficialAccount,
@@ -2120,32 +2209,57 @@ async fn persist_refreshed_account_snapshot(
     load_official_account(db, &account.id).await
 }
 
+#[cfg(test)]
 async fn persist_usage_result(
     db: &SqliteDbState,
     account_id: &str,
     result: Result<UsageSnapshot, String>,
 ) -> Result<CodexOfficialAccount, String> {
+    persist_usage_result_with_request(db, account_id, result, None).await
+}
+
+async fn persist_usage_result_with_request(
+    db: &SqliteDbState,
+    account_id: &str,
+    result: Result<UsageSnapshot, String>,
+    request: Option<&UsageRequestGuard>,
+) -> Result<CodexOfficialAccount, String> {
     match result {
-        Ok(snapshot) => persist_usage_snapshot(db, account_id, &snapshot, None).await,
+        Ok(snapshot) => persist_usage_snapshot(db, account_id, &snapshot, None, request).await,
         Err(error) => {
             // A failed read is neither a zero balance nor a successful refresh.
             // Keep the old success timestamp, but do not display cached credits.
-            db.with_conn(|conn| {
-                db_patch_fields(
-                    conn,
-                    DbTable::CodexOfficialAccount,
-                    account_id,
-                    &[
-                        ("credits", Value::Null),
-                        ("last_error", Value::String(error.clone())),
-                        ("updated_at", Value::String(Local::now().to_rfc3339())),
-                    ],
-                )
-                .map(|_| ())
-            })
-            .map_err(|storage_error| {
-                format!("{error}; failed to save usage error: {storage_error}")
-            })?;
+            let persisted = db
+                .with_conn(|conn| {
+                    let requests = request.map(|_| {
+                        USAGE_REQUESTS
+                            .lock()
+                            .unwrap_or_else(|poison| poison.into_inner())
+                    });
+                    if request
+                        .zip(requests.as_ref())
+                        .is_some_and(|(request, requests)| !request.is_current(requests))
+                    {
+                        return Ok(false);
+                    }
+                    db_patch_fields(
+                        conn,
+                        DbTable::CodexOfficialAccount,
+                        account_id,
+                        &[
+                            ("credits", Value::Null),
+                            ("last_error", Value::String(error.clone())),
+                            ("updated_at", Value::String(Local::now().to_rfc3339())),
+                        ],
+                    )
+                    .map(|_| true)
+                })
+                .map_err(|storage_error| {
+                    format!("{error}; failed to save usage error: {storage_error}")
+                })?;
+            if !persisted {
+                return load_official_account(db, account_id).await;
+            }
             Err(error)
         }
     }
@@ -2283,10 +2397,22 @@ pub async fn start_codex_official_account_device_auth(
     let session_id = db_new_id();
     let expires_at = chrono::Utc::now().timestamp() + 15 * 60;
     let (cancel_sender, cancel_receiver) = watch::channel(false);
-    DEVICE_AUTH_SESSIONS
+    let mut sessions = DEVICE_AUTH_SESSIONS
         .lock()
-        .map_err(|_| "Codex device auth session lock is poisoned".to_string())?
-        .insert(session_id.clone(), cancel_sender);
+        .map_err(|_| "Codex device auth session lock is poisoned".to_string())?;
+    // The first check happened before the network request. Recheck while
+    // registering so simultaneous starts cannot both become live sessions.
+    if !sessions.is_empty() {
+        return Err("A Codex device authorization session is already active".to_string());
+    }
+    sessions.insert(
+        session_id.clone(),
+        DeviceAuthSession {
+            cancel: cancel_sender,
+            exchange_started: false,
+        },
+    );
+    drop(sessions);
 
     emit_codex_auth_status(&app, &session_id, "waiting_for_user", None, None);
     let poll_session_id = session_id.clone();
@@ -2316,13 +2442,34 @@ pub async fn start_codex_official_account_device_auth(
 
 #[tauri::command]
 pub fn cancel_codex_official_account_device_auth(session_id: String) -> Result<(), String> {
-    if let Some(sender) = DEVICE_AUTH_SESSIONS
+    if let Some(session) = DEVICE_AUTH_SESSIONS
         .lock()
         .map_err(|_| "Codex device auth session lock is poisoned".to_string())?
-        .remove(&session_id)
+        .get(&session_id)
     {
-        let _ = sender.send(true);
+        // Once exchange starts, the one-shot code must be saved even if the
+        // dialog closes. The worker removes the session at completion.
+        if !session.exchange_started {
+            let _ = session.cancel.send(true);
+        }
     }
+    Ok(())
+}
+
+fn begin_device_auth_exchange(
+    session_id: &str,
+    cancelled: &watch::Receiver<bool>,
+) -> Result<(), String> {
+    let mut sessions = DEVICE_AUTH_SESSIONS
+        .lock()
+        .map_err(|_| "Codex device auth session lock is poisoned".to_string())?;
+    let Some(session) = sessions.get_mut(session_id) else {
+        return Err("cancelled".to_string());
+    };
+    if *cancelled.borrow() {
+        return Err("cancelled".to_string());
+    }
+    session.exchange_started = true;
     Ok(())
 }
 
@@ -2347,20 +2494,23 @@ async fn poll_codex_device_auth(
             if chrono::Utc::now().timestamp() >= expires_at {
                 return Err("expired".to_string());
             }
-            let response = client
-                .post(CODEX_DEVICE_TOKEN_URL)
-                .json(&serde_json::json!({
-                    "device_auth_id": device_auth_id,
-                    "user_code": user_code,
-                }))
-                .send()
-                .await
-                .map_err(|error| format!("Failed to poll Codex device authorization: {error}"))?;
+            let response = tokio::select! {
+                response = client
+                    .post(CODEX_DEVICE_TOKEN_URL)
+                    .json(&serde_json::json!({
+                        "device_auth_id": device_auth_id,
+                        "user_code": user_code,
+                    }))
+                    .send() => response
+                    .map_err(|error| format!("Failed to poll Codex device authorization: {error}"))?,
+                _ = cancel_receiver.changed() => return Err("cancelled".to_string()),
+            };
             let status = response.status();
-            let body = response
-                .text()
-                .await
-                .map_err(|error| format!("Failed to read Codex device authorization: {error}"))?;
+            let body = tokio::select! {
+                body = response.text() => body
+                    .map_err(|error| format!("Failed to read Codex device authorization: {error}"))?,
+                _ = cancel_receiver.changed() => return Err("cancelled".to_string()),
+            };
             if status.is_success() {
                 let token: CodexDeviceTokenResponse = serde_json::from_str(&body)
                     .map_err(|error| format!("Invalid Codex device token response: {error}"))?;
@@ -2369,22 +2519,16 @@ async fn poll_codex_device_auth(
                 {
                     return Err("Codex device token response is incomplete".to_string());
                 }
-                let existing_auth = read_auth_json_from_disk(Some(&db)).await?;
-                let token_response = exchange_authorization_code(
+                begin_device_auth_exchange(&session_id, &cancel_receiver)?;
+                emit_codex_auth_status(&app, &session_id, "exchanging", None, None);
+                let account = exchange_and_save_official_account(
                     db,
+                    &provider_id,
                     &token.authorization_code,
                     CODEX_DEVICE_REDIRECT_URI,
                     &token.code_verifier,
                 )
                 .await?;
-                let auth_snapshot = build_auth_snapshot(&token_response, Some(&existing_auth))?;
-                let content = build_account_content_from_auth_snapshot(
-                    &provider_id,
-                    &auth_snapshot,
-                    None,
-                    None,
-                )?;
-                let account = save_official_account(db, &content).await?;
                 return Ok(account.id);
             }
             if status.as_u16() != 403 && status.as_u16() != 404 {
@@ -2411,6 +2555,7 @@ async fn poll_codex_device_auth(
     match result {
         Ok(account_id) => {
             emit_codex_auth_status(&app, &session_id, "authorized", None, Some(account_id));
+            let _ = app.emit("codex-official-accounts-changed", &provider_id);
             let _ = app.emit("config-changed", "window");
         }
         Err(error) if error == "cancelled" || error == "expired" => {
@@ -2485,7 +2630,7 @@ pub async fn start_codex_official_account_oauth(
             emit_codex_auth_status(&app, &task_session_id, "exchanging", None, None);
             // Once exchange starts it must finish and persist, even if the UI
             // closes: authorization codes are one-shot and refresh tokens rotate.
-            exchange_and_save_browser_account(
+            exchange_and_save_official_account(
                 &db,
                 &provider_id,
                 &code,
@@ -2510,7 +2655,9 @@ pub async fn start_codex_official_account_oauth(
                 let _ = app.emit("config-changed", "window");
                 // Usage is ancillary. Save the login first; a slow quota endpoint
                 // must neither delay success nor discard the only fresh token.
-                if let Err(error) = refresh_persisted_account_usage(&db, &account.id).await {
+                if let Err(error) =
+                    refresh_persisted_account_usage(&db, &account.id, Some(&app)).await
+                {
                     log::debug!("Codex post-login usage refresh failed: {error}");
                 }
                 let _ = app.emit("codex-official-accounts-changed", &provider_id);
@@ -2532,7 +2679,7 @@ pub async fn start_codex_official_account_oauth(
     })
 }
 
-async fn exchange_and_save_browser_account(
+async fn exchange_and_save_official_account(
     db: &SqliteDbState,
     provider_id: &str,
     code: &str,
@@ -2820,7 +2967,7 @@ pub async fn refresh_codex_official_account_limits(
     }
 
     if account_id == LOCAL_OFFICIAL_ACCOUNT_ID {
-        let prepared = refresh_local_account_usage(&db).await?;
+        let prepared = refresh_local_account_usage(&db, Some(&app)).await?;
         // Built from the credential that answered the request: re-reading the
         // file could pick up a login the user switched to mid-refresh.
         let mut account = assign_provider_id(
@@ -2829,9 +2976,6 @@ pub async fn refresh_codex_official_account_limits(
         );
         apply_usage_snapshot_to_account(&mut account, &prepared.usage);
         account.last_limits_fetched_at = Some(Local::now().to_rfc3339());
-        if prepared.runtime_written {
-            emit_runtime_credential_changed(&app);
-        }
         return Ok(account);
     }
 
@@ -2839,10 +2983,7 @@ pub async fn refresh_codex_official_account_limits(
     if account.provider_id != provider_id {
         return Err("Official account does not belong to the selected provider".to_string());
     }
-    let (refreshed, runtime_written) = refresh_persisted_account_usage(&db, &account.id).await?;
-    if runtime_written {
-        emit_runtime_credential_changed(&app);
-    }
+    let (refreshed, _) = refresh_persisted_account_usage(&db, &account.id, Some(&app)).await?;
     Ok(refreshed)
 }
 
@@ -2866,41 +3007,43 @@ fn apply_usage_snapshot_to_account(account: &mut CodexOfficialAccount, usage: &U
     account.credits = usage.credits.clone();
 }
 
-/// What a `__local__` refresh produced: the credential that answered, its
-/// usage, and whether the runtime file was rewritten.
+/// What a `__local__` refresh produced: the credential that answered and its usage.
 struct LocalUsageResult {
     credential: Value,
     usage: UsageSnapshot,
-    runtime_written: bool,
 }
 
 /// Usage for the `__local__` virtual account. The runtime credential is rotated
 /// and written back like any applied account: it *is* the login.
-async fn refresh_local_account_usage(db: &SqliteDbState) -> Result<LocalUsageResult, String> {
+async fn refresh_local_account_usage(
+    db: &SqliteDbState,
+    app: Option<&tauri::AppHandle>,
+) -> Result<LocalUsageResult, String> {
     let auth = read_auth_json_from_disk(Some(db)).await?;
     if !auth_has_official_runtime(&auth) {
         return Err("Current local auth.json does not contain an official Codex login".to_string());
     }
-    let (mut credential, mut runtime_written) = prepare_local_credential(db, &auth, false).await?;
+    let (mut credential, runtime_written) = prepare_local_credential(db, &auth, false).await?;
+    if runtime_written {
+        if let Some(app) = app {
+            emit_runtime_credential_changed(app);
+        }
+    }
     match request_usage_from_local(db, &credential).await {
-        Ok(usage) => Ok(LocalUsageResult {
-            credential,
-            usage,
-            runtime_written,
-        }),
+        Ok(usage) => Ok(LocalUsageResult { credential, usage }),
         // A 401 on an unexpired token still deserves one forced exchange: the
         // server may have revoked it early. Any other status keeps its meaning.
         Err(error) if error.is_unauthorized() => {
             let (next, forced_written) = prepare_local_credential(db, &credential, true).await?;
+            if forced_written {
+                if let Some(app) = app {
+                    emit_runtime_credential_changed(app);
+                }
+            }
             credential = next;
-            runtime_written |= forced_written;
             request_usage_from_local(db, &credential)
                 .await
-                .map(|usage| LocalUsageResult {
-                    credential,
-                    usage,
-                    runtime_written,
-                })
+                .map(|usage| LocalUsageResult { credential, usage })
                 .map_err(|error| {
                     if error.is_unauthorized() {
                         codex_reauth_error("the usage endpoint keeps rejecting the credential")
@@ -2949,6 +3092,9 @@ async fn prepare_local_credential(
         // and the answer would belong to a row that is no longer on screen.
         return Err("The local Codex login changed during the refresh; retry".to_string());
     }
+    if force && credential_changed_since_attempt(&latest, auth) {
+        return Ok((latest, false));
+    }
     let next = exchange_official_auth_locked(db, &latest, force).await?;
     let written = if next != latest {
         write_local_runtime_credential(db, &latest, &next).await?
@@ -2977,10 +3123,17 @@ fn access_token_from_auth(auth: &Value) -> Result<&str, String> {
 async fn refresh_persisted_account_usage(
     db: &SqliteDbState,
     account_id: &str,
+    app: Option<&tauri::AppHandle>,
 ) -> Result<(CodexOfficialAccount, bool), String> {
+    let request = UsageRequestGuard::begin(account_id);
     // Preparation errors invalidate cached credits just like HTTP errors do.
     let (result, runtime_written) = refresh_account_usage_inner(db, account_id).await;
-    let account = persist_usage_result(db, account_id, result).await?;
+    if runtime_written {
+        if let Some(app) = app {
+            emit_runtime_credential_changed(app);
+        }
+    }
+    let account = persist_usage_result_with_request(db, account_id, result, Some(&request)).await?;
     Ok((account, runtime_written))
 }
 
@@ -3343,7 +3496,7 @@ mod tests {
                 .map(|_| ())
             })
             .unwrap();
-            assert!(refresh_persisted_account_usage(&db, &account.id)
+            assert!(refresh_persisted_account_usage(&db, &account.id, None)
                 .await
                 .is_err());
             let stored = load_official_account(&db, &account.id).await.unwrap();
@@ -3605,21 +3758,63 @@ mod tests {
     }
 
     #[test]
-    fn device_auth_cancel_signals_and_removes_session() {
+    fn device_auth_cancel_signals_without_releasing_active_slot() {
         let session_id = format!("test-device-session-{}", uuid::Uuid::new_v4());
         let (cancel_sender, cancel_receiver) = watch::channel(false);
         DEVICE_AUTH_SESSIONS
             .lock()
             .expect("device session lock")
-            .insert(session_id.clone(), cancel_sender);
+            .insert(
+                session_id.clone(),
+                DeviceAuthSession {
+                    cancel: cancel_sender,
+                    exchange_started: false,
+                },
+            );
 
         cancel_codex_official_account_device_auth(session_id.clone()).expect("cancel device auth");
 
         assert!(*cancel_receiver.borrow());
-        assert!(!DEVICE_AUTH_SESSIONS
+        assert!(DEVICE_AUTH_SESSIONS
             .lock()
             .expect("device session lock")
             .contains_key(&session_id));
+        DEVICE_AUTH_SESSIONS.lock().unwrap().remove(&session_id);
+    }
+
+    #[test]
+    fn device_auth_cancel_before_exchange_cannot_consume_poll_code() {
+        let session_id = format!("test-device-session-{}", uuid::Uuid::new_v4());
+        let (cancel_sender, cancel_receiver) = watch::channel(false);
+        DEVICE_AUTH_SESSIONS.lock().unwrap().insert(
+            session_id.clone(),
+            DeviceAuthSession {
+                cancel: cancel_sender,
+                exchange_started: false,
+            },
+        );
+        cancel_codex_official_account_device_auth(session_id.clone()).unwrap();
+        assert_eq!(
+            begin_device_auth_exchange(&session_id, &cancel_receiver),
+            Err("cancelled".to_string())
+        );
+        DEVICE_AUTH_SESSIONS.lock().unwrap().remove(&session_id);
+
+        let (cancel_sender, cancel_receiver) = watch::channel(false);
+        DEVICE_AUTH_SESSIONS.lock().unwrap().insert(
+            session_id.clone(),
+            DeviceAuthSession {
+                cancel: cancel_sender,
+                exchange_started: false,
+            },
+        );
+        begin_device_auth_exchange(&session_id, &cancel_receiver).unwrap();
+        cancel_codex_official_account_device_auth(session_id.clone()).unwrap();
+        assert!(
+            !*cancel_receiver.borrow(),
+            "closing after exchange starts keeps the one-shot code"
+        );
+        DEVICE_AUTH_SESSIONS.lock().unwrap().remove(&session_id);
     }
 
     #[test]
@@ -4169,6 +4364,7 @@ mod usage_credential_tests {
     struct MockReply {
         status: u16,
         body: String,
+        wait_for: Option<Arc<std::sync::atomic::AtomicBool>>,
     }
 
     /// Distinct email per account id keeps the identity checks meaningful: with
@@ -4237,6 +4433,7 @@ mod usage_credential_tests {
                 // and teardown can stop the loop early.
                 let deadline = std::time::Instant::now() + Duration::from_secs(20);
                 let mut served = 0;
+                let mut deferred = Vec::new();
                 while served < expected
                     && !stopped_thread.load(Ordering::SeqCst)
                     && std::time::Instant::now() < deadline
@@ -4254,26 +4451,45 @@ mod usage_credential_tests {
                     let Some(request) = read_http_request(&mut socket) else {
                         continue;
                     };
-                    let (status, body) = if request.path.contains("/oauth/token") {
+                    let reply = if request.path.contains("/oauth/token") {
                         let index = token_thread.fetch_add(1, Ordering::SeqCst);
-                        let reply = &token_replies[index];
-                        (reply.status, reply.body.clone())
+                        &token_replies[index]
                     } else {
                         let index = usage_thread.fetch_add(1, Ordering::SeqCst);
-                        let reply = &usage_replies[index];
-                        (reply.status, reply.body.clone())
+                        &usage_replies[index]
                     };
+                    let status = reply.status;
+                    let body = reply.body.clone();
+                    let wait_for = reply.wait_for.clone();
                     requests_thread.lock().expect("requests lock").push(request);
                     served += 1;
                     // Status zero models a transport reset before HTTP headers.
                     if status == 0 {
                         continue;
                     }
-                    let _ = write!(
-                        socket,
-                        "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                        body.len()
-                    );
+                    let mut respond = move || {
+                        let _ = write!(
+                            socket,
+                            "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        );
+                    };
+                    if let Some(gate) = wait_for {
+                        deferred.push(std::thread::spawn(move || {
+                            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                            while !gate.load(Ordering::SeqCst)
+                                && std::time::Instant::now() < deadline
+                            {
+                                std::thread::sleep(Duration::from_millis(5));
+                            }
+                            respond();
+                        }));
+                    } else {
+                        respond();
+                    }
+                }
+                for handle in deferred {
+                    let _ = handle.join();
                 }
             });
             Self {
@@ -4374,6 +4590,19 @@ mod usage_credential_tests {
         MockReply {
             status,
             body: body.into(),
+            wait_for: None,
+        }
+    }
+
+    fn deferred_reply(
+        status: u16,
+        body: impl Into<String>,
+        gate: Arc<std::sync::atomic::AtomicBool>,
+    ) -> MockReply {
+        MockReply {
+            status,
+            body: body.into(),
+            wait_for: Some(gate),
         }
     }
 
@@ -4474,7 +4703,7 @@ mod usage_credential_tests {
         }
 
         async fn refresh(&self, account_id: &str) -> Result<CodexOfficialAccount, String> {
-            refresh_persisted_account_usage(&self.db, account_id)
+            refresh_persisted_account_usage(&self.db, account_id, None)
                 .await
                 .map(|(account, _)| account)
         }
@@ -4499,8 +4728,222 @@ mod usage_credential_tests {
         }
     }
 
+    async fn wait_for_usage_calls(server: &MockServer, count: usize) {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while server.usage_calls() < count {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("mock usage request did not arrive");
+    }
+
     #[tokio::test]
-    async fn browser_oauth_saves_tokens_without_waiting_for_usage() {
+    async fn newer_usage_success_survives_older_failure() {
+        let _guard = TEST_GUARD.lock().await;
+        let env = TestEnv::new();
+        let release_old = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let server = MockServer::start(
+            vec![
+                deferred_reply(500, "{}", release_old.clone()),
+                ok_usage(25.0),
+            ],
+            Vec::new(),
+        );
+        set_test_endpoints(&server.usage_url, &server.token_url);
+        let account = env
+            .save_account(
+                &auth_with(
+                    &token("access-a", 30 * 24 * 60 * 60),
+                    "refresh-a",
+                    "account-a",
+                ),
+                false,
+            )
+            .await;
+
+        let db = env.db.clone();
+        let account_id = account.id.clone();
+        let old =
+            tokio::spawn(
+                async move { refresh_persisted_account_usage(&db, &account_id, None).await },
+            );
+        wait_for_usage_calls(&server, 1).await;
+        let latest = env
+            .refresh(&account.id)
+            .await
+            .expect("newer usage succeeds");
+        assert_eq!(latest.limit_weekly_text.as_deref(), Some("75%"));
+        release_old.store(true, Ordering::SeqCst);
+        old.await
+            .expect("old task")
+            .expect("stale failure is ignored");
+
+        let stored = load_official_account(&env.db, &account.id).await.unwrap();
+        assert_eq!(stored.limit_weekly_text.as_deref(), Some("75%"));
+        assert_eq!(
+            stored.credits.as_ref().and_then(|credits| credits.balance),
+            Some(12.0)
+        );
+        assert!(stored.last_error.is_none());
+        assert!(USAGE_REQUESTS.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn newer_usage_failure_survives_older_success() {
+        let _guard = TEST_GUARD.lock().await;
+        let env = TestEnv::new();
+        let release_old = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let server = MockServer::start(
+            vec![
+                deferred_reply(200, usage_body(10.0), release_old.clone()),
+                reply(500, "{}"),
+            ],
+            Vec::new(),
+        );
+        set_test_endpoints(&server.usage_url, &server.token_url);
+        let account = env
+            .save_account(
+                &auth_with(
+                    &token("access-a", 30 * 24 * 60 * 60),
+                    "refresh-a",
+                    "account-a",
+                ),
+                false,
+            )
+            .await;
+
+        let db = env.db.clone();
+        let account_id = account.id.clone();
+        let old =
+            tokio::spawn(
+                async move { refresh_persisted_account_usage(&db, &account_id, None).await },
+            );
+        wait_for_usage_calls(&server, 1).await;
+        assert!(env.refresh(&account.id).await.unwrap_err().contains("500"));
+        release_old.store(true, Ordering::SeqCst);
+        old.await
+            .expect("old task")
+            .expect("stale success is ignored");
+
+        let stored = load_official_account(&env.db, &account.id).await.unwrap();
+        assert!(stored
+            .last_error
+            .as_deref()
+            .is_some_and(|error| error.contains("500")));
+        assert!(stored.credits.is_none());
+        assert!(stored.last_limits_fetched_at.is_none());
+        assert!(USAGE_REQUESTS.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn queued_persisted_401_recovery_reuses_first_rotation() {
+        let _guard = TEST_GUARD.lock().await;
+        let env = TestEnv::new();
+        let release_exchange = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let rotated_access = token("access-rotated", 30 * 24 * 60 * 60);
+        let server = MockServer::start(
+            vec![
+                reply(401, "{}"),
+                reply(401, "{}"),
+                ok_usage(10.0),
+                ok_usage(10.0),
+            ],
+            vec![deferred_reply(
+                200,
+                token_body(&rotated_access, "refresh-rotated"),
+                release_exchange.clone(),
+            )],
+        );
+        set_test_endpoints(&server.usage_url, &server.token_url);
+        let account = env
+            .save_account(
+                &auth_with(
+                    &token("access-old", 30 * 24 * 60 * 60),
+                    "refresh-old",
+                    "account-a",
+                ),
+                false,
+            )
+            .await;
+        let first_db = env.db.clone();
+        let first_id = account.id.clone();
+        let first = tokio::spawn(async move {
+            refresh_persisted_account_usage(&first_db, &first_id, None).await
+        });
+        wait_for_usage_calls(&server, 1).await;
+        let second_db = env.db.clone();
+        let second_id = account.id.clone();
+        let second = tokio::spawn(async move {
+            refresh_persisted_account_usage(&second_db, &second_id, None).await
+        });
+        wait_for_usage_calls(&server, 2).await;
+        release_exchange.store(true, Ordering::SeqCst);
+        first.await.expect("first task").expect("first recovery");
+        second.await.expect("second task").expect("second recovery");
+
+        assert_eq!(
+            server.token_calls(),
+            1,
+            "a queued 401 must reuse the rotated token"
+        );
+        assert_eq!(server.usage_calls(), 4);
+        assert_eq!(
+            env.stored_snapshot(&account.id).await["tokens"]["refresh_token"],
+            "refresh-rotated"
+        );
+    }
+
+    #[tokio::test]
+    async fn queued_local_401_recovery_reuses_first_rotation() {
+        let _guard = TEST_GUARD.lock().await;
+        let env = TestEnv::new();
+        let release_exchange = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let rotated_access = token("access-rotated", 30 * 24 * 60 * 60);
+        let server = MockServer::start(
+            vec![
+                reply(401, "{}"),
+                reply(401, "{}"),
+                ok_usage(10.0),
+                ok_usage(10.0),
+            ],
+            vec![deferred_reply(
+                200,
+                token_body(&rotated_access, "refresh-rotated"),
+                release_exchange.clone(),
+            )],
+        );
+        set_test_endpoints(&server.usage_url, &server.token_url);
+        env.write_runtime_auth(&auth_with(
+            &token("access-old", 30 * 24 * 60 * 60),
+            "refresh-old",
+            "account-a",
+        ));
+        let first_db = env.db.clone();
+        let first = tokio::spawn(async move { refresh_local_account_usage(&first_db, None).await });
+        wait_for_usage_calls(&server, 1).await;
+        let second_db = env.db.clone();
+        let second =
+            tokio::spawn(async move { refresh_local_account_usage(&second_db, None).await });
+        wait_for_usage_calls(&server, 2).await;
+        release_exchange.store(true, Ordering::SeqCst);
+        first.await.expect("first task").expect("first recovery");
+        second.await.expect("second task").expect("second recovery");
+
+        assert_eq!(
+            server.token_calls(),
+            1,
+            "a queued local 401 must reuse the rotated token"
+        );
+        assert_eq!(server.usage_calls(), 4);
+        assert_eq!(
+            env.read_runtime_auth()["tokens"]["refresh_token"],
+            "refresh-rotated"
+        );
+    }
+
+    #[tokio::test]
+    async fn official_oauth_saves_new_tokens_without_waiting_for_usage_or_live_auth() {
         let _guard = TEST_GUARD.lock().await;
         let env = TestEnv::new();
         let access = token("browser-access", 30 * 24 * 60 * 60);
@@ -4509,7 +4952,9 @@ mod usage_credential_tests {
             vec![reply(200, token_body(&access, "browser-refresh"))],
         );
         set_test_endpoints(&server.usage_url, &server.token_url);
-        let account = exchange_and_save_browser_account(
+        std::fs::write(env._root.path().join("auth.json"), "{malformed")
+            .expect("write unrelated broken runtime auth");
+        let account = exchange_and_save_official_account(
             &env.db,
             "provider-a",
             "one-shot-code",
@@ -4526,13 +4971,55 @@ mod usage_credential_tests {
             "login success must not await quota"
         );
         assert_eq!(
-            env.read_runtime_auth(),
-            serde_json::json!({}),
-            "login only saves a snapshot"
+            std::fs::read_to_string(env._root.path().join("auth.json")).unwrap(),
+            "{malformed",
+            "login must not read or replace unrelated live auth"
         );
         let bodies = server.token_request_bodies();
         assert!(bodies[0].contains("redirect_uri=http%3A%2F%2Flocalhost%3A1457%2Fauth%2Fcallback"));
         assert!(bodies[0].contains("code_verifier=pkce-verifier"));
+    }
+
+    #[tokio::test]
+    async fn official_oauth_missing_id_token_never_borrows_live_identity() {
+        let _guard = TEST_GUARD.lock().await;
+        let env = TestEnv::new();
+        env.write_runtime_auth(&auth_with(
+            &token("old-access", 30 * 24 * 60 * 60),
+            "old-refresh",
+            "old-account",
+        ));
+        let server = MockServer::start(
+            Vec::new(),
+            vec![reply(
+                200,
+                serde_json::json!({
+                    "access_token": "new-access",
+                    "refresh_token": "new-refresh"
+                })
+                .to_string(),
+            )],
+        );
+        set_test_endpoints(&server.usage_url, &server.token_url);
+
+        let error = exchange_and_save_official_account(
+            &env.db,
+            "provider-a",
+            "one-shot-code",
+            CODEX_DEVICE_REDIRECT_URI,
+            "pkce-verifier",
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("missing id_token"));
+        assert!(list_persisted_official_accounts(&env.db, "provider-a")
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            env.read_runtime_auth()["tokens"]["refresh_token"],
+            "old-refresh"
+        );
     }
 
     #[tokio::test]
@@ -4965,14 +5452,13 @@ mod usage_credential_tests {
             "account-a",
         ));
 
-        let result = refresh_local_account_usage(&env.db)
+        let result = refresh_local_account_usage(&env.db, None)
             .await
             .expect("local usage");
 
         assert_eq!(result.usage.limit_weekly_text.as_deref(), Some("88%"));
         // The returned credential is the one that answered, not a later read.
         assert_eq!(result.credential["tokens"]["access_token"], fresh_access);
-        assert!(result.runtime_written);
         assert_eq!(server.token_calls(), 1);
         assert_eq!(
             server.authorization_headers(),
@@ -5044,14 +5530,13 @@ mod usage_credential_tests {
         initial["runtime_owned"] = serde_json::json!({ "keep": true });
         env.write_runtime_auth(&initial);
 
-        let result = refresh_local_account_usage(&env.db)
+        let result = refresh_local_account_usage(&env.db, None)
             .await
             .expect("local usage after recovery");
 
         assert_eq!(server.usage_calls(), 2);
         assert_eq!(server.token_calls(), 1);
         assert_eq!(result.usage.limit_weekly_text.as_deref(), Some("92%"));
-        assert!(result.runtime_written);
         let runtime = env.read_runtime_auth();
         assert_eq!(runtime["tokens"]["access_token"], rotated_access);
         assert_eq!(runtime["tokens"]["refresh_token"], "refresh-rotated");

@@ -47,6 +47,8 @@ sequenceDiagram
 - 官方账号额度窗口由后端解析并投影；页面只展示返回的 `5h`、weekly、monthly 明细，不根据套餐、字段顺序或文案自行推断。
 - 页面粘贴导入 `auth.json` 时只把内容提交给后端保存为账号快照；运行时 `auth.json` 只有在用户点击“应用”后才会更新。
 - 浏览器 OAuth 是异步会话：前端先监听共享 `codex-auth-status`，再调用 `start_codex_official_account_oauth` 获取 `sessionId/authorizeUrl/expiresAt`，由前端打开浏览器。开始阶段必须立即显示可取消的等待弹窗；授权事件可能先于 start 响应，应按 sessionId 缓冲并在响应落地后消费。`authorized` 表示账号已保存，之后刷新列表与托盘；`error/expired` 显示原因并允许重新开始。取消必须覆盖 start 尚未返回的竞态，在拿到 sessionId 后调用 `cancel_codex_official_account_oauth`；关闭弹窗不承诺撤销已经进入换码/保存阶段的授权。浏览器未自动打开时保留重新打开与复制链接入口，不要把整个 OAuth 过程重新做成一个等待回调最长 300 秒的阻塞式 invoke。
+- 设备码登录也必须在调用 start 前监听 `codex-auth-status`，并缓冲 start 响应前的事件；请求设备码时立即显示等待弹窗，关闭时保留取消意图，拿到 sessionId 后补调 cancel。状态监听与成功回调由稳定 hook 持有，不放在拿到 session 后才挂载的 Modal effect 里（它会错过快速终态，父层重渲染还会重新订阅）。后端在账号保存后发 `codex-official-accounts-changed`，即使用户在换码阶段关弹窗，页面仍静默重载账号列表。
+- 浏览器与设备码新登录都只保存新账号快照，不能从当前 live `auth.json` 借身份或刷新令牌，也不会自动应用账号；用户显式切换账号后才写运行时文件。设备码 token 响应缺 `id_token` 时应明确失败，页面不得把现有登录误当成本次新账号。
 - 额外 credits 与周额度、重置卡分开展示，不做货币兑换。`unlimited` 优先；有效余额（含零/负数）原样展示，`hasCredits=false` 时同时显示无可用积分提示；只有标志可用而余额未知时明确标未知。余额按「计数」格式化（固定小数位、不做千分位、不出现浮点误差或科学计数法），不要直接 `String(f64)`。刷新结果必须同时匹配 provider、账号及本地登录身份，旧根目录/旧列表请求和已关闭详情不应被晚到结果覆盖。
 - **刷新失败只做标记，不回退数据、不进缓存**：失败结果只写到当前屏幕上的那一行（清 `credits`、记 `lastError`），额度窗口与上次成功时间保持不动，也不能写进 `officialAccountUsageResults` —— 否则点击时的旧快照会盖掉期间列表已拉到的新值，virtual 行还会把失败反复重放到后续每次 reload。缓存里只允许存在成功结果。
 - **重授权错误单独本地化**：后端把不可恢复的凭证问题统一带上 `codex_reauth_required:` 前缀。前端只在展示层用 `formatCodexOfficialAccountError` 换成 `codex.provider.officialAccountReauthRequired`，**行内 `lastError` 与缓存里保存的仍是原始字符串**（reload 后仍可识别，不会被本地化文案覆盖掉标记）。其它错误（429 / 5xx / 超时 / 解析失败）保持原文，不要为它们也编一套文案。
@@ -129,6 +131,7 @@ sequenceDiagram
 - 至少验证：导入同源 provider 冲突时有明确覆盖/副本分支。
 - 改卡片布局或侧栏时，跑 `pnpm run test:codex-card-view`（真 Chromium 挂真实 `CodexPage`，81 项断言）：切换并落库、格子只有主模型、目录/账号块进侧栏、格子内拖拽回写、切回列表后目录仍在、官方格子的「当前登录」在三态下分别说什么（应用的账号 / **磁盘上那份登录与一份没在用的保存账号并存**——这是用户报缺陷时那台机器的真实形状，格子必须报「在用」的那份 / 两者都没有 → 未登录）。
 - 改浏览器 OAuth 时跑 `pnpm run test:codex-browser-oauth`：真 Chromium 挂真实 `CodexPage`，验证监听先于 start、start 前立即等待、快速授权事件、成功后账号重载、重开浏览器、复制链接、取消与 start 竞态、失败后重试及过期提示。设备码事件共用 `codex-auth-status`，修改事件载荷时也要核对 `CodexDeviceAuthModal`。
+- 改设备码登录时同跑 `pnpm run test:codex-browser-oauth`：其中设备码分支覆盖先监听后 start、快速授权、启动中关闭后补取消，以及换码阶段关闭后依靠账号变更事件重载。
 - 模型目录改动运行 `pnpm test` 与 `pnpm exec tsc --noEmit`。`web/test/features/coding/codex/utils/codexCatalogModelRows.test.ts` 覆盖行身份、upsert/删除/排序、弹窗表单值往返、图片能力三态与连通性 model id 并集；`codexProviderCatalogSave.test.ts` 覆盖 single/failover/aggregate 的回放顺序。模型目录的浏览器检查是 `pnpm test:codex-model-import`：它直接挂载共享 `FetchModelsModal`（`CodexFetchedModelsModalFixture.jsx`，29 项断言），覆盖协议/SDK → `fetch_provider_models` 请求（含 Google native 的版本段与 `?key=`）、失败刷新保留旧列表、跨搜索保留勾选、清理需显式勾选、关闭弹窗后的迟到响应不得覆盖新结果。**2026-10-19 起它不再经过表单**（表单内映射 UI 已移除，旧夹具 `CodexModelImportFixture.jsx` 因失去入口而失效）；卡片工具栏本身由 `pnpm test:codex-card-view` 验证。
 - 若本机存在 `~/.cc-switch/cc-switch.db`，Codex 页应出现「从 CC Switch 导入」；导入后带 `sourceProviderId=ccs:codex:...`、默认未应用；MCP-only 空壳不应进入列表。
 - 改历史同步 UI 时，至少验证会话管理标题栏入口、来源切换、本机/WSL 状态弹窗、同步确认、恢复最新备份强确认和 Session Manager 刷新触发。
